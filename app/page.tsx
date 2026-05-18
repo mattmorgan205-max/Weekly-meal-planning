@@ -154,6 +154,16 @@ function normalizeDateRange(startDate: string, endDate: string) {
   return startDate <= endDate ? { startDate, endDate } : { startDate: endDate, endDate: startDate };
 }
 
+function parseJsonResponse<T>(text: string, fallbackError: string): T | { error: string } {
+  if (!text) return { error: fallbackError };
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return { error: text || fallbackError };
+  }
+}
+
 function parseNumberInput(value: string) {
   if (value.trim() === "") return undefined;
   const parsed = Number(value);
@@ -250,6 +260,51 @@ async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
   } finally {
     loaded.close?.();
   }
+}
+
+async function recognizeRecipePhoto(
+  prepared: { file: File; dataUrl: string },
+  originalFile: File,
+  onProgress: (message: string) => void
+) {
+  const { recognize } = await import("tesseract.js");
+  const candidates: Array<{ label: string; image: string | File }> = [
+    { label: "processed image", image: prepared.dataUrl },
+    { label: "processed file", image: prepared.file }
+  ];
+
+  if (prepared.file !== originalFile) {
+    candidates.push({ label: "original file", image: originalFile });
+  }
+
+  let lastError: unknown = null;
+
+  for (const candidate of candidates) {
+    try {
+      onProgress(`Reading ${candidate.label} privately...`);
+      const result = await recognize(candidate.image, "eng", {
+        logger: (message: { status?: string; progress?: number }) => {
+          if (message.status && typeof message.progress === "number") {
+            onProgress(`${message.status} ${Math.round(message.progress * 100)}%`);
+          }
+        }
+      });
+      const text = result.data.text.trim();
+
+      if (text) {
+        return {
+          text,
+          warning: candidate.label === "processed image" ? "" : `Private OCR worked using the ${candidate.label}.`
+        };
+      }
+
+      lastError = new Error(`Private OCR did not find text in the ${candidate.label}.`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Browser OCR could not read this photo.");
 }
 
 function syncStatusCopy(status: SyncStatus) {
@@ -789,15 +844,7 @@ export default function Home() {
       setPhotoPreview(prepared.dataUrl);
       setImportStatus("Reading photo privately on this device...");
 
-      const { recognize } = await import("tesseract.js");
-      const result = await recognize(prepared.file, "eng", {
-        logger: (message: { status?: string; progress?: number }) => {
-          if (message.status && typeof message.progress === "number") {
-            setImportStatus(`${message.status} ${Math.round(message.progress * 100)}%`);
-          }
-        }
-      });
-      const text = result.data.text.trim();
+      const { text, warning } = await recognizeRecipePhoto(prepared, photoFile, setImportStatus);
       const payload = draftFromOcrText(text, photoFile.name);
       applyDraft({
         ...payload,
@@ -806,6 +853,7 @@ export default function Home() {
           new Set([
             "Browser OCR was used for this draft. Review carefully before saving.",
             ...(preprocessingWarning ? [preprocessingWarning] : []),
+            ...(warning ? [warning] : []),
             ...payload.warnings
           ])
         )
@@ -828,34 +876,22 @@ export default function Home() {
 
   async function extractFromPhotoFallback() {
     if (!photoFile) return;
-    setImportStatus("Preparing online OCR fallback...");
+    setImportStatus("Sending photo to free online OCR...");
 
     try {
-      let prepared = compressedPhotoFile ? { file: compressedPhotoFile, dataUrl: photoPreview } : await prepareRecipePhoto(photoFile, 1300, 0.62);
-
-      if (prepared.file.size > 1_000_000) {
-        prepared = await prepareRecipePhoto(photoFile, 1000, 0.48);
-      }
-
-      setCompressedPhotoFile(prepared.file);
-      setPhotoPreview(prepared.dataUrl);
-
-      if (prepared.file.size > 1_000_000) {
-        throw new Error("The compressed image is still over the free OCR fallback limit. Retake the photo closer to the page or crop to just the recipe.");
-      }
-
       const formData = new FormData();
       formData.append("source", "ocr-space");
-      formData.append("photo", prepared.file);
+      formData.append("photo", photoFile);
 
       const response = await fetch("/api/import/photo", { method: "POST", body: formData });
-      const payload = (await response.json()) as ImportDraft | { error?: string };
+      const responseText = await response.text();
+      const payload = parseJsonResponse<ImportDraft | { error?: string }>(responseText, "Online OCR failed.");
 
       if (!response.ok || ("error" in payload && payload.error)) {
         throw new Error("error" in payload && payload.error ? payload.error : "Online OCR failed.");
       }
 
-      applyDraft({ ...(payload as ImportDraft), photoDataUrl: prepared.dataUrl });
+      applyDraft({ ...(payload as ImportDraft), photoDataUrl: photoPreview || (await fileToDataUrl(photoFile)) });
     } catch (error) {
       setImportStatus("");
       applyDraft({
@@ -1835,12 +1871,12 @@ function AddRecipeView({
               <label className="photo-choice">
                 <Camera size={22} />
                 <span>Take photo</span>
-                <input type="file" accept="image/*" capture="environment" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
+                <input type="file" accept="image/*,.heic,.heif" capture="environment" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
               </label>
               <label className="photo-choice">
                 <ImagePlus size={22} />
                 <span>Choose photo</span>
-                <input type="file" accept="image/*" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
+                <input type="file" accept="image/*,.heic,.heif" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
               </label>
             </div>
             {photoFile && <span className="selected-photo-name">{photoFile.name}</span>}
