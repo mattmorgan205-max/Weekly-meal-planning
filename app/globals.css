@@ -862,6 +862,41 @@ h3 {
   display: none;
 }
 
+.photo-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.photo-choice {
+  min-height: 92px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: #f8f0e4;
+  color: var(--green-dark);
+  text-align: center;
+}
+
+.photo-choice input {
+  display: none;
+}
+
+.photo-choice span {
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.selected-photo-name {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .photo-preview {
   width: 100%;
   max-height: 280px;
@@ -1233,7 +1268,8 @@ h3 {
   .manual-add,
   .cloud-form,
   .manual-meal-form,
-  .date-range-controls {
+  .date-range-controls,
+  .photo-actions {
     grid-template-columns: 1fr;
   }
 

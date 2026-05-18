@@ -1831,11 +1831,19 @@ function AddRecipeView({
 
         {importMode === "photo" && (
           <form className="import-box" onSubmit={onExtractPhoto}>
-            <label className="photo-drop">
-              <Camera size={28} />
-              <span>{photoFile ? photoFile.name : "Choose or take a recipe photo"}</span>
-              <input type="file" accept="image/*" capture="environment" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
-            </label>
+            <div className="photo-actions">
+              <label className="photo-choice">
+                <Camera size={22} />
+                <span>Take photo</span>
+                <input type="file" accept="image/*" capture="environment" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
+              </label>
+              <label className="photo-choice">
+                <ImagePlus size={22} />
+                <span>Choose photo</span>
+                <input type="file" accept="image/*" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
+              </label>
+            </div>
+            {photoFile && <span className="selected-photo-name">{photoFile.name}</span>}
             {photoPreview && <img className="photo-preview" src={photoPreview} alt="Recipe import preview" />}
             {importStatus && <span className="ocr-status">{importStatus}</span>}
             <button className="primary-button" type="submit" disabled={!photoFile || Boolean(importStatus)}>
