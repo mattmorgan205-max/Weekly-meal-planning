@@ -11,7 +11,7 @@ type OcrSpaceResponse = {
   ErrorMessage?: string | string[];
 };
 
-const ocrSpaceMaxBytes = 1_000_000;
+const ocrSpaceMaxBytes = 900_000;
 
 function bufferToBlob(buffer: Buffer, type: string) {
   const arrayBuffer = new ArrayBuffer(buffer.byteLength);
@@ -26,13 +26,14 @@ function stringifyServiceError(value: string | string[] | undefined) {
 
 async function preparePhotoForOcrSpace(file: File) {
   const originalBuffer = Buffer.from(await file.arrayBuffer());
+  let conversionError: unknown = null;
 
   try {
     const sharp = (await import("sharp")).default;
     let smallestBuffer: Buffer | null = null;
 
-    for (const maxSide of [1800, 1500, 1200, 1000, 850]) {
-      for (const quality of [78, 68, 58, 48, 40]) {
+    for (const maxSide of [1800, 1500, 1200, 1000, 850, 700, 560, 460]) {
+      for (const quality of [82, 72, 62, 52, 42, 34, 28]) {
         const output = await sharp(originalBuffer, { failOn: "none", limitInputPixels: false })
           .rotate()
           .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
@@ -63,7 +64,8 @@ async function preparePhotoForOcrSpace(file: File) {
         warning: "The image was compressed server-side before online OCR."
       };
     }
-  } catch {
+  } catch (error) {
+    conversionError = error;
     if (originalBuffer.length <= ocrSpaceMaxBytes) {
       return {
         blob: bufferToBlob(originalBuffer, file.type || "application/octet-stream"),
@@ -81,7 +83,20 @@ async function preparePhotoForOcrSpace(file: File) {
     };
   }
 
-  throw new Error("This image could not be compressed under the free OCR limit. Try cropping to just the recipe page or exporting it as a smaller JPEG.");
+  const fileName = file.name.toLowerCase();
+  const likelyHeic = fileName.endsWith(".heic") || fileName.endsWith(".heif") || file.type.includes("heic") || file.type.includes("heif");
+
+  if (conversionError) {
+    throw new Error(
+      likelyHeic
+        ? "This looks like an iPhone HEIC photo. Export/share it as JPEG, or on iPhone use Photos > Share > Options > Most Compatible, then upload that JPEG."
+        : "The server could not decode this image for online OCR. Export it as a standard JPEG or PNG, then try again."
+    );
+  }
+
+  throw new Error(
+    "This photo is still too large for the free OCR limit after heavy compression. Crop to just the recipe text or export a smaller JPEG, then try again."
+  );
 }
 
 async function callOcrSpace(apiKey: string, blob: Blob, fileName: string, engine: "1" | "2") {

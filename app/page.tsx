@@ -170,6 +170,17 @@ function parseNumberInput(value: string) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function likelyHeicPhoto(file: File) {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".heic") || name.endsWith(".heif") || file.type.includes("heic") || file.type.includes("heif");
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1_000_000) return `${Math.round((bytes / 1_000_000) * 10) / 10} MB`;
+  if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`;
+  return `${bytes} bytes`;
+}
+
 function fileToDataUrl(file: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -859,6 +870,9 @@ export default function Home() {
         )
       });
     } catch (error) {
+      const heicAdvice = likelyHeicPhoto(photoFile)
+        ? "This looks like an iPhone HEIC photo. Export/share it as JPEG, or use iPhone Photos > Share > Options > Most Compatible."
+        : "";
       applyDraft({
         ...emptyDraft(),
         title: photoFile.name.replace(/\.[^.]+$/, ""),
@@ -866,6 +880,8 @@ export default function Home() {
         photoDataUrl: photoPreview,
         warnings: [
           error instanceof Error ? error.message : "Browser OCR could not read this photo.",
+          `Selected file: ${photoFile.name || "photo"} (${formatFileSize(photoFile.size)}${photoFile.type ? `, ${photoFile.type}` : ""}).`,
+          ...(heicAdvice ? [heicAdvice] : []),
           "Try the free online OCR fallback or type/paste the recipe text into the review fields."
         ]
       });
