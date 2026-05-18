@@ -24,6 +24,7 @@ export type Recipe = {
   id: string;
   title: string;
   servings: number;
+  mealTypes: MealSlot[];
   prepMinutes?: number;
   cookMinutes?: number;
   tags: string[];
@@ -42,7 +43,8 @@ export type PlannedMeal = {
   id: string;
   date: string;
   slot: MealSlot;
-  recipeId: string;
+  recipeId?: string;
+  manualTitle?: string;
   peopleCount: number;
   notes?: string;
   producesLeftovers?: boolean;
@@ -75,6 +77,7 @@ export type ImportDraft = {
   id: string;
   title: string;
   servings: number;
+  mealTypes: MealSlot[];
   prepMinutes?: number;
   cookMinutes?: number;
   tags: string[];
@@ -96,6 +99,7 @@ export type AppState = {
 };
 
 export const mealSlots: MealSlot[] = ["breakfast", "lunch", "dinner", "snack"];
+const mealSlotSet = new Set<MealSlot>(mealSlots);
 
 export const groceryCategories: GroceryCategory[] = [
   "Produce",
@@ -186,6 +190,12 @@ export function createId(prefix = "id") {
 
 export function labelMealSlot(slot: MealSlot) {
   return slotLabels[slot];
+}
+
+export function normalizeMealTypes(mealTypes?: MealSlot[], fallback: MealSlot = "dinner") {
+  const normalized = (mealTypes ?? []).filter((slot): slot is MealSlot => mealSlotSet.has(slot));
+  const unique = normalized.filter((slot, index, slots) => slots.indexOf(slot) === index);
+  return unique.length > 0 ? unique : [fallback];
 }
 
 export function formatDateKey(date: Date) {
@@ -299,6 +309,29 @@ export function mergeAutomaticRecipeTags(manualTags: string[], recipe: Pick<Reci
   const withoutOldAutoTags = manual.filter((tag) => !automaticTagSet.has(tag));
   const merged = [...withoutOldAutoTags, ...inferAutomaticRecipeTags(recipe)];
   return merged.filter((tag, index, tags) => tags.indexOf(tag) === index);
+}
+
+export function inferRecipeMealTypes(recipe: Pick<Recipe, "title" | "tags" | "ingredients">) {
+  const text = [recipe.title, ...recipe.tags, ...recipe.ingredients.map((ingredient) => ingredient.name)].join(" ").toLowerCase();
+  const inferred: MealSlot[] = [];
+
+  if (/\b(breakfast|brunch|oats|porridge|cereal|pancake|pancakes|granola|toast|smoothie|omelette|yoghurt|yogurt)\b/.test(text)) {
+    inferred.push("breakfast");
+  }
+
+  if (/\b(lunch|sandwich|wrap|salad|soup|leftover|packed lunch|lunchbox)\b/.test(text)) {
+    inferred.push("lunch");
+  }
+
+  if (/\b(snack|snacks|bites|dip|muffin|cookies|cookie|bar|bars)\b/.test(text)) {
+    inferred.push("snack");
+  }
+
+  if (/\b(dinner|tea|supper|roast|traybake|curry|pasta|stir fry|stir-fry|tacos|chilli|chili|stew|risotto)\b/.test(text)) {
+    inferred.push("dinner");
+  }
+
+  return normalizeMealTypes(inferred, "dinner");
 }
 
 export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMinutes">) {
@@ -430,6 +463,7 @@ export function parseRecipeText(text: string, importedFrom: ImportDraft["importe
     id: createId("draft"),
     title,
     servings,
+    mealTypes: inferRecipeMealTypes({ title, tags: [], ingredients }),
     tags: [],
     ingredients,
     instructions: methodLines.length > 0 ? methodLines : ["Add cooking instructions."],
@@ -446,6 +480,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     id: createId("recipe"),
     title: draft.title.trim() || "Untitled recipe",
     servings: Math.max(1, Number(draft.servings) || 4),
+    mealTypes: normalizeMealTypes(draft.mealTypes),
     prepMinutes: draft.prepMinutes,
     cookMinutes: draft.cookMinutes,
     tags: draft.tags,
@@ -469,6 +504,7 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     id: createId("draft"),
     title: recipe.title,
     servings: recipe.servings,
+    mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
     tags: recipe.tags,
@@ -538,6 +574,7 @@ export function generateShoppingList(
   const buckets = new Map<string, Bucket>();
 
   plannedMeals.forEach((meal) => {
+    if (!meal.recipeId) return;
     const recipe = recipes.find((item) => item.id === meal.recipeId);
     if (!recipe) return;
 
@@ -617,6 +654,7 @@ export function seedState(): AppState {
       id: "recipe_lentil_ragu",
       title: "Lentil ragu with pasta",
       servings: 4,
+      mealTypes: ["dinner"],
       prepMinutes: 10,
       cookMinutes: 35,
       tags: ["vegetarian", "batch cook"],
@@ -638,6 +676,7 @@ export function seedState(): AppState {
       id: "recipe_traybake",
       title: "Lemon chicken traybake",
       servings: 4,
+      mealTypes: ["dinner"],
       prepMinutes: 15,
       cookMinutes: 45,
       tags: ["family", "low effort"],
@@ -658,6 +697,7 @@ export function seedState(): AppState {
       id: "recipe_oats",
       title: "Apple cinnamon overnight oats",
       servings: 2,
+      mealTypes: ["breakfast"],
       prepMinutes: 8,
       cookMinutes: 0,
       tags: ["breakfast", "make ahead"],

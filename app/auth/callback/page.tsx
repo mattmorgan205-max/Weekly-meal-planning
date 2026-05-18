@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 export default function AuthCallbackPage() {
@@ -16,8 +17,25 @@ export default function AuthCallbackPage() {
 
     const url = new URL(window.location.href);
     const code = url.searchParams.get("code");
+    const tokenHash = url.searchParams.get("token_hash");
+    const type = (url.searchParams.get("type") || "magiclink") as EmailOtpType;
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const accessToken = hashParams.get("access_token");
+    const refreshToken = hashParams.get("refresh_token");
+    const urlError = url.searchParams.get("error_description") || hashParams.get("error_description");
 
-    const sessionPromise = code ? client.auth.exchangeCodeForSession(code) : client.auth.getSession();
+    if (urlError) {
+      setMessage(urlError);
+      return;
+    }
+
+    const sessionPromise = code
+      ? client.auth.exchangeCodeForSession(code)
+      : accessToken && refreshToken
+        ? client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+        : tokenHash
+          ? client.auth.verifyOtp({ token_hash: tokenHash, type })
+          : client.auth.getSession();
 
     sessionPromise
       .then(({ data, error }) => {

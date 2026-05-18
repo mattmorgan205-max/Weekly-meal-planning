@@ -417,6 +417,10 @@ h3 {
   color: var(--green-dark);
 }
 
+.manual-meal-main strong {
+  color: var(--tomato);
+}
+
 .meal-card strong,
 .shopping-text strong {
   display: block;
@@ -658,6 +662,40 @@ h3 {
 .picker-list {
   display: grid;
   gap: 8px;
+}
+
+.meal-group-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.meal-group-tabs button {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefa;
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.meal-group-tabs button.active {
+  border-color: #a6cbb5;
+  background: var(--mint);
+  color: var(--green-dark);
+}
+
+.manual-meal-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.picker-section-label {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .picker-recipe {
@@ -905,6 +943,18 @@ h3 {
   grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.4fr) minmax(150px, 0.45fr) auto;
 }
 
+.date-range-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(132px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.date-range-controls label {
+  gap: 4px;
+  font-size: 0.76rem;
+}
+
 .toggle-line {
   grid-auto-flow: column;
   grid-template-columns: auto 1fr;
@@ -1013,6 +1063,10 @@ h3 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.meal-type-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .toggle-tile {
@@ -1177,11 +1231,18 @@ h3 {
   }
 
   .manual-add,
-  .cloud-form {
+  .cloud-form,
+  .manual-meal-form,
+  .date-range-controls {
     grid-template-columns: 1fr;
   }
 
   .segmented-control {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .meal-group-tabs,
+  .meal-type-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 }

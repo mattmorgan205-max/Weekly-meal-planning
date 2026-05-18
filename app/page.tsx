@@ -41,9 +41,11 @@ import {
   generateShoppingList,
   groceryCategories,
   inferCategory,
+  inferRecipeMealTypes,
   labelMealSlot,
   mealSlots,
   mergeAutomaticRecipeTags,
+  normalizeMealTypes,
   normalizeUnit,
   parseIngredientLine,
   parseRecipeText,
@@ -66,6 +68,7 @@ import { getSupabaseClient } from "@/lib/supabase-client";
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
 type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error";
+type MealPickerGroup = MealSlot | "all";
 
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
@@ -76,6 +79,21 @@ const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   month: "short"
 });
 
+function hydrateRecipe(recipe: Recipe): Recipe {
+  return {
+    ...recipe,
+    mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0])
+  };
+}
+
+function hydratePlannedMeal(meal: AppState["plannedMeals"][number], defaultPeople: number): AppState["plannedMeals"][number] {
+  return {
+    ...meal,
+    peopleCount: Math.max(1, Number(meal.peopleCount) || defaultPeople),
+    manualTitle: meal.manualTitle?.trim() || undefined
+  };
+}
+
 function hydrateState(value: unknown): AppState {
   const parsed = (value ?? {}) as Partial<AppState>;
   const seeded = seedState();
@@ -83,6 +101,10 @@ function hydrateState(value: unknown): AppState {
   return {
     ...seeded,
     ...parsed,
+    recipes: (parsed.recipes ?? seeded.recipes).map(hydrateRecipe),
+    plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
+      .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople))
+      .filter((meal) => meal.recipeId || meal.manualTitle),
     settings: { ...seeded.settings, ...parsed.settings },
     shoppingChecks: parsed.shoppingChecks ?? {},
     hiddenShoppingItems: parsed.hiddenShoppingItems ?? {},
@@ -106,6 +128,7 @@ function emptyDraft(): ImportDraft {
     id: createId("draft"),
     title: "",
     servings: 4,
+    mealTypes: ["dinner"],
     tags: [],
     ingredients: [
       {
@@ -125,6 +148,10 @@ function emptyDraft(): ImportDraft {
 
 function classNames(...values: Array<string | false | undefined>) {
   return values.filter(Boolean).join(" ");
+}
+
+function normalizeDateRange(startDate: string, endDate: string) {
+  return startDate <= endDate ? { startDate, endDate } : { startDate: endDate, endDate: startDate };
 }
 
 function parseNumberInput(value: string) {
@@ -243,6 +270,8 @@ export default function Home() {
   const [hasHydratedLocalState, setHasHydratedLocalState] = useState(false);
   const [activeView, setActiveView] = useState<View>("planner");
   const [weekStart, setWeekStart] = useState(() => formatDateKey(startOfWeek(new Date())));
+  const [shoppingStartDate, setShoppingStartDate] = useState(() => formatDateKey(startOfWeek(new Date())));
+  const [shoppingEndDate, setShoppingEndDate] = useState(() => formatDateKey(addDays(startOfWeek(new Date()), 6)));
   const [recipeSearch, setRecipeSearch] = useState("");
   const [mealPicker, setMealPicker] = useState<{ date: string; slot: MealSlot } | null>(null);
   const [mealPickerQuery, setMealPickerQuery] = useState("");
@@ -284,17 +313,18 @@ export default function Home() {
     [state.settings.hiddenSlots]
   );
   const days = useMemo(() => weekDates(weekStart), [weekStart]);
+  const shoppingDateRange = useMemo(() => normalizeDateRange(shoppingStartDate, shoppingEndDate), [shoppingStartDate, shoppingEndDate]);
   const shoppingList = useMemo(
     () =>
       generateShoppingList(
         state.recipes,
-        state.plannedMeals.filter((meal) => days.some((date) => formatDateKey(date) === meal.date)),
+        state.plannedMeals.filter((meal) => meal.date >= shoppingDateRange.startDate && meal.date <= shoppingDateRange.endDate),
         state.settings,
         state.shoppingChecks,
         state.hiddenShoppingItems,
         state.manualShoppingItems
       ),
-    [days, state]
+    [shoppingDateRange, state]
   );
   const filteredRecipes = useMemo(() => {
     const query = recipeSearch.toLowerCase().trim();
@@ -311,7 +341,7 @@ export default function Home() {
   }, [recipeSearch, state.recipes]);
   const recipeFrequencies = useMemo(() => {
     return state.plannedMeals.reduce<Record<string, number>>((counts, meal) => {
-      counts[meal.recipeId] = (counts[meal.recipeId] ?? 0) + 1;
+      if (meal.recipeId) counts[meal.recipeId] = (counts[meal.recipeId] ?? 0) + 1;
       return counts;
     }, {});
   }, [state.plannedMeals]);
@@ -332,7 +362,7 @@ export default function Home() {
       });
   }, [mealPickerQuery, recipeFrequencies, state.recipes]);
   const selectedRecipe = selectedRecipeId ? state.recipes.find((recipe) => recipe.id === selectedRecipeId) ?? null : null;
-  const plannedRecipeIds = new Set(state.plannedMeals.map((meal) => meal.recipeId));
+  const plannedRecipeIds = new Set(state.plannedMeals.map((meal) => meal.recipeId).filter((recipeId): recipeId is string => Boolean(recipeId)));
   const weekMeals = state.plannedMeals.filter((meal) => days.some((date) => formatDateKey(date) === meal.date));
   const generatedCount = shoppingList.filter((item) => !item.manual).length;
   const checkedCount = shoppingList.filter((item) => item.checked).length;
@@ -422,8 +452,12 @@ export default function Home() {
   }
 
   function applyDraft(nextDraft: ImportDraft) {
-    setDraft(nextDraft);
-    setTagInput(nextDraft.tags.join(", "));
+    const hydratedDraft = {
+      ...nextDraft,
+      mealTypes: normalizeMealTypes(nextDraft.mealTypes, inferRecipeMealTypes(nextDraft)[0])
+    };
+    setDraft(hydratedDraft);
+    setTagInput(hydratedDraft.tags.join(", "));
   }
 
   function addPlannedMeal(date: string, slot: MealSlot, recipeId: string) {
@@ -438,6 +472,28 @@ export default function Home() {
           date,
           slot,
           recipeId,
+          peopleCount: current.settings.defaultPeople
+        }
+      ],
+      hiddenShoppingItems: {}
+    }));
+    setMealPicker(null);
+    setMealPickerQuery("");
+  }
+
+  function addManualPlannedMeal(date: string, slot: MealSlot, title: string) {
+    const manualTitle = title.trim();
+    if (!manualTitle) return;
+
+    updateState((current) => ({
+      ...current,
+      plannedMeals: [
+        ...current.plannedMeals,
+        {
+          id: createId("meal"),
+          date,
+          slot,
+          manualTitle,
           peopleCount: current.settings.defaultPeople
         }
       ],
@@ -482,6 +538,7 @@ export default function Home() {
           date: nextDay,
           slot: "lunch",
           recipeId: meal.recipeId,
+          manualTitle: meal.recipeId ? undefined : meal.manualTitle,
           peopleCount: Math.max(1, Math.floor(meal.peopleCount / 2)),
           notes: "Leftovers"
         }
@@ -525,6 +582,7 @@ export default function Home() {
       ...draft,
       title: draft.title.trim() || "Untitled recipe",
       servings: Math.max(1, Number(draft.servings) || 4),
+      mealTypes: normalizeMealTypes(draft.mealTypes),
       tags: parseTags(tagInput),
       ingredients: draft.ingredients
         .filter((ingredient) => ingredient.name.trim())
@@ -1130,12 +1188,23 @@ export default function Home() {
           <ShoppingView
             items={shoppingList}
             settings={state.settings}
+            startDate={shoppingStartDate}
+            endDate={shoppingEndDate}
+            rangeStartDate={shoppingDateRange.startDate}
+            rangeEndDate={shoppingDateRange.endDate}
             manualItemName={manualItemName}
             manualItemQuantity={manualItemQuantity}
             manualItemCategory={manualItemCategory}
+            setStartDate={setShoppingStartDate}
+            setEndDate={setShoppingEndDate}
             setManualItemName={setManualItemName}
             setManualItemQuantity={setManualItemQuantity}
             setManualItemCategory={setManualItemCategory}
+            onResetDateRange={() => {
+              const currentWeekStart = startOfWeek(new Date());
+              setShoppingStartDate(formatDateKey(currentWeekStart));
+              setShoppingEndDate(formatDateKey(addDays(currentWeekStart, 6)));
+            }}
             onToggleIncludeStaples={(includeStaples) => updateSettings({ includeStaples })}
             onAddManualItem={addManualShoppingItem}
             onToggleItem={toggleShoppingItem}
@@ -1173,6 +1242,7 @@ export default function Home() {
             query={mealPickerQuery}
             setQuery={setMealPickerQuery}
             onAdd={(recipeId) => addPlannedMeal(mealPicker.date, mealPicker.slot, recipeId)}
+            onAddManual={(title) => addManualPlannedMeal(mealPicker.date, mealPicker.slot, title)}
             onClose={() => setMealPicker(null)}
           />
         )}
@@ -1309,8 +1379,14 @@ function PlannerView({
 
                     <div className="meal-list">
                       {slotMeals.map((meal) => {
-                        const recipe = recipes.find((item) => item.id === meal.recipeId);
-                        if (!recipe) return null;
+                        const recipe = meal.recipeId ? recipes.find((item) => item.id === meal.recipeId) : null;
+                        const title = recipe?.title ?? meal.manualTitle;
+                        if (!title) return null;
+                        const mealMeta = recipe
+                          ? `${recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}${
+                              (recipeFrequencies[recipe.id] ?? 0) > 1 ? ` · planned ${recipeFrequencies[recipe.id]}x` : ""
+                            }`
+                          : meal.notes || "Manual plan";
 
                         return (
                           <article
@@ -1322,13 +1398,17 @@ function PlannerView({
                               event.dataTransfer.setData("text/plain", meal.id);
                             }}
                           >
-                            <button className="meal-card-main" onClick={() => onOpenRecipe(recipe.id)}>
-                              <strong>{recipe.title}</strong>
-                              <span>
-                                {recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}
-                                {(recipeFrequencies[recipe.id] ?? 0) > 1 ? ` · planned ${recipeFrequencies[recipe.id]}x` : ""}
-                              </span>
-                            </button>
+                            {recipe ? (
+                              <button className="meal-card-main" onClick={() => onOpenRecipe(recipe.id)}>
+                                <strong>{title}</strong>
+                                <span>{mealMeta}</span>
+                              </button>
+                            ) : (
+                              <div className="meal-card-main manual-meal-main">
+                                <strong>{title}</strong>
+                                <span>{mealMeta}</span>
+                              </div>
+                            )}
                             <div className="meal-actions">
                               <label className="mini-input">
                                 <Users size={15} />
@@ -1341,9 +1421,11 @@ function PlannerView({
                                   onChange={(event) => onUpdateMeal(meal.id, { peopleCount: Number(event.target.value) || 1 })}
                                 />
                               </label>
-                              <button className="icon-button" title="Add leftovers to tomorrow lunch" onClick={() => onAddLeftovers(meal)}>
-                                <RefreshCw size={16} />
-                              </button>
+                              {recipe ? (
+                                <button className="icon-button" title="Add leftovers to tomorrow lunch" onClick={() => onAddLeftovers(meal)}>
+                                  <RefreshCw size={16} />
+                                </button>
+                              ) : null}
                               <button className="icon-button danger" title="Remove meal" onClick={() => onRemoveMeal(meal.id)}>
                                 <Trash2 size={16} />
                               </button>
@@ -1415,7 +1497,7 @@ function RecipeLibrary({
                   <Heart size={18} fill={recipe.favorite ? "currentColor" : "none"} />
                 </button>
               </div>
-              <p>{recipe.ingredients.length} ingredients · serves {recipe.servings}</p>
+              <p>{recipe.mealTypes.map(labelMealSlot).join(", ")} · {recipe.ingredients.length} ingredients · serves {recipe.servings}</p>
               <div className="tag-row">
                 {recipe.tags.map((tag) => (
                   <span key={tag}>{tag}</span>
@@ -1446,6 +1528,7 @@ function MealPickerModal({
   query,
   setQuery,
   onAdd,
+  onAddManual,
   onClose
 }: {
   target: { date: string; slot: MealSlot };
@@ -1454,10 +1537,19 @@ function MealPickerModal({
   query: string;
   setQuery: (value: string) => void;
   onAdd: (recipeId: string) => void;
+  onAddManual: (title: string) => void;
   onClose: () => void;
 }) {
-  const frequentRecipes = recipes.filter((recipe) => (recipeFrequencies[recipe.id] ?? 0) > 0).slice(0, 5);
-  const visibleRecipes = query.trim() ? recipes : frequentRecipes.length > 0 ? frequentRecipes : recipes.slice(0, 8);
+  const [selectedGroup, setSelectedGroup] = useState<MealPickerGroup>(target.slot);
+  const [manualMealTitle, setManualMealTitle] = useState("");
+  const groupedRecipes = recipes.filter((recipe) => selectedGroup === "all" || recipe.mealTypes.includes(selectedGroup));
+  const frequentRecipes = groupedRecipes.filter((recipe) => (recipeFrequencies[recipe.id] ?? 0) > 0).slice(0, 5);
+  const mainRecipes = query.trim()
+    ? groupedRecipes
+    : frequentRecipes.length > 0
+      ? groupedRecipes.filter((recipe) => !frequentRecipes.some((frequent) => frequent.id === recipe.id)).slice(0, 10)
+      : groupedRecipes.slice(0, 10);
+  const selectedGroupLabel = selectedGroup === "all" ? "All meals" : labelMealSlot(selectedGroup);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1479,23 +1571,80 @@ function MealPickerModal({
           <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search meals, tags, ingredients" />
         </label>
 
-        <div className="picker-list">
-          {visibleRecipes.map((recipe) => (
-            <button className="picker-recipe" key={recipe.id} onClick={() => onAdd(recipe.id)}>
-              <span>
-                <strong>{recipe.title}</strong>
-                <small>
-                  {recipe.tags.slice(0, 3).join(" · ") || `${recipe.ingredients.length} ingredients`}
-                  {(recipeFrequencies[recipe.id] ?? 0) > 0 ? ` · chosen ${recipeFrequencies[recipe.id]}x` : ""}
-                </small>
-              </span>
-              <Plus size={18} />
+        <div className="meal-group-tabs" aria-label="Recipe meal group">
+          {mealSlots.map((slot) => (
+            <button
+              className={classNames(selectedGroup === slot && "active")}
+              key={slot}
+              type="button"
+              onClick={() => setSelectedGroup(slot)}
+            >
+              {labelMealSlot(slot)}
             </button>
           ))}
-          {visibleRecipes.length === 0 && <p className="muted">No matching meals yet.</p>}
+          <button className={classNames(selectedGroup === "all" && "active")} type="button" onClick={() => setSelectedGroup("all")}>
+            All
+          </button>
+        </div>
+
+        <form
+          className="manual-meal-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onAddManual(manualMealTitle);
+          }}
+        >
+          <input value={manualMealTitle} onChange={(event) => setManualMealTitle(event.target.value)} placeholder="Type a meal, e.g. takeaway" />
+          <button className="icon-text-button" type="submit" disabled={!manualMealTitle.trim()}>
+            <Plus size={18} />
+            Add typed meal
+          </button>
+        </form>
+
+        <div className="picker-list">
+          {!query.trim() && frequentRecipes.length > 0 && (
+            <>
+              <span className="picker-section-label">Most chosen {selectedGroupLabel.toLowerCase()}</span>
+              {frequentRecipes.map((recipe) => (
+                <RecipePickerButton key={recipe.id} recipe={recipe} recipeFrequencies={recipeFrequencies} onAdd={onAdd} />
+              ))}
+            </>
+          )}
+
+          {(mainRecipes.length > 0 || groupedRecipes.length === 0) && (
+            <span className="picker-section-label">{query.trim() ? `Matching ${selectedGroupLabel.toLowerCase()}` : `${selectedGroupLabel} recipes`}</span>
+          )}
+          {mainRecipes.map((recipe) => (
+            <RecipePickerButton key={recipe.id} recipe={recipe} recipeFrequencies={recipeFrequencies} onAdd={onAdd} />
+          ))}
+          {groupedRecipes.length === 0 && <p className="muted">No matching meals in this group yet.</p>}
         </div>
       </section>
     </div>
+  );
+}
+
+function RecipePickerButton({
+  recipe,
+  recipeFrequencies,
+  onAdd
+}: {
+  recipe: Recipe;
+  recipeFrequencies: Record<string, number>;
+  onAdd: (recipeId: string) => void;
+}) {
+  return (
+    <button className="picker-recipe" onClick={() => onAdd(recipe.id)}>
+      <span>
+        <strong>{recipe.title}</strong>
+        <small>
+          {recipe.mealTypes.map(labelMealSlot).join(" · ")}
+          {recipe.tags.slice(0, 2).length ? ` · ${recipe.tags.slice(0, 2).join(" · ")}` : ""}
+          {(recipeFrequencies[recipe.id] ?? 0) > 0 ? ` · chosen ${recipeFrequencies[recipe.id]}x` : ""}
+        </small>
+      </span>
+      <Plus size={18} />
+    </button>
   );
 }
 
@@ -1520,6 +1669,7 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe; onClose: () =>
             <Users size={16} />
             Serves {recipe.servings}
           </span>
+          <span>{recipe.mealTypes.map(labelMealSlot).join(", ")}</span>
           <span>
             <Clock size={16} />
             {totalMinutes ? `${totalMinutes} mins total` : "Time not set"}
@@ -1754,6 +1904,36 @@ function AddRecipeView({
           </label>
         </div>
 
+        <div className="editor-section">
+          <div className="section-heading">
+            <h3>Meal group</h3>
+          </div>
+          <div className="toggle-grid meal-type-grid">
+            {mealSlots.map((slot) => {
+              const active = draft.mealTypes.includes(slot);
+              return (
+                <button
+                  className={classNames("toggle-tile", active && "active")}
+                  key={slot}
+                  type="button"
+                  onClick={() =>
+                    setDraft((current) => {
+                      const currentlyActive = current.mealTypes.includes(slot);
+                      const mealTypes = currentlyActive
+                        ? current.mealTypes.filter((mealType) => mealType !== slot)
+                        : [...current.mealTypes, slot];
+
+                      return { ...current, mealTypes: mealTypes.length ? mealTypes : [slot] };
+                    })
+                  }
+                >
+                  {labelMealSlot(slot)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <label>
           Tags
           <input
@@ -1861,12 +2041,19 @@ function AddRecipeView({
 function ShoppingView({
   items,
   settings,
+  startDate,
+  endDate,
+  rangeStartDate,
+  rangeEndDate,
   manualItemName,
   manualItemQuantity,
   manualItemCategory,
+  setStartDate,
+  setEndDate,
   setManualItemName,
   setManualItemQuantity,
   setManualItemCategory,
+  onResetDateRange,
   onToggleIncludeStaples,
   onAddManualItem,
   onToggleItem,
@@ -1878,12 +2065,19 @@ function ShoppingView({
 }: {
   items: ShoppingListItem[];
   settings: AppState["settings"];
+  startDate: string;
+  endDate: string;
+  rangeStartDate: string;
+  rangeEndDate: string;
   manualItemName: string;
   manualItemQuantity: string;
   manualItemCategory: GroceryCategory;
+  setStartDate: (value: string) => void;
+  setEndDate: (value: string) => void;
   setManualItemName: (value: string) => void;
   setManualItemQuantity: (value: string) => void;
   setManualItemCategory: (value: GroceryCategory) => void;
+  onResetDateRange: () => void;
   onToggleIncludeStaples: (value: boolean) => void;
   onAddManualItem: (event: FormEvent) => void;
   onToggleItem: (id: string, checked: boolean) => void;
@@ -1904,10 +2098,24 @@ function ShoppingView({
     <div className="view-stack">
       <section className="toolbar-band">
         <div>
-          <p className="eyebrow">Generated from this week</p>
+          <p className="eyebrow">Generated from selected dates</p>
           <h2>{items.length} shopping items</h2>
+          <p className="muted">
+            {dateFormatter.format(new Date(`${rangeStartDate}T12:00:00`))} to {dateFormatter.format(new Date(`${rangeEndDate}T12:00:00`))}
+          </p>
         </div>
         <div className="button-row">
+          <div className="date-range-controls">
+            <label>
+              From
+              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+            </label>
+          </div>
+          <button className="text-button" onClick={onResetDateRange}>This week</button>
           <label className="toggle-line">
             <input type="checkbox" checked={settings.includeStaples} onChange={(event) => onToggleIncludeStaples(event.target.checked)} />
             Include staples

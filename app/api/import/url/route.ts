@@ -1,4 +1,4 @@
-import { parseIngredientLine, parseRecipeText, type ImportDraft } from "@/lib/domain";
+import { inferRecipeMealTypes, parseIngredientLine, parseRecipeText, type ImportDraft } from "@/lib/domain";
 
 type JsonLdRecipe = {
   "@type"?: string | string[];
@@ -60,6 +60,7 @@ function parseDurationMinutes(value?: string) {
 function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string): ImportDraft {
   const yieldText = Array.isArray(recipe.recipeYield) ? recipe.recipeYield[0] : recipe.recipeYield;
   const servings = Number(yieldText?.match(/\d+/)?.[0]) || 4;
+  const ingredients = (recipe.recipeIngredient ?? []).map(parseIngredientLine);
   const instructions = Array.isArray(recipe.recipeInstructions)
     ? recipe.recipeInstructions
         .map((step) => (typeof step === "string" ? step : step.text || step.name || ""))
@@ -72,10 +73,11 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string): ImportDraft {
     id: crypto.randomUUID(),
     title: recipe.name || "Imported recipe",
     servings,
+    mealTypes: inferRecipeMealTypes({ title: recipe.name || "Imported recipe", tags: ["url import"], ingredients }),
     prepMinutes: parseDurationMinutes(recipe.prepTime),
     cookMinutes: parseDurationMinutes(recipe.cookTime),
     tags: ["url import"],
-    ingredients: (recipe.recipeIngredient ?? []).map(parseIngredientLine),
+    ingredients,
     instructions,
     sourceUrl,
     warnings: recipe.recipeIngredient?.length

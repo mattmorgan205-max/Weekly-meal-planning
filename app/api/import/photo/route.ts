@@ -71,6 +71,7 @@ export async function POST(request: Request) {
     id: createId("draft"),
     title: file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ") || "Recipe book import",
     servings: 4,
+    mealTypes: ["dinner"],
     tags: ["photo import"],
     ingredients: [],
     instructions: ["Review the photo and add or correct the extracted method."],
