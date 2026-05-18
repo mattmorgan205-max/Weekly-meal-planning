@@ -146,19 +146,48 @@ function loadImage(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Image could not be loaded."));
+    image.onerror = () => reject(new Error("Image could not be loaded. Try exporting the recipe photo as a standard JPEG or PNG."));
     image.src = src;
   });
 }
 
+async function loadImageSource(file: File) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" } as ImageBitmapOptions);
+      return {
+        source: bitmap as CanvasImageSource,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => bitmap.close()
+      };
+    } catch {
+      // Fall back to data URL loading below. Some browsers reject certain JPEG encodings here.
+    }
+  }
+
+  const dataUrl = await fileToDataUrl(file);
+  const image = await loadImage(dataUrl);
+
+  if (!image.naturalWidth || !image.naturalHeight) {
+    throw new Error("Image could not be loaded. Try exporting the recipe photo as a standard JPEG or PNG.");
+  }
+
+  return {
+    source: image as CanvasImageSource,
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    close: undefined
+  };
+}
+
 async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
-  const objectUrl = URL.createObjectURL(file);
+  const loaded = await loadImageSource(file);
 
   try {
-    const image = await loadImage(objectUrl);
-    const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
-    const width = Math.max(1, Math.round(image.width * scale));
-    const height = Math.max(1, Math.round(image.height * scale));
+    const scale = Math.min(1, maxSide / Math.max(loaded.width, loaded.height));
+    const width = Math.max(1, Math.round(loaded.width * scale));
+    const height = Math.max(1, Math.round(loaded.height * scale));
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d", { willReadFrequently: true });
 
@@ -166,7 +195,7 @@ async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
 
     canvas.width = width;
     canvas.height = height;
-    context.drawImage(image, 0, 0, width, height);
+    context.drawImage(loaded.source, 0, 0, width, height);
 
     const imageData = context.getImageData(0, 0, width, height);
     const contrast = 1.18;
@@ -192,7 +221,7 @@ async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
       dataUrl: await fileToDataUrl(compressedFile)
     };
   } finally {
-    URL.revokeObjectURL(objectUrl);
+    loaded.close?.();
   }
 }
 
@@ -682,7 +711,22 @@ export default function Home() {
     setImportStatus("Preparing photo...");
 
     try {
-      const prepared = await prepareRecipePhoto(photoFile);
+      let prepared: { file: File; dataUrl: string };
+      let preprocessingWarning = "";
+
+      try {
+        prepared = await prepareRecipePhoto(photoFile);
+      } catch (error) {
+        preprocessingWarning =
+          error instanceof Error
+            ? `${error.message} Private OCR is trying the original file instead.`
+            : "Photo preprocessing failed. Private OCR is trying the original file instead.";
+        prepared = {
+          file: photoFile,
+          dataUrl: photoPreview || (await fileToDataUrl(photoFile))
+        };
+      }
+
       setCompressedPhotoFile(prepared.file);
       setPhotoPreview(prepared.dataUrl);
       setImportStatus("Reading photo privately on this device...");
@@ -700,7 +744,13 @@ export default function Home() {
       applyDraft({
         ...payload,
         photoDataUrl: prepared.dataUrl,
-        warnings: Array.from(new Set(["Browser OCR was used for this draft. Review carefully before saving.", ...payload.warnings]))
+        warnings: Array.from(
+          new Set([
+            "Browser OCR was used for this draft. Review carefully before saving.",
+            ...(preprocessingWarning ? [preprocessingWarning] : []),
+            ...payload.warnings
+          ])
+        )
       });
     } catch (error) {
       applyDraft({
@@ -723,12 +773,17 @@ export default function Home() {
     setImportStatus("Preparing online OCR fallback...");
 
     try {
-      const prepared = compressedPhotoFile ? { file: compressedPhotoFile, dataUrl: photoPreview } : await prepareRecipePhoto(photoFile, 1300, 0.62);
+      let prepared = compressedPhotoFile ? { file: compressedPhotoFile, dataUrl: photoPreview } : await prepareRecipePhoto(photoFile, 1300, 0.62);
+
+      if (prepared.file.size > 1_000_000) {
+        prepared = await prepareRecipePhoto(photoFile, 1000, 0.48);
+      }
+
       setCompressedPhotoFile(prepared.file);
       setPhotoPreview(prepared.dataUrl);
 
       if (prepared.file.size > 1_000_000) {
-        throw new Error("The compressed image is still over the free OCR fallback limit. Retake the photo closer to the page.");
+        throw new Error("The compressed image is still over the free OCR fallback limit. Retake the photo closer to the page or crop to just the recipe.");
       }
 
       const formData = new FormData();
