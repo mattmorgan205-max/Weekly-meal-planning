@@ -14,15 +14,19 @@ export default function AuthCallbackPage() {
       return;
     }
 
-    client.auth
-      .getSession()
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("code");
+
+    const sessionPromise = code ? client.auth.exchangeCodeForSession(code) : client.auth.getSession();
+
+    sessionPromise
       .then(({ data, error }) => {
         if (error) {
           setMessage(error.message);
           return;
         }
 
-        if (!data.session) {
+        if (!data.session && !("user" in data && data.user)) {
           setMessage("The sign-in link was not accepted. Request a fresh email and try again.");
           return;
         }
