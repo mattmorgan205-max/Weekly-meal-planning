@@ -909,7 +909,7 @@ export default function Home() {
     setCloudBusy(true);
     const { error } = await client.auth.signInWithOtp({
       email: cloudEmail,
-      options: { emailRedirectTo: window.location.origin }
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback` }
     });
     setCloudBusy(false);
     setCloudMessage(error ? error.message : "Check your email for the sign-in link.");
