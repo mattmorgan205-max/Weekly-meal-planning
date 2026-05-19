@@ -41,11 +41,14 @@ import {
   generateShoppingList,
   groceryCategories,
   inferCategory,
+  inferAutomaticRecipeTags,
   inferRecipeMealTypes,
+  isAutomaticRecipeTag,
   labelMealSlot,
   mealSlots,
   mergeAutomaticRecipeTags,
   normalizeMealTypes,
+  normalizeSuppressedAutomaticTags,
   normalizeUnit,
   parseIngredientLine,
   parseRecipeText,
@@ -69,6 +72,7 @@ type View = "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
 type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error";
 type MealPickerGroup = MealSlot | "all";
+type RecipeGroupFilter = MealSlot | "all";
 
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
@@ -82,7 +86,9 @@ const dateFormatter = new Intl.DateTimeFormat("en-GB", {
 function hydrateRecipe(recipe: Recipe): Recipe {
   return {
     ...recipe,
-    mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0])
+    mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
+    source: recipe.source ?? recipe.sourceUrl,
+    suppressedAutoTags: normalizeSuppressedAutomaticTags(recipe.suppressedAutoTags)
   };
 }
 
@@ -141,6 +147,8 @@ function emptyDraft(): ImportDraft {
       }
     ],
     instructions: [""],
+    source: "",
+    suppressedAutoTags: [],
     warnings: [],
     importedFrom: "manual"
   };
@@ -179,6 +187,17 @@ function formatFileSize(bytes: number) {
   if (bytes >= 1_000_000) return `${Math.round((bytes / 1_000_000) * 10) / 10} MB`;
   if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`;
   return `${bytes} bytes`;
+}
+
+function isHttpUrl(value?: string) {
+  if (!value) return false;
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function fileToDataUrl(file: Blob) {
@@ -339,6 +358,7 @@ export default function Home() {
   const [shoppingStartDate, setShoppingStartDate] = useState(() => formatDateKey(startOfWeek(new Date())));
   const [shoppingEndDate, setShoppingEndDate] = useState(() => formatDateKey(addDays(startOfWeek(new Date()), 6)));
   const [recipeSearch, setRecipeSearch] = useState("");
+  const [recipeGroupFilter, setRecipeGroupFilter] = useState<RecipeGroupFilter>("all");
   const [mealPicker, setMealPicker] = useState<{ date: string; slot: MealSlot } | null>(null);
   const [mealPickerQuery, setMealPickerQuery] = useState("");
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
@@ -396,15 +416,17 @@ export default function Home() {
     const query = recipeSearch.toLowerCase().trim();
     return state.recipes
       .filter((recipe) => {
+        if (recipeGroupFilter !== "all" && !recipe.mealTypes.includes(recipeGroupFilter)) return false;
         if (!query) return true;
         return (
           recipe.title.toLowerCase().includes(query) ||
+          (recipe.source ?? recipe.sourceUrl ?? "").toLowerCase().includes(query) ||
           recipe.tags.some((tag) => tag.toLowerCase().includes(query)) ||
           recipe.ingredients.some((ingredient) => ingredient.name.toLowerCase().includes(query))
         );
       })
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.title.localeCompare(b.title));
-  }, [recipeSearch, state.recipes]);
+  }, [recipeGroupFilter, recipeSearch, state.recipes]);
   const recipeFrequencies = useMemo(() => {
     return state.plannedMeals.reduce<Record<string, number>>((counts, meal) => {
       if (meal.recipeId) counts[meal.recipeId] = (counts[meal.recipeId] ?? 0) + 1;
@@ -520,10 +542,12 @@ export default function Home() {
   function applyDraft(nextDraft: ImportDraft) {
     const hydratedDraft = {
       ...nextDraft,
-      mealTypes: normalizeMealTypes(nextDraft.mealTypes, inferRecipeMealTypes(nextDraft)[0])
+      mealTypes: normalizeMealTypes(nextDraft.mealTypes, inferRecipeMealTypes(nextDraft)[0]),
+      source: nextDraft.source ?? nextDraft.sourceUrl ?? "",
+      suppressedAutoTags: normalizeSuppressedAutomaticTags(nextDraft.suppressedAutoTags)
     };
     setDraft(hydratedDraft);
-    setTagInput(hydratedDraft.tags.join(", "));
+    setTagInput(hydratedDraft.tags.filter((tag) => !isAutomaticRecipeTag(tag)).join(", "));
   }
 
   function addPlannedMeal(date: string, slot: MealSlot, recipeId: string) {
@@ -649,6 +673,8 @@ export default function Home() {
       title: draft.title.trim() || "Untitled recipe",
       servings: Math.max(1, Number(draft.servings) || 4),
       mealTypes: normalizeMealTypes(draft.mealTypes),
+      source: draft.source?.trim(),
+      suppressedAutoTags: normalizeSuppressedAutomaticTags(draft.suppressedAutoTags),
       tags: parseTags(tagInput),
       ingredients: draft.ingredients
         .filter((ingredient) => ingredient.name.trim())
@@ -660,7 +686,7 @@ export default function Home() {
         })),
       instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
     };
-    cleanedDraft.tags = mergeAutomaticRecipeTags(cleanedDraft.tags, cleanedDraft);
+    cleanedDraft.tags = mergeAutomaticRecipeTags(cleanedDraft.tags, cleanedDraft, cleanedDraft.suppressedAutoTags);
     const recipe = draftToRecipe(cleanedDraft);
 
     updateState((current) => {
@@ -817,6 +843,7 @@ export default function Home() {
       applyDraft({
         ...emptyDraft(),
         title: "URL import draft",
+        source: importUrl,
         sourceUrl: importUrl,
         importedFrom: "url",
         warnings: [
@@ -859,6 +886,7 @@ export default function Home() {
       const payload = draftFromOcrText(text, photoFile.name);
       applyDraft({
         ...payload,
+        source: payload.source ?? photoFile.name,
         photoDataUrl: prepared.dataUrl,
         warnings: Array.from(
           new Set([
@@ -1186,6 +1214,8 @@ export default function Home() {
             recipes={filteredRecipes}
             recipeSearch={recipeSearch}
             setRecipeSearch={setRecipeSearch}
+            recipeGroupFilter={recipeGroupFilter}
+            setRecipeGroupFilter={setRecipeGroupFilter}
             plannedRecipeIds={plannedRecipeIds}
             onAddRecipe={() => {
               applyDraft(emptyDraft());
@@ -1508,6 +1538,8 @@ function RecipeLibrary({
   recipes,
   recipeSearch,
   setRecipeSearch,
+  recipeGroupFilter,
+  setRecipeGroupFilter,
   plannedRecipeIds,
   onAddRecipe,
   onEditRecipe,
@@ -1518,6 +1550,8 @@ function RecipeLibrary({
   recipes: Recipe[];
   recipeSearch: string;
   setRecipeSearch: (value: string) => void;
+  recipeGroupFilter: RecipeGroupFilter;
+  setRecipeGroupFilter: (value: RecipeGroupFilter) => void;
   plannedRecipeIds: Set<string>;
   onAddRecipe: () => void;
   onEditRecipe: (recipe: Recipe) => void;
@@ -1530,13 +1564,29 @@ function RecipeLibrary({
       <section className="toolbar-band">
         <label className="search-box">
           <Search size={18} />
-          <input value={recipeSearch} onChange={(event) => setRecipeSearch(event.target.value)} placeholder="Search meals, tags, ingredients" />
+          <input value={recipeSearch} onChange={(event) => setRecipeSearch(event.target.value)} placeholder="Search meals, tags, sources, ingredients" />
         </label>
         <button className="primary-button" onClick={onAddRecipe}>
           <Plus size={18} />
           New recipe
         </button>
       </section>
+
+      <div className="meal-group-tabs recipe-filter-tabs" aria-label="Recipe meal group filter">
+        <button className={classNames(recipeGroupFilter === "all" && "active")} type="button" onClick={() => setRecipeGroupFilter("all")}>
+          All
+        </button>
+        {mealSlots.map((slot) => (
+          <button
+            className={classNames(recipeGroupFilter === slot && "active")}
+            key={slot}
+            type="button"
+            onClick={() => setRecipeGroupFilter(slot)}
+          >
+            {labelMealSlot(slot)}
+          </button>
+        ))}
+      </div>
 
       <section className="recipe-grid">
         {recipes.map((recipe, index) => (
@@ -1702,6 +1752,7 @@ function RecipePickerButton({
 
 function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
   const totalMinutes = totalRecipeMinutes(recipe);
+  const source = recipe.source ?? recipe.sourceUrl;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1728,6 +1779,18 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe; onClose: () =>
           </span>
           {recipe.prepMinutes ? <span>{recipe.prepMinutes} mins prep</span> : null}
           {recipe.cookMinutes ? <span>{recipe.cookMinutes} mins cook</span> : null}
+          {source ? (
+            <span>
+              Source:{" "}
+              {isHttpUrl(source) ? (
+                <a href={source} target="_blank" rel="noreferrer">
+                  link
+                </a>
+              ) : (
+                source
+              )}
+            </span>
+          ) : null}
         </div>
 
         <div className="tag-row">
@@ -1819,7 +1882,9 @@ function AddRecipeView({
   onAddInstruction: () => void;
   onRemoveInstruction: (index: number) => void;
 }) {
-  const automaticTags = mergeAutomaticRecipeTags(parseTags(tagInput), draft).filter((tag) => !parseTags(tagInput).includes(tag));
+  const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
+  const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
+  const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
 
   return (
     <div className="split-view">
@@ -1964,6 +2029,15 @@ function AddRecipeView({
           </label>
         </div>
 
+        <label>
+          Recipe source
+          <input
+            value={draft.source ?? ""}
+            onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value }))}
+            placeholder="URL, cookbook page, magazine, family recipe"
+          />
+        </label>
+
         <div className="editor-section">
           <div className="section-heading">
             <h3>Meal group</h3>
@@ -2007,11 +2081,45 @@ function AddRecipeView({
             <>
               <span>Auto tags on save</span>
               {automaticTags.map((tag) => (
-                <strong key={tag}>{tag}</strong>
+                <button
+                  className="tag-chip-button"
+                  key={tag}
+                  type="button"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      suppressedAutoTags: normalizeSuppressedAutomaticTags([...(current.suppressedAutoTags ?? []), tag])
+                    }))
+                  }
+                >
+                  {tag}
+                  <X size={14} />
+                </button>
               ))}
             </>
           ) : (
             <span>Automatic meal-type and time tags are kept up to date when saved.</span>
+          )}
+          {removedAutomaticTags.length > 0 && (
+            <>
+              <span>Removed auto tags</span>
+              {removedAutomaticTags.map((tag) => (
+                <button
+                  className="tag-chip-button muted-chip"
+                  key={tag}
+                  type="button"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      suppressedAutoTags: normalizeSuppressedAutomaticTags(current.suppressedAutoTags).filter((item) => item !== tag)
+                    }))
+                  }
+                >
+                  {tag}
+                  <Plus size={14} />
+                </button>
+              ))}
+            </>
           )}
         </div>
 

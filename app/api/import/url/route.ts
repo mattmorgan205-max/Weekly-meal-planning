@@ -79,6 +79,7 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string): ImportDraft {
     tags: ["url import"],
     ingredients,
     instructions,
+    source: sourceUrl,
     sourceUrl,
     warnings: recipe.recipeIngredient?.length
       ? ["Review the imported recipe before saving it to your library."]

@@ -187,6 +187,7 @@ export async function POST(request: Request) {
     const draft = draftFromOcrText(text, file.name);
     return Response.json({
       ...draft,
+      source: draft.source ?? file.name,
       warnings: Array.from(
         new Set([
           "Online OCR was used for this draft. Review carefully before saving.",
@@ -205,6 +206,7 @@ export async function POST(request: Request) {
     tags: ["photo import"],
     ingredients: [],
     instructions: ["Review the photo and add or correct the extracted method."],
+    source: file.name,
     importedFrom: "photo",
     warnings: [
       "Photo import is ready for review. Connect an OCR or AI vision provider to pre-fill ingredients automatically.",

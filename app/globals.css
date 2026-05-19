@@ -608,14 +608,28 @@ h3 {
   font-size: 0.82rem;
 }
 
-.tag-helper strong {
+.tag-helper strong,
+.tag-chip-button {
   min-height: 26px;
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   padding: 4px 8px;
+  border: 0;
   border-radius: 999px;
   background: #eaf2fb;
   color: var(--blue);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.tag-chip-button:hover {
+  background: #dbeaf8;
+}
+
+.tag-chip-button.muted-chip {
+  background: #f1eadc;
+  color: var(--muted);
 }
 
 .card-actions {
@@ -685,6 +699,10 @@ h3 {
   color: var(--green-dark);
 }
 
+.recipe-filter-tabs {
+  width: min(720px, 100%);
+}
+
 .manual-meal-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -747,6 +765,11 @@ h3 {
   color: var(--ink);
   font-size: 0.86rem;
   font-weight: 850;
+}
+
+.recipe-meta-row a {
+  color: var(--green-dark);
+  font-weight: 900;
 }
 
 .recipe-detail-grid {

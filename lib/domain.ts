@@ -31,9 +31,11 @@ export type Recipe = {
   favorite: boolean;
   ingredients: Ingredient[];
   instructions: string[];
+  source?: string;
   sourceUrl?: string;
   photoDataUrl?: string;
   notes?: string;
+  suppressedAutoTags?: string[];
   importedFrom?: "manual" | "paste" | "url" | "photo";
   createdAt: string;
   updatedAt: string;
@@ -83,8 +85,10 @@ export type ImportDraft = {
   tags: string[];
   ingredients: Ingredient[];
   instructions: string[];
+  source?: string;
   sourceUrl?: string;
   photoDataUrl?: string;
+  suppressedAutoTags?: string[];
   warnings: string[];
   importedFrom: "manual" | "paste" | "url" | "photo";
 };
@@ -112,7 +116,7 @@ export const groceryCategories: GroceryCategory[] = [
   "Other"
 ];
 
-const autoMealTypeTags = ["vegetarian", "chicken", "pork", "beef", "fish"];
+const autoMealTypeTags = ["vegetarian", "chicken", "duck", "pork", "beef", "fish"];
 const autoTimeTags = ["under 30 mins", "30-60 mins", "over 60 mins"];
 const automaticTagSet = new Set([...autoMealTypeTags, ...autoTimeTags]);
 
@@ -246,6 +250,17 @@ export function parseTags(value: string) {
     .filter((tag, index, tags) => tags.indexOf(tag) === index);
 }
 
+export function isAutomaticRecipeTag(tag: string) {
+  return automaticTagSet.has(tag.trim().toLowerCase());
+}
+
+export function normalizeSuppressedAutomaticTags(tags?: string[]) {
+  return (tags ?? [])
+    .map((tag) => tag.trim().toLowerCase())
+    .filter((tag) => automaticTagSet.has(tag))
+    .filter((tag, index, allTags) => allTags.indexOf(tag) === index);
+}
+
 export function cleanOcrRecipeText(text: string) {
   return text
     .replace(/\r/g, "\n")
@@ -288,6 +303,7 @@ export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredi
   const tags: string[] = [];
 
   if (/\b(chicken|hen|turkey)\b/.test(text)) tags.push("chicken");
+  if (/\b(duck|duck breast|duck legs)\b/.test(text)) tags.push("duck");
   if (/\b(pork|bacon|ham|gammon|chorizo|prosciutto|salami)\b/.test(text)) tags.push("pork");
   if (/\b(beef|steak|mince|brisket|burger)\b/.test(text)) tags.push("beef");
   if (/\b(fish|salmon|tuna|cod|haddock|trout|prawn|prawns|shrimp|mackerel|sardine|seabass|sea bass)\b/.test(text)) {
@@ -304,10 +320,16 @@ export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredi
   return tags;
 }
 
-export function mergeAutomaticRecipeTags(manualTags: string[], recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes">) {
-  const manual = manualTags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+export function mergeAutomaticRecipeTags(
+  manualTags: string[],
+  recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes">,
+  suppressedAutoTags: string[] = []
+) {
+  const suppressed = new Set(normalizeSuppressedAutomaticTags(suppressedAutoTags));
+  const manual = manualTags.map((tag) => tag.trim().toLowerCase()).filter(Boolean).filter((tag) => !suppressed.has(tag));
   const withoutOldAutoTags = manual.filter((tag) => !automaticTagSet.has(tag));
-  const merged = [...withoutOldAutoTags, ...inferAutomaticRecipeTags(recipe)];
+  const inferred = inferAutomaticRecipeTags(recipe).filter((tag) => !suppressed.has(tag));
+  const merged = [...withoutOldAutoTags, ...inferred];
   return merged.filter((tag, index, tags) => tags.indexOf(tag) === index);
 }
 
@@ -467,7 +489,9 @@ export function parseRecipeText(text: string, importedFrom: ImportDraft["importe
     tags: [],
     ingredients,
     instructions: methodLines.length > 0 ? methodLines : ["Add cooking instructions."],
+    source: sourceUrl,
     sourceUrl,
+    suppressedAutoTags: [],
     warnings,
     importedFrom
   };
@@ -491,8 +515,10 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
       category: ingredient.category || inferCategory(ingredient.name)
     })),
     instructions: draft.instructions.filter(Boolean),
+    source: draft.source?.trim() || draft.sourceUrl,
     sourceUrl: draft.sourceUrl,
     photoDataUrl: draft.photoDataUrl,
+    suppressedAutoTags: normalizeSuppressedAutomaticTags(draft.suppressedAutoTags),
     importedFrom: draft.importedFrom,
     createdAt: now,
     updatedAt: now
@@ -510,8 +536,10 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     tags: recipe.tags,
     ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, id: createId("ing") })),
     instructions: [...recipe.instructions],
+    source: recipe.source ?? recipe.sourceUrl,
     sourceUrl: recipe.sourceUrl,
     photoDataUrl: recipe.photoDataUrl,
+    suppressedAutoTags: normalizeSuppressedAutomaticTags(recipe.suppressedAutoTags),
     warnings: [],
     importedFrom: recipe.importedFrom ?? "manual"
   };
