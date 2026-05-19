@@ -17,8 +17,10 @@ Then open `http://localhost:3000`.
 - Per-meal people counts for quantity scaling.
 - Recipe library with search, tags, favorites, duplicate, edit, and delete.
 - Add recipe by manual entry, pasted text, public recipe URL, or recipe-book photo OCR review.
+- URL imports use structured recipe metadata first, then only likely recipe sections instead of broad webpage text.
 - Required import review screen before saving recipes.
 - Shopping list generation with category grouping, checked state, manual items, hidden generated items, and copy/print actions.
+- Canonical ingredient matching combines common aliases such as red onion/onions into one grocery line, with review prompts for ambiguous merges.
 - Practical unit combining for common mass, volume, spoon, pack, can, clove, slice, and item units.
 - Simple staples list that hides ingredients usually kept at home.
 - Local persistence in the browser with cloud backup before remote loads.
@@ -55,8 +57,9 @@ Vercel is the recommended free host for this app because it runs Next.js and API
 Photo import is free-first and privacy-conscious:
 
 - The default "Read photo privately" button uses Tesseract.js in the browser, so the recipe photo does not leave the device.
-- The image is resized, converted to high-contrast grayscale, and then OCR text is parsed into the existing recipe review screen.
-- "Try free online OCR" is optional and sends the compressed photo to OCR.Space through the app server. Add `OCR_SPACE_API_KEY` to enable it.
+- The image can be rotated and cropped to the whole recipe, ingredients, or method before OCR.
+- Raw OCR text can be edited, re-parsed, or moved line-by-line into ingredients or method during review.
+- "Try free online OCR" is optional and sends the compressed selected crop to OCR.Space through the app server. Add `OCR_SPACE_API_KEY` to enable it.
 - No recipe is saved until the review screen is accepted.
 
 The normalized meal-planner tables are included for a future row-level sync migration.

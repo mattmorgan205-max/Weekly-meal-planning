@@ -17,7 +17,10 @@ export type Ingredient = {
   unit?: string;
   category: GroceryCategory;
   note?: string;
+  canonicalName?: string;
+  originalLine?: string;
   confidence?: "high" | "medium" | "low";
+  needsReview?: boolean;
 };
 
 export type Recipe = {
@@ -56,11 +59,19 @@ export type PlannedMeal = {
 export type ShoppingListItem = {
   id: string;
   name: string;
+  canonicalName?: string;
   quantity?: number;
   unit?: string;
   displayQuantity: string;
   category: GroceryCategory;
   sourceMeals: string[];
+  sourceIngredients?: string[];
+  mergeWarnings?: string[];
+  mergeSuggestion?: {
+    aliasName: string;
+    canonicalName: string;
+    label: string;
+  };
   checked: boolean;
   manual?: boolean;
   staple?: boolean;
@@ -73,6 +84,7 @@ export type AppSettings = {
   hiddenSlots: MealSlot[];
   stapleIngredients: string[];
   includeStaples: boolean;
+  ingredientAliases: Record<string, string>;
 };
 
 export type ImportDraft = {
@@ -88,6 +100,7 @@ export type ImportDraft = {
   source?: string;
   sourceUrl?: string;
   photoDataUrl?: string;
+  rawText?: string;
   suppressedAutoTags?: string[];
   warnings: string[];
   importedFrom: "manual" | "paste" | "url" | "photo";
@@ -184,6 +197,71 @@ const unitConversions: Record<string, { family: string; base: string; factor: nu
   item: { family: "count-item", base: "item", factor: 1 }
 };
 
+const ingredientCleanupWords =
+  /\b(chopped|diced|sliced|fresh|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|cooked|uncooked|raw|extra|virgin|dried|freshly|toasted|halved|quartered|thinly|thickly|boneless|skinless)\b/g;
+
+const ingredientRejectPatterns = [
+  /\b(subscribe|newsletter|sign up|login|log in|register|cookie|privacy|terms|advert|advertisement|sponsored|affiliate|copyright|all rights reserved)\b/i,
+  /\b(comment|comments|review|reviews|rating|ratings|share|pin|print|save|jump to|skip to|read more|video|author|posted|updated)\b/i,
+  /\b(calories|kcal|nutrition|nutritional|protein|carbohydrate|carbohydrates|fat|saturated|fibre|fiber|sodium|cholesterol)\b/i,
+  /^(method|instructions|directions|preparation|prep|cook|total|notes|equipment|ingredients|serves|servings|yield)\b/i,
+  /^(home|recipes|shop|menu|search|contact|about|privacy policy|terms of use)$/i
+];
+
+const ingredientValidationFoodWords =
+  /\b(onion|garlic|tomato|tomatoes|potato|potatoes|carrot|pepper|peppers|lemon|lime|apple|banana|mushroom|broccoli|courgette|zucchini|avocado|ginger|herb|coriander|cilantro|parsley|basil|chicken|duck|beef|pork|fish|salmon|tuna|cod|haddock|trout|prawn|prawns|shrimp|bacon|sausage|egg|eggs|milk|cheese|yogurt|yoghurt|butter|cream|rice|pasta|flour|sugar|oil|vinegar|beans|lentils|stock|broth|oats|cereal|noodle|soy|honey|salt|pepper|paprika|cumin|cinnamon|oregano|thyme|chilli|chili|curry|bread|wrap|tortilla|peas|spinach|lettuce|cucumber|celery|chorizo|parmesan|cheddar|mozzarella)\b/i;
+
+const ingredientAliasRules: Array<{
+  canonicalName: string;
+  patterns: RegExp[];
+  preserve?: RegExp;
+  possibleMerge?: {
+    aliasName: string;
+    canonicalName: string;
+    label: string;
+    warning: string;
+  };
+}> = [
+  {
+    canonicalName: "spring onion",
+    patterns: [/\b(spring onion|spring onions|scallion|scallions)\b/],
+    possibleMerge: {
+      aliasName: "spring onion",
+      canonicalName: "onion",
+      label: "Merge with onion",
+      warning: "Spring onions are kept separate from onions. Merge if you usually buy them together."
+    }
+  },
+  { canonicalName: "onion", patterns: [/\b(red onion|red onions|white onion|white onions|brown onion|brown onions|yellow onion|yellow onions|onion|onions)\b/] },
+  { canonicalName: "garlic", patterns: [/\b(garlic clove|garlic cloves|garlic|garlic bulb|garlic bulbs)\b/] },
+  { canonicalName: "chicken breast", patterns: [/\b(chicken breast|chicken breasts)\b/] },
+  { canonicalName: "chicken thigh", patterns: [/\b(chicken thigh|chicken thighs)\b/] },
+  { canonicalName: "duck breast", patterns: [/\b(duck breast|duck breasts)\b/] },
+  { canonicalName: "beef mince", patterns: [/\b(beef mince|minced beef|ground beef)\b/] },
+  { canonicalName: "pork mince", patterns: [/\b(pork mince|minced pork|ground pork)\b/] },
+  { canonicalName: "sweet potato", patterns: [/\b(sweet potato|sweet potatoes)\b/] },
+  { canonicalName: "potato", patterns: [/\b(potato|potatoes|new potatoes|baby potatoes)\b/] },
+  { canonicalName: "tinned tomatoes", patterns: [/\b(tinned tomatoes|canned tomatoes|chopped tomatoes|tin of tomatoes|can of tomatoes)\b/] },
+  { canonicalName: "tomato", patterns: [/\b(tomato|tomatoes|cherry tomatoes|plum tomatoes)\b/] },
+  { canonicalName: "pepper", patterns: [/\b(red pepper|red peppers|yellow pepper|yellow peppers|green pepper|green peppers|bell pepper|bell peppers|pepper|peppers)\b/] },
+  { canonicalName: "carrot", patterns: [/\b(carrot|carrots)\b/] },
+  { canonicalName: "mushroom", patterns: [/\b(mushroom|mushrooms)\b/] },
+  { canonicalName: "lemon", patterns: [/\b(lemon|lemons)\b/] },
+  { canonicalName: "lime", patterns: [/\b(lime|limes)\b/] },
+  { canonicalName: "egg", patterns: [/\b(egg|eggs)\b/] },
+  { canonicalName: "milk", patterns: [/\b(milk|semi skimmed milk|semi-skimmed milk|whole milk|skimmed milk)\b/] },
+  { canonicalName: "butter", patterns: [/\b(butter|unsalted butter|salted butter)\b/] },
+  { canonicalName: "olive oil", patterns: [/\b(olive oil|extra virgin olive oil)\b/] },
+  { canonicalName: "vegetable oil", patterns: [/\b(vegetable oil|sunflower oil|rapeseed oil)\b/] },
+  { canonicalName: "plain flour", patterns: [/\b(plain flour|all purpose flour|all-purpose flour)\b/] },
+  { canonicalName: "self-raising flour", patterns: [/\b(self raising flour|self-raising flour)\b/] },
+  { canonicalName: "caster sugar", patterns: [/\b(caster sugar|superfine sugar)\b/] },
+  { canonicalName: "rice", patterns: [/\b(rice|basmati rice|long grain rice|jasmine rice)\b/] },
+  { canonicalName: "pasta", patterns: [/\b(pasta|spaghetti|penne|fusilli|tagliatelle|linguine)\b/] },
+  { canonicalName: "soy sauce", patterns: [/\b(soy sauce|light soy sauce|dark soy sauce)\b/] },
+  { canonicalName: "stock", patterns: [/\b(stock cube|stock cubes|vegetable stock|chicken stock|beef stock|stock)\b/] }
+];
+
 export function createId(prefix = "id") {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `${prefix}_${crypto.randomUUID()}`;
@@ -231,9 +309,91 @@ export function normalizeIngredientName(name: string) {
     .toLowerCase()
     .replace(/\([^)]*\)/g, "")
     .replace(/[,.;:]/g, "")
-    .replace(/\b(chopped|diced|minced|sliced|fresh|large|small|medium|optional|roughly|finely)\b/g, "")
+    .replace(ingredientCleanupWords, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function normalizeIngredientAliasKey(name: string) {
+  return normalizeIngredientName(name)
+    .replace(/\b(and|or|with|for|to taste)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function canonicalizeIngredientName(
+  name: string,
+  customAliases: Record<string, string> = {}
+): {
+  canonicalName: string;
+  normalizedName: string;
+  mergeWarning?: string;
+  mergeSuggestion?: ShoppingListItem["mergeSuggestion"];
+} {
+  const normalizedName = normalizeIngredientAliasKey(name);
+  if (!normalizedName) return { canonicalName: "other", normalizedName };
+
+  const customCanonical = customAliases[normalizedName] ?? customAliases[singularizeIngredientName(normalizedName)];
+  if (customCanonical) {
+    return {
+      canonicalName: normalizeIngredientAliasKey(customCanonical) || normalizedName,
+      normalizedName
+    };
+  }
+
+  for (const rule of ingredientAliasRules) {
+    if (rule.patterns.some((pattern) => pattern.test(normalizedName))) {
+      return {
+        canonicalName: rule.canonicalName,
+        normalizedName,
+        mergeWarning: rule.possibleMerge?.warning,
+        mergeSuggestion: rule.possibleMerge
+      };
+    }
+  }
+
+  return {
+    canonicalName: singularizeIngredientName(normalizedName),
+    normalizedName
+  };
+}
+
+function singularizeIngredientName(name: string) {
+  return name
+    .replace(/\b(tomatoes)\b/g, "tomato")
+    .replace(/\b(potatoes)\b/g, "potato")
+    .replace(/\b(leaves)\b/g, "leaf")
+    .replace(/\b(cloves)\b/g, "clove")
+    .replace(/\b([a-z]{4,})s\b/g, "$1")
+    .trim();
+}
+
+export function validateIngredientLine(line: string, strict = false) {
+  const cleaned = line.replace(/^[-*•]\s*/, "").trim();
+  const reasons: string[] = [];
+
+  if (!cleaned) reasons.push("Blank line");
+  if (cleaned.length > 170) reasons.push("Too long to be a normal ingredient line");
+  if (!/[a-zA-Z]/.test(cleaned)) reasons.push("No ingredient name found");
+  if (ingredientRejectPatterns.some((pattern) => pattern.test(cleaned))) reasons.push("Looks like page text rather than an ingredient");
+  if (/^[A-Z\s]{3,}$/.test(cleaned) && cleaned.split(/\s+/).length <= 4) reasons.push("Looks like a heading");
+
+  const hasQuantityOrUnit = /^[-*•]?\s*(\d|[¼½¾⅓⅔⅛⅜⅝⅞])/.test(cleaned) || new RegExp(`\\b(${Object.keys(unitAliases).join("|")})\\b`, "i").test(cleaned);
+  const hasFoodWord = ingredientValidationFoodWords.test(cleaned);
+  const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+
+  if (strict && !hasQuantityOrUnit && !hasFoodWord) reasons.push("No clear food, quantity, or unit found");
+  if (strict && wordCount > 14 && !hasQuantityOrUnit) reasons.push("Too wordy for a reliable ingredient");
+  if (strict && /[.!?]$/.test(cleaned) && !hasQuantityOrUnit) reasons.push("Looks like a sentence");
+
+  return {
+    valid: reasons.length === 0,
+    reasons
+  };
+}
+
+export function isLikelyIngredientLine(line: string, strict = false) {
+  return validateIngredientLine(line, strict).valid;
 }
 
 export function normalizeUnit(unit?: string) {
@@ -294,6 +454,7 @@ export function draftFromOcrText(text: string, fileName = "Recipe book import") 
     ...draft,
     title: draft.title === "Imported recipe" ? fileName.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ") : draft.title,
     tags: Array.from(new Set([...draft.tags, "photo import"])),
+    rawText: cleanedText,
     warnings: Array.from(new Set([...warnings, "Nothing has been saved to the recipe library yet."]))
   };
 }
@@ -363,7 +524,7 @@ export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMin
 export function inferCategory(name: string): GroceryCategory {
   const normal = normalizeIngredientName(name);
 
-  if (/(chicken|beef|pork|fish|salmon|tuna|prawn|shrimp|turkey|bacon|sausage)/.test(normal)) {
+  if (/(chicken|duck|beef|pork|fish|salmon|tuna|prawn|shrimp|turkey|bacon|sausage)/.test(normal)) {
     return "Meat & Fish";
   }
 
@@ -430,7 +591,7 @@ export function parseQuantity(value: string) {
   return Number.isFinite(numeric) ? numeric : undefined;
 }
 
-export function parseIngredientLine(line: string): Ingredient {
+export function parseIngredientLine(line: string, options: { strict?: boolean } = {}): Ingredient {
   const cleaned = line.replace(/^[-*•]\s*/, "").trim();
   const pattern =
     /^((?:\d+(?:\.\d+)?)|(?:\d+\s+\d+\/\d+)|(?:\d+\/\d+)|[¼½¾⅓⅔⅛⅜⅝⅞])?\s*([a-zA-Z]+)?\s+(.+)$/;
@@ -439,7 +600,14 @@ export function parseIngredientLine(line: string): Ingredient {
   const rawUnit = match?.[2]?.toLowerCase().replace(/[.]/g, "").trim();
   const unit = rawUnit && unitAliases[rawUnit] ? normalizeUnit(rawUnit) : "";
   const name = rawUnit && !unit ? `${match?.[2]} ${match?.[3]}`.trim() : match?.[3]?.trim() || cleaned;
-  const confidence = quantity && name.length > 2 ? "high" : "low";
+  const validation = validateIngredientLine(cleaned, options.strict);
+  const canonical = canonicalizeIngredientName(name);
+  const confidence =
+    validation.valid && quantity && name.length > 2
+      ? "high"
+      : validation.valid && (quantity || ingredientValidationFoodWords.test(name))
+        ? "medium"
+        : "low";
 
   return {
     id: createId("ing"),
@@ -447,7 +615,10 @@ export function parseIngredientLine(line: string): Ingredient {
     quantity,
     unit,
     category: inferCategory(name),
-    confidence
+    canonicalName: canonical.canonicalName,
+    originalLine: cleaned,
+    confidence,
+    needsReview: confidence !== "high" || !validation.valid
   };
 }
 
@@ -472,12 +643,15 @@ export function parseRecipeText(text: string, importedFrom: ImportDraft["importe
     methodStart >= 0
       ? lines.slice(methodStart + 1)
       : lines.filter((line) => /^\d+[.)]\s+/.test(line)).map((line) => line.replace(/^\d+[.)]\s+/, ""));
-  const ingredients = ingredientLines.map(parseIngredientLine).filter((ingredient) => ingredient.name.length > 1);
+  const ingredients = ingredientLines
+    .filter((line) => isLikelyIngredientLine(line, importedFrom === "url"))
+    .map((line) => parseIngredientLine(line, { strict: importedFrom === "url" }))
+    .filter((ingredient) => ingredient.name.length > 1);
   const warnings: string[] = [];
 
   if (!servingsMatch) warnings.push("Servings were not found, so the draft defaults to 4.");
   if (ingredients.length === 0) warnings.push("No clear ingredient list was detected. Add ingredients before saving.");
-  if (ingredients.some((ingredient) => ingredient.confidence === "low")) {
+  if (ingredients.some((ingredient) => ingredient.confidence === "low" || ingredient.needsReview)) {
     warnings.push("Some ingredient quantities or units need review.");
   }
 
@@ -512,7 +686,9 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     ingredients: draft.ingredients.map((ingredient) => ({
       ...ingredient,
       id: ingredient.id || createId("ing"),
-      category: ingredient.category || inferCategory(ingredient.name)
+      category: ingredient.category || inferCategory(ingredient.name),
+      canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName,
+      needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
     })),
     instructions: draft.instructions.filter(Boolean),
     source: draft.source?.trim() || draft.sourceUrl,
@@ -590,11 +766,15 @@ export function generateShoppingList(
   type Bucket = {
     key: string;
     name: string;
+    canonicalName: string;
     category: GroceryCategory;
     unitFamily?: string;
     baseUnit?: string;
     quantity?: number;
     sourceMeals: Set<string>;
+    sourceIngredients: Set<string>;
+    mergeWarnings: Set<string>;
+    mergeSuggestion?: ShoppingListItem["mergeSuggestion"];
     incompatible?: boolean;
     staple: boolean;
   };
@@ -609,7 +789,8 @@ export function generateShoppingList(
     const factor = meal.peopleCount / Math.max(1, recipe.servings);
     recipe.ingredients.forEach((ingredient) => {
       const scaled = scaleIngredient(ingredient, factor);
-      const nameKey = normalizeIngredientName(scaled.name);
+      const canonical = canonicalizeIngredientName(scaled.canonicalName || scaled.name, settings.ingredientAliases ?? {});
+      const nameKey = canonical.canonicalName;
       const conversion = scaled.unit ? unitConversions[normalizeUnit(scaled.unit)] : undefined;
       const quantity = typeof scaled.quantity === "number" && conversion ? scaled.quantity * conversion.factor : scaled.quantity;
       const family = conversion?.family ?? (scaled.unit ? `raw-${scaled.unit}` : "no-unit");
@@ -623,27 +804,38 @@ export function generateShoppingList(
       if (existing && typeof existing.quantity === "number" && typeof quantity === "number") {
         existing.quantity += quantity;
         existing.sourceMeals.add(recipe.title);
+        existing.sourceIngredients.add(scaled.name);
+        if (canonical.mergeWarning) existing.mergeWarnings.add(canonical.mergeWarning);
+        if (canonical.mergeSuggestion) existing.mergeSuggestion = canonical.mergeSuggestion;
       } else if (!existing) {
         buckets.set(key, {
           key,
-          name: scaled.name,
+          name: nameKey || scaled.name,
+          canonicalName: nameKey,
           category: scaled.category,
           unitFamily: family,
           baseUnit,
           quantity,
           sourceMeals: new Set([recipe.title]),
+          sourceIngredients: new Set([scaled.name]),
+          mergeWarnings: new Set(canonical.mergeWarning ? [canonical.mergeWarning] : []),
+          mergeSuggestion: canonical.mergeSuggestion,
           staple
         });
       } else {
         const separateKey = `${key}::${meal.id}`;
         buckets.set(separateKey, {
           key: separateKey,
-          name: scaled.name,
+          name: nameKey || scaled.name,
+          canonicalName: nameKey,
           category: scaled.category,
           unitFamily: family,
           baseUnit: scaled.unit,
           quantity: scaled.quantity,
           sourceMeals: new Set([recipe.title]),
+          sourceIngredients: new Set([scaled.name]),
+          mergeWarnings: new Set(["This ingredient has another quantity or unit that could not be combined safely."]),
+          mergeSuggestion: canonical.mergeSuggestion,
           incompatible: true,
           staple
         });
@@ -656,11 +848,15 @@ export function generateShoppingList(
     return {
       id,
       name: bucket.name,
+      canonicalName: bucket.canonicalName,
       quantity: bucket.quantity,
       unit: bucket.baseUnit,
       displayQuantity: displayQuantity(bucket.quantity, bucket.baseUnit),
       category: bucket.category,
       sourceMeals: Array.from(bucket.sourceMeals),
+      sourceIngredients: Array.from(bucket.sourceIngredients),
+      mergeWarnings: Array.from(bucket.mergeWarnings),
+      mergeSuggestion: bucket.mergeSuggestion,
       checked: shoppingChecks[id] ?? false,
       staple: bucket.staple,
       incompatible: bucket.incompatible
@@ -778,7 +974,8 @@ export function seedState(): AppState {
       defaultPeople: 4,
       hiddenSlots: [],
       stapleIngredients: ["salt", "black pepper", "olive oil", "plain flour", "sugar"],
-      includeStaples: false
+      includeStaples: false,
+      ingredientAliases: {}
     }
   };
 }

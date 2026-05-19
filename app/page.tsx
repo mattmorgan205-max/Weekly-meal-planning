@@ -9,6 +9,7 @@ import {
   Clock,
   Clipboard,
   Copy,
+  Crop,
   Download,
   Eye,
   EyeOff,
@@ -21,6 +22,7 @@ import {
   Plus,
   Printer,
   RefreshCw,
+  RotateCw,
   Search,
   Settings,
   ShoppingCart,
@@ -34,6 +36,8 @@ import {
 import { type DragEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   addDays,
+  canonicalizeIngredientName,
+  cleanOcrRecipeText,
   createId,
   draftToRecipe,
   draftFromOcrText,
@@ -73,6 +77,7 @@ type ImportMode = "manual" | "paste" | "url" | "photo";
 type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error";
 type MealPickerGroup = MealSlot | "all";
 type RecipeGroupFilter = MealSlot | "all";
+type PhotoCropMode = "whole" | "ingredients" | "method";
 
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
@@ -87,6 +92,11 @@ function hydrateRecipe(recipe: Recipe): Recipe {
   return {
     ...recipe,
     mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
+    ingredients: recipe.ingredients.map((ingredient) => ({
+      ...ingredient,
+      canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName,
+      needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+    })),
     source: recipe.source ?? recipe.sourceUrl,
     suppressedAutoTags: normalizeSuppressedAutomaticTags(recipe.suppressedAutoTags)
   };
@@ -143,6 +153,7 @@ function emptyDraft(): ImportDraft {
         quantity: undefined,
         unit: "",
         category: "Other",
+        canonicalName: "",
         confidence: "medium"
       }
     ],
@@ -248,13 +259,34 @@ async function loadImageSource(file: File) {
   };
 }
 
-async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
+function cropForMode(width: number, height: number, cropMode: PhotoCropMode) {
+  if (cropMode === "ingredients") {
+    return { x: 0, y: 0, width: Math.round(width * 0.52), height };
+  }
+
+  if (cropMode === "method") {
+    return { x: Math.round(width * 0.4), y: 0, width: Math.round(width * 0.6), height };
+  }
+
+  return { x: 0, y: 0, width, height };
+}
+
+function normalizeRotation(rotation: number) {
+  return ((rotation % 360) + 360) % 360;
+}
+
+async function prepareRecipePhoto(file: File, cropMode: PhotoCropMode = "whole", rotation = 0, maxSide = 1500, quality = 0.72) {
   const loaded = await loadImageSource(file);
 
   try {
-    const scale = Math.min(1, maxSide / Math.max(loaded.width, loaded.height));
-    const width = Math.max(1, Math.round(loaded.width * scale));
-    const height = Math.max(1, Math.round(loaded.height * scale));
+    const crop = cropForMode(loaded.width, loaded.height, cropMode);
+    const scale = Math.min(1, maxSide / Math.max(crop.width, crop.height));
+    const cropWidth = Math.max(1, Math.round(crop.width * scale));
+    const cropHeight = Math.max(1, Math.round(crop.height * scale));
+    const normalizedRotation = normalizeRotation(rotation);
+    const rotatedSideways = normalizedRotation === 90 || normalizedRotation === 270;
+    const width = rotatedSideways ? cropHeight : cropWidth;
+    const height = rotatedSideways ? cropWidth : cropHeight;
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d", { willReadFrequently: true });
 
@@ -262,7 +294,21 @@ async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
 
     canvas.width = width;
     canvas.height = height;
-    context.drawImage(loaded.source, 0, 0, width, height);
+    context.save();
+
+    if (normalizedRotation === 90) {
+      context.translate(width, 0);
+      context.rotate(Math.PI / 2);
+    } else if (normalizedRotation === 180) {
+      context.translate(width, height);
+      context.rotate(Math.PI);
+    } else if (normalizedRotation === 270) {
+      context.translate(0, height);
+      context.rotate((Math.PI * 3) / 2);
+    }
+
+    context.drawImage(loaded.source, crop.x, crop.y, crop.width, crop.height, 0, 0, cropWidth, cropHeight);
+    context.restore();
 
     const imageData = context.getImageData(0, 0, width, height);
     const contrast = 1.18;
@@ -281,11 +327,14 @@ async function prepareRecipePhoto(file: File, maxSide = 1500, quality = 0.72) {
     const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((nextBlob) => (nextBlob ? resolve(nextBlob) : reject(new Error("Photo compression failed."))), "image/jpeg", quality);
     });
-    const compressedFile = new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" });
+    const suffix = cropMode === "whole" ? "recipe" : cropMode;
+    const compressedFile = new File([blob], file.name.replace(/\.[^.]+$/, `-${suffix}.jpg`), { type: "image/jpeg" });
 
     return {
       file: compressedFile,
-      dataUrl: await fileToDataUrl(compressedFile)
+      dataUrl: await fileToDataUrl(compressedFile),
+      cropMode,
+      rotation: normalizedRotation
     };
   } finally {
     loaded.close?.();
@@ -368,6 +417,9 @@ export default function Home() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [compressedPhotoFile, setCompressedPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string>("");
+  const [photoCropMode, setPhotoCropMode] = useState<PhotoCropMode>("whole");
+  const [photoRotation, setPhotoRotation] = useState(0);
+  const [photoRawText, setPhotoRawText] = useState("");
   const [draft, setDraft] = useState<ImportDraft>(() => emptyDraft());
   const [tagInput, setTagInput] = useState("");
   const [editingRecipeId, setEditingRecipeId] = useState<string | null>(null);
@@ -673,7 +725,9 @@ export default function Home() {
           ...ingredient,
           id: ingredient.id || createId("ing"),
           unit: normalizeUnit(ingredient.unit),
-          category: ingredient.category || inferCategory(ingredient.name)
+          category: ingredient.category || inferCategory(ingredient.name),
+          canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName,
+          needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
         })),
       instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
     };
@@ -751,11 +805,13 @@ export default function Home() {
       ...current,
       ingredients: current.ingredients.map((ingredient) =>
         ingredient.id === id
-          ? {
-              ...ingredient,
-              ...patch,
-              category: patch.name && !patch.category ? inferCategory(patch.name) : patch.category ?? ingredient.category
-            }
+	          ? {
+	              ...ingredient,
+	              ...patch,
+	              category: patch.name && !patch.category ? inferCategory(patch.name) : patch.category ?? ingredient.category,
+	              canonicalName: patch.name ? canonicalizeIngredientName(patch.name).canonicalName : patch.canonicalName ?? ingredient.canonicalName,
+	              needsReview: patch.name ? false : patch.needsReview ?? ingredient.needsReview
+	            }
           : ingredient
       )
     }));
@@ -766,7 +822,7 @@ export default function Home() {
       ...current,
       ingredients: [
         ...current.ingredients,
-        { id: createId("ing"), name: "", unit: "", category: "Other", confidence: "medium" }
+        { id: createId("ing"), name: "", unit: "", category: "Other", canonicalName: "", confidence: "medium" }
       ]
     }));
   }
@@ -853,20 +909,22 @@ export default function Home() {
     setImportStatus("Preparing photo...");
 
     try {
-      let prepared: { file: File; dataUrl: string };
+      let prepared: Awaited<ReturnType<typeof prepareRecipePhoto>>;
       let preprocessingWarning = "";
 
       try {
-        prepared = await prepareRecipePhoto(photoFile);
+        prepared = await prepareRecipePhoto(photoFile, photoCropMode, photoRotation);
       } catch (error) {
         preprocessingWarning =
           error instanceof Error
             ? `${error.message} Private OCR is trying the original file instead.`
             : "Photo preprocessing failed. Private OCR is trying the original file instead.";
-        prepared = {
-          file: photoFile,
-          dataUrl: photoPreview || (await fileToDataUrl(photoFile))
-        };
+	        prepared = {
+	          file: photoFile,
+	          dataUrl: photoPreview || (await fileToDataUrl(photoFile)),
+	          cropMode: photoCropMode,
+	          rotation: normalizeRotation(photoRotation)
+	        };
       }
 
       setCompressedPhotoFile(prepared.file);
@@ -874,6 +932,7 @@ export default function Home() {
       setImportStatus("Reading photo privately on this device...");
 
       const { text, warning } = await recognizeRecipePhoto(prepared, photoFile, setImportStatus);
+      setPhotoRawText(cleanOcrRecipeText(text));
       const payload = draftFromOcrText(text, photoFile.name);
       applyDraft({
         ...payload,
@@ -882,6 +941,7 @@ export default function Home() {
         warnings: Array.from(
           new Set([
             "Browser OCR was used for this draft. Review carefully before saving.",
+            `OCR crop mode: ${photoCropMode === "whole" ? "whole recipe" : `${photoCropMode} only`}.`,
             ...(preprocessingWarning ? [preprocessingWarning] : []),
             ...(warning ? [warning] : []),
             ...payload.warnings
@@ -911,12 +971,35 @@ export default function Home() {
 
   async function extractFromPhotoFallback() {
     if (!photoFile) return;
-    setImportStatus("Sending photo to free online OCR...");
+    setImportStatus("Preparing photo for free online OCR...");
 
     try {
+      let prepared: Awaited<ReturnType<typeof prepareRecipePhoto>>;
+      let preprocessingWarning = "";
+
+      try {
+        prepared = await prepareRecipePhoto(photoFile, photoCropMode, photoRotation, 1800, 0.8);
+      } catch (error) {
+        preprocessingWarning =
+          error instanceof Error
+            ? `${error.message} Online OCR is trying the original file instead.`
+            : "Photo preprocessing failed. Online OCR is trying the original file instead.";
+        prepared = {
+          file: photoFile,
+          dataUrl: photoPreview || (await fileToDataUrl(photoFile)),
+          cropMode: photoCropMode,
+          rotation: normalizeRotation(photoRotation)
+        };
+      }
+
+      setCompressedPhotoFile(prepared.file);
+      setPhotoPreview(prepared.dataUrl);
+      setImportStatus("Sending selected crop to free online OCR...");
+
       const formData = new FormData();
       formData.append("source", "ocr-space");
-      formData.append("photo", photoFile);
+      formData.append("cropMode", photoCropMode);
+      formData.append("photo", prepared.file);
 
       const response = await fetch("/api/import/photo", { method: "POST", body: formData });
       const responseText = await response.text();
@@ -926,7 +1009,19 @@ export default function Home() {
         throw new Error("error" in payload && payload.error ? payload.error : "Online OCR failed.");
       }
 
-      applyDraft({ ...(payload as ImportDraft), photoDataUrl: photoPreview || (await fileToDataUrl(photoFile)) });
+      const nextDraft = payload as ImportDraft;
+      setPhotoRawText(cleanOcrRecipeText(nextDraft.rawText || [...nextDraft.ingredients.map((ingredient) => ingredient.originalLine || ingredient.name), ...nextDraft.instructions].join("\n")));
+      applyDraft({
+        ...nextDraft,
+        photoDataUrl: prepared.dataUrl,
+	        warnings: Array.from(
+	          new Set([
+	            `Online OCR crop mode: ${photoCropMode === "whole" ? "whole recipe" : `${photoCropMode} only`}.`,
+	            ...(preprocessingWarning ? [preprocessingWarning] : []),
+	            ...nextDraft.warnings
+	          ])
+	        )
+      });
     } catch (error) {
       setImportStatus("");
       applyDraft({
@@ -949,6 +1044,7 @@ export default function Home() {
     setPhotoFile(file);
     setCompressedPhotoFile(null);
     setPhotoPreview("");
+    setPhotoRawText("");
     if (!file) return;
 
     const reader = new FileReader();
@@ -956,15 +1052,72 @@ export default function Home() {
     reader.readAsDataURL(file);
   }
 
+  function reparsePhotoRawText() {
+    const text = cleanOcrRecipeText(photoRawText);
+    if (!text.trim()) return;
+    const payload = draftFromOcrText(text, photoFile?.name || "Photo import");
+    applyDraft({
+      ...payload,
+      source: payload.source ?? photoFile?.name ?? draft.source,
+      photoDataUrl: photoPreview || draft.photoDataUrl,
+      warnings: Array.from(new Set(["Raw OCR text was re-parsed. Review before saving.", ...payload.warnings]))
+    });
+    setPhotoRawText(text);
+  }
+
+  function moveOcrLineToIngredients(line: string) {
+    const cleanedLine = line.trim();
+    if (!cleanedLine) return;
+    const parsed = parseIngredientLine(cleanedLine, { strict: false });
+    setDraft((current) => ({
+      ...current,
+      ingredients: [
+        ...current.ingredients,
+        {
+          ...parsed,
+          originalLine: cleanedLine,
+          confidence: parsed.confidence === "high" ? "medium" : parsed.confidence,
+          needsReview: true
+        }
+      ],
+      warnings: Array.from(new Set([...current.warnings, "A raw OCR line was moved into ingredients. Check the quantity and unit."]))
+    }));
+  }
+
+  function moveOcrLineToMethod(line: string) {
+    const cleanedLine = line.trim();
+    if (!cleanedLine) return;
+    setDraft((current) => ({
+      ...current,
+      instructions: [...current.instructions.filter((step) => step.trim() !== "Add cooking instructions."), cleanedLine],
+      warnings: Array.from(new Set([...current.warnings, "A raw OCR line was moved into the method."]))
+    }));
+  }
+
+  function rememberIngredientMerge(aliasName: string, canonicalName: string) {
+    updateState((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        ingredientAliases: {
+          ...(current.settings.ingredientAliases ?? {}),
+          [canonicalizeIngredientName(aliasName).normalizedName]: canonicalizeIngredientName(canonicalName).canonicalName
+        }
+      },
+      hiddenShoppingItems: {}
+    }));
+  }
+
   function addManualShoppingItem(event: FormEvent) {
     event.preventDefault();
     if (!manualItemName.trim()) return;
 
-    const item: ShoppingListItem = {
-      id: createId("manual"),
-      name: manualItemName.trim(),
-      displayQuantity: manualItemQuantity.trim(),
-      category: manualItemCategory,
+	  const item: ShoppingListItem = {
+	    id: createId("manual"),
+	    name: manualItemName.trim(),
+	    canonicalName: canonicalizeIngredientName(manualItemName).canonicalName,
+	    displayQuantity: manualItemQuantity.trim(),
+	    category: manualItemCategory,
       sourceMeals: ["Manual"],
       checked: false,
       manual: true
@@ -1272,9 +1425,15 @@ export default function Home() {
             setImportText={setImportText}
             importUrl={importUrl}
             setImportUrl={setImportUrl}
-            photoFile={photoFile}
-            photoPreview={photoPreview}
-            onPhotoChange={handlePhotoChange}
+	            photoFile={photoFile}
+	            photoPreview={photoPreview}
+	            photoCropMode={photoCropMode}
+	            setPhotoCropMode={setPhotoCropMode}
+	            photoRotation={photoRotation}
+	            setPhotoRotation={setPhotoRotation}
+	            photoRawText={photoRawText}
+	            setPhotoRawText={setPhotoRawText}
+	            onPhotoChange={handlePhotoChange}
             draft={draft}
             setDraft={setDraft}
             tagInput={tagInput}
@@ -1283,8 +1442,11 @@ export default function Home() {
             importStatus={importStatus}
             onExtractText={extractFromText}
             onExtractUrl={extractFromUrl}
-            onExtractPhoto={extractFromPhoto}
-            onExtractPhotoFallback={extractFromPhotoFallback}
+	            onExtractPhoto={extractFromPhoto}
+	            onExtractPhotoFallback={extractFromPhotoFallback}
+	            onReparsePhotoRawText={reparsePhotoRawText}
+	            onMoveOcrLineToIngredients={moveOcrLineToIngredients}
+	            onMoveOcrLineToMethod={moveOcrLineToMethod}
             onNewManual={() => {
               applyDraft(emptyDraft());
               setEditingRecipeId(null);
@@ -1328,8 +1490,9 @@ export default function Home() {
             onDeleteItem={deleteShoppingItem}
             onCopy={copyShoppingList}
             onPrint={() => window.print()}
-            onRestoreGenerated={() => updateState((current) => ({ ...current, hiddenShoppingItems: {} }))}
-          />
+	            onRestoreGenerated={() => updateState((current) => ({ ...current, hiddenShoppingItems: {} }))}
+	            onRememberIngredientMerge={rememberIngredientMerge}
+	          />
         )}
 
         {activeView === "settings" && (
@@ -1868,6 +2031,12 @@ function AddRecipeView({
   setImportUrl,
   photoFile,
   photoPreview,
+  photoCropMode,
+  setPhotoCropMode,
+  photoRotation,
+  setPhotoRotation,
+  photoRawText,
+  setPhotoRawText,
   onPhotoChange,
   draft,
   setDraft,
@@ -1879,6 +2048,9 @@ function AddRecipeView({
   onExtractUrl,
   onExtractPhoto,
   onExtractPhotoFallback,
+  onReparsePhotoRawText,
+  onMoveOcrLineToIngredients,
+  onMoveOcrLineToMethod,
   onNewManual,
   onSaveDraft,
   onUpdateIngredient,
@@ -1896,6 +2068,12 @@ function AddRecipeView({
   setImportUrl: (value: string) => void;
   photoFile: File | null;
   photoPreview: string;
+  photoCropMode: PhotoCropMode;
+  setPhotoCropMode: (mode: PhotoCropMode) => void;
+  photoRotation: number;
+  setPhotoRotation: (value: number | ((current: number) => number)) => void;
+  photoRawText: string;
+  setPhotoRawText: (value: string) => void;
   onPhotoChange: (file: File | null) => void;
   draft: ImportDraft;
   setDraft: (draft: ImportDraft | ((current: ImportDraft) => ImportDraft)) => void;
@@ -1907,6 +2085,9 @@ function AddRecipeView({
   onExtractUrl: (event: FormEvent) => void;
   onExtractPhoto: (event: FormEvent) => void;
   onExtractPhotoFallback: () => void;
+  onReparsePhotoRawText: () => void;
+  onMoveOcrLineToIngredients: (line: string) => void;
+  onMoveOcrLineToMethod: (line: string) => void;
   onNewManual: () => void;
   onSaveDraft: () => void;
   onUpdateIngredient: (id: string, patch: Partial<Ingredient>) => void;
@@ -1916,9 +2097,14 @@ function AddRecipeView({
   onAddInstruction: () => void;
   onRemoveInstruction: (index: number) => void;
 }) {
-  const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
-  const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
-  const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
+	  const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
+	  const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
+	  const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
+	  const ocrLines = photoRawText
+	    .split(/\r?\n/)
+	    .map((line) => line.trim())
+	    .filter(Boolean)
+	    .slice(0, 40);
 
   return (
     <div className="split-view">
@@ -1994,6 +2180,21 @@ function AddRecipeView({
                 <input type="file" accept="image/*,.heic,.heif" onChange={(event) => onPhotoChange(event.target.files?.[0] ?? null)} />
               </label>
             </div>
+            <div className="photo-controls">
+              <label>
+                <Crop size={16} />
+                Crop
+                <select value={photoCropMode} onChange={(event) => setPhotoCropMode(event.target.value as PhotoCropMode)}>
+                  <option value="whole">Whole recipe</option>
+                  <option value="ingredients">Ingredients only</option>
+                  <option value="method">Method only</option>
+                </select>
+              </label>
+              <button className="icon-text-button" type="button" onClick={() => setPhotoRotation((current) => normalizeRotation(current + 90))}>
+                <RotateCw size={18} />
+                Rotate {photoRotation ? `${photoRotation}°` : ""}
+              </button>
+            </div>
             {photoFile && <span className="selected-photo-name">{photoFile.name}</span>}
             {photoPreview && <img className="photo-preview" src={photoPreview} alt="Recipe import preview" />}
             {importStatus && <span className="ocr-status">{importStatus}</span>}
@@ -2005,6 +2206,33 @@ function AddRecipeView({
               <Sparkles size={18} />
               Try free online OCR
             </button>
+            {photoRawText && (
+              <div className="ocr-review-tools">
+                <label>
+                  Raw OCR text
+                  <textarea value={photoRawText} onChange={(event) => setPhotoRawText(event.target.value)} rows={7} />
+                </label>
+                <button className="icon-text-button" type="button" onClick={onReparsePhotoRawText}>
+                  <RefreshCw size={17} />
+                  Re-parse text
+                </button>
+                <div className="ocr-line-list">
+                  {ocrLines.map((line, index) => (
+                    <div className="ocr-line" key={`${index}-${line}`}>
+                      <span>{line}</span>
+                      <button type="button" title="Move to ingredients" onClick={() => onMoveOcrLineToIngredients(line)}>
+                        <Plus size={15} />
+                        Ingredient
+                      </button>
+                      <button type="button" title="Move to method" onClick={() => onMoveOcrLineToMethod(line)}>
+                        <Plus size={15} />
+                        Method
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </form>
         )}
       </section>
@@ -2166,52 +2394,60 @@ function AddRecipeView({
             </button>
           </div>
           <div className="ingredient-editor">
-            {draft.ingredients.map((ingredient) => (
-              <div className={classNames("ingredient-row", ingredient.confidence === "low" && "needs-review")} key={ingredient.id}>
-                <input
-                  aria-label="Quantity"
-                  className="qty-input"
-                  type="number"
-                  min={0}
-                  step="0.25"
-                  value={ingredient.quantity ?? ""}
-                  onChange={(event) => onUpdateIngredient(ingredient.id, { quantity: parseNumberInput(event.target.value) })}
-                />
-                <input
-                  aria-label="Unit"
-                  className="unit-input"
-                  value={ingredient.unit ?? ""}
-                  onChange={(event) => onUpdateIngredient(ingredient.id, { unit: event.target.value })}
-                  placeholder="unit"
-                />
-                <input
-                  aria-label="Ingredient"
-                  value={ingredient.name}
-                  onChange={(event) => onUpdateIngredient(ingredient.id, { name: event.target.value })}
-                  onBlur={(event) => {
-                    if (!ingredient.quantity && !ingredient.unit && event.target.value.trim()) {
-                      const parsed = parseIngredientLine(event.target.value);
-                      if (parsed.name !== event.target.value) onUpdateIngredient(ingredient.id, parsed);
-                    }
-                  }}
-                  placeholder="ingredient"
-                />
-                <select
-                  aria-label="Category"
-                  value={ingredient.category}
-                  onChange={(event) => onUpdateIngredient(ingredient.id, { category: event.target.value as GroceryCategory })}
-                >
-                  {groceryCategories.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
-                  ))}
-                </select>
-                <button className="icon-button danger" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
+	            {draft.ingredients.map((ingredient) => (
+	              <div
+	                className={classNames("ingredient-row", (ingredient.confidence === "low" || ingredient.needsReview) && "needs-review")}
+	                key={ingredient.id}
+	              >
+	                <input
+	                  aria-label="Quantity"
+	                  className="qty-input"
+	                  type="number"
+	                  min={0}
+	                  step="0.25"
+	                  value={ingredient.quantity ?? ""}
+	                  onChange={(event) => onUpdateIngredient(ingredient.id, { quantity: parseNumberInput(event.target.value), needsReview: false })}
+	                />
+	                <input
+	                  aria-label="Unit"
+	                  className="unit-input"
+	                  value={ingredient.unit ?? ""}
+	                  onChange={(event) => onUpdateIngredient(ingredient.id, { unit: event.target.value, needsReview: false })}
+	                  placeholder="unit"
+	                />
+	                <input
+	                  aria-label="Ingredient"
+	                  value={ingredient.name}
+	                  onChange={(event) => onUpdateIngredient(ingredient.id, { name: event.target.value })}
+	                  onBlur={(event) => {
+	                    if (!ingredient.quantity && !ingredient.unit && event.target.value.trim()) {
+	                      const parsed = parseIngredientLine(event.target.value);
+	                      if (parsed.name !== event.target.value) onUpdateIngredient(ingredient.id, { ...parsed, id: ingredient.id, needsReview: false });
+	                    }
+	                  }}
+	                  placeholder="ingredient"
+	                />
+	                <select
+	                  aria-label="Category"
+	                  value={ingredient.category}
+	                  onChange={(event) => onUpdateIngredient(ingredient.id, { category: event.target.value as GroceryCategory, needsReview: false })}
+	                >
+	                  {groceryCategories.map((category) => (
+	                    <option key={category} value={category}>
+	                      {category}
+	                    </option>
+	                  ))}
+	                </select>
+	                <button className="icon-button danger" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
+	                  <Trash2 size={16} />
+	                </button>
+	                {(ingredient.needsReview || ingredient.originalLine) && (
+	                  <small className="ingredient-review-note">
+	                    {ingredient.needsReview ? "Check this line" : "Imported line"}{ingredient.originalLine ? `: ${ingredient.originalLine}` : ""}
+	                  </small>
+	                )}
+	              </div>
+	            ))}
           </div>
         </div>
 
@@ -2263,7 +2499,8 @@ function ShoppingView({
   onDeleteItem,
   onCopy,
   onPrint,
-  onRestoreGenerated
+  onRestoreGenerated,
+  onRememberIngredientMerge
 }: {
   items: ShoppingListItem[];
   settings: AppState["settings"];
@@ -2288,6 +2525,7 @@ function ShoppingView({
   onCopy: () => void;
   onPrint: () => void;
   onRestoreGenerated: () => void;
+  onRememberIngredientMerge: (aliasName: string, canonicalName: string) => void;
 }) {
   const grouped = groceryCategories
     .map((category) => ({
@@ -2295,6 +2533,7 @@ function ShoppingView({
       items: items.filter((item) => item.category === category)
     }))
     .filter((group) => group.items.length > 0);
+  const possibleMerges = items.filter((item) => !item.manual && item.mergeWarnings?.length);
 
   return (
     <div className="view-stack">
@@ -2351,6 +2590,36 @@ function ShoppingView({
         </button>
       </form>
 
+      {possibleMerges.length > 0 && (
+        <section className="merge-review">
+          <div>
+            <p className="eyebrow">Possible duplicates</p>
+            <h3>Review grocery merges</h3>
+          </div>
+          <div className="merge-review-list">
+            {possibleMerges.map((item) => (
+              <div className="merge-review-item" key={`${item.id}-merge`}>
+                <div>
+                  <strong>{item.name}</strong>
+                  <span>{item.mergeWarnings?.join(" ")}</span>
+                  {item.sourceIngredients?.length ? <small>From: {item.sourceIngredients.join(", ")}</small> : null}
+                </div>
+                {item.mergeSuggestion && (
+                  <button
+                    className="icon-text-button"
+                    type="button"
+                    onClick={() => onRememberIngredientMerge(item.mergeSuggestion!.aliasName, item.mergeSuggestion!.canonicalName)}
+                  >
+                    <Check size={16} />
+                    {item.mergeSuggestion.label}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="shopping-groups">
         {grouped.map((group) => (
           <div className="shopping-group" key={group.category}>
@@ -2373,12 +2642,14 @@ function ShoppingView({
                       <strong>
                         {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
                       </strong>
-                      <small>
-                        {item.sourceMeals.join(", ")}
-                        {item.incompatible ? " · check unit" : ""}
-                        {item.staple ? " · staple" : ""}
-                      </small>
-                    </div>
+	                      <small>
+	                        {item.sourceMeals.join(", ")}
+	                        {item.incompatible ? " · check unit" : ""}
+	                        {item.staple ? " · staple" : ""}
+	                        {item.sourceIngredients && item.sourceIngredients.length > 1 ? ` · combines ${item.sourceIngredients.join(", ")}` : ""}
+	                      </small>
+	                      {item.mergeWarnings?.length ? <small className="merge-warning">{item.mergeWarnings.join(" ")}</small> : null}
+	                    </div>
                   )}
 
                   <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>

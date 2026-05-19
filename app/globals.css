@@ -913,6 +913,21 @@ h3 {
   font-weight: 900;
 }
 
+.photo-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.photo-controls label {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
 .selected-photo-name {
   color: var(--muted);
   font-size: 0.82rem;
@@ -923,9 +938,51 @@ h3 {
 .photo-preview {
   width: 100%;
   max-height: 280px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 8px;
   border: 1px solid var(--line);
+  background: #f6f0e6;
+}
+
+.ocr-review-tools {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.ocr-line-list {
+  display: grid;
+  gap: 6px;
+  max-height: 270px;
+  overflow: auto;
+}
+
+.ocr-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 7px;
+  border-radius: 8px;
+  background: #f6f0e6;
+}
+
+.ocr-line span {
+  overflow-wrap: anywhere;
+}
+
+.ocr-line button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fffefa;
+  color: var(--green-dark);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-weight: 900;
 }
 
 .review-panel {
@@ -978,6 +1035,13 @@ h3 {
   border-color: rgba(215, 166, 70, 0.58);
 }
 
+.ingredient-review-note {
+  grid-column: 1 / -1;
+  color: #7b5715;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .method-row {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) 42px;
@@ -999,6 +1063,41 @@ h3 {
 .manual-add {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.4fr) minmax(150px, 0.45fr) auto;
+}
+
+.merge-review {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(215, 166, 70, 0.38);
+  border-radius: 8px;
+  background: #fff7e6;
+}
+
+.merge-review-list {
+  display: grid;
+  gap: 8px;
+}
+
+.merge-review-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  background: #fffefa;
+}
+
+.merge-review-item div {
+  display: grid;
+  gap: 3px;
+}
+
+.merge-review-item span,
+.merge-review-item small,
+.merge-warning {
+  color: #7b5715;
 }
 
 .date-range-controls {
@@ -1288,13 +1387,16 @@ h3 {
     grid-column: 1 / -1;
   }
 
-  .manual-add,
-  .cloud-form,
-  .manual-meal-form,
-  .date-range-controls,
-  .photo-actions {
-    grid-template-columns: 1fr;
-  }
+	  .manual-add,
+	  .cloud-form,
+	  .manual-meal-form,
+	  .date-range-controls,
+	  .photo-actions,
+	  .photo-controls,
+	  .ocr-line,
+	  .merge-review-item {
+	    grid-template-columns: 1fr;
+	  }
 
   .segmented-control {
     grid-template-columns: repeat(2, 1fr);

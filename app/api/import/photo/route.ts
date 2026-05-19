@@ -6,6 +6,20 @@ type OcrSpaceResponse = {
   ParsedResults?: Array<{
     ParsedText?: string;
     ErrorMessage?: string | string[];
+    TextOverlay?: {
+      Lines?: Array<{
+        LineText?: string;
+        MinTop?: number;
+        MaxHeight?: number;
+        Words?: Array<{
+          WordText?: string;
+          Left?: number;
+          Top?: number;
+          Height?: number;
+          Width?: number;
+        }>;
+      }>;
+    };
   }>;
   IsErroredOnProcessing?: boolean;
   ErrorMessage?: string | string[];
@@ -106,6 +120,7 @@ async function callOcrSpace(apiKey: string, blob: Blob, fileName: string, engine
   fallbackForm.append("OCREngine", engine);
   fallbackForm.append("scale", "true");
   fallbackForm.append("detectOrientation", "true");
+  fallbackForm.append("isOverlayRequired", "true");
   fallbackForm.append("isTable", "false");
   fallbackForm.append("file", blob, fileName);
 
@@ -130,14 +145,44 @@ async function callOcrSpace(apiKey: string, blob: Blob, fileName: string, engine
   const parsedResultError = payload.ParsedResults?.map((result) => stringifyServiceError(result.ErrorMessage)).find(Boolean) ?? "";
   const serviceError = stringifyServiceError(payload.ErrorMessage) || parsedResultError || (payload.IsErroredOnProcessing ? "OCR processing failed." : "");
   const text = payload.ParsedResults?.map((result) => result.ParsedText ?? "").join("\n").trim() ?? "";
+  const overlayText = reconstructOverlayText(payload);
 
-  return { serviceError, text };
+  return { serviceError, text: overlayText || text };
+}
+
+function reconstructOverlayText(payload: OcrSpaceResponse) {
+  const lines =
+    payload.ParsedResults?.flatMap((result) =>
+      (result.TextOverlay?.Lines ?? []).map((line) => {
+        const words = line.Words ?? [];
+        const text =
+          line.LineText?.trim() ||
+          words
+            .sort((a, b) => (a.Left ?? 0) - (b.Left ?? 0))
+            .map((word) => word.WordText ?? "")
+            .join(" ")
+            .trim();
+        return {
+          text,
+          top: line.MinTop ?? words[0]?.Top ?? 0,
+          left: words[0]?.Left ?? 0
+        };
+      })
+    ) ?? [];
+
+  return lines
+    .filter((line) => line.text)
+    .sort((a, b) => a.top - b.top || a.left - b.left)
+    .map((line) => line.text)
+    .join("\n")
+    .trim();
 }
 
 export async function POST(request: Request) {
   const formData = await request.formData();
   const file = formData.get("photo");
   const source = formData.get("source");
+  const cropMode = typeof formData.get("cropMode") === "string" ? String(formData.get("cropMode")) : "";
 
   if (!(file instanceof File)) {
     return Response.json({ error: "A recipe photo is required." }, { status: 400 });
@@ -191,6 +236,7 @@ export async function POST(request: Request) {
       warnings: Array.from(
         new Set([
           "Online OCR was used for this draft. Review carefully before saving.",
+          ...(cropMode ? [`Online OCR received the ${cropMode} crop.`] : []),
           ...(prepared.warning ? [prepared.warning] : []),
           ...draft.warnings
         ])
