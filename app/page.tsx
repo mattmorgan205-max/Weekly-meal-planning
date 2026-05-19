@@ -470,33 +470,24 @@ export default function Home() {
       return;
     }
 
+    let active = true;
+
     client.auth.getUser().then(({ data }) => {
-      const user = data.user;
-      setCloudUser(user?.email ?? null);
-      cloudUserIdRef.current = user?.id ?? null;
-      if (user) {
-        void loadCloudSnapshotForUser(user.id);
-      } else {
-        cloudLoadedRef.current = false;
-        setSyncStatus("local");
-      }
+      if (!active) return;
+      void connectCloudUser(data.user);
     });
 
     const {
       data: { subscription }
     } = client.auth.onAuthStateChange((_event, session) => {
-      const user = session?.user;
-      setCloudUser(user?.email ?? null);
-      cloudUserIdRef.current = user?.id ?? null;
-      if (user) {
-        void loadCloudSnapshotForUser(user.id);
-      } else {
-        cloudLoadedRef.current = false;
-        setSyncStatus("local");
-      }
+      if (!active) return;
+      void connectCloudUser(session?.user ?? null);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, [hasHydratedLocalState]);
 
   useEffect(() => {
@@ -1034,6 +1025,49 @@ export default function Home() {
       settings: { ...current.settings, ...patch },
       hiddenShoppingItems: {}
     }));
+  }
+
+  async function resolveSnapshotOwnerForUser(userId: string, email?: string | null) {
+    const client = getSupabaseClient();
+    const normalizedEmail = email?.trim().toLowerCase();
+
+    if (!client || !normalizedEmail) return userId;
+
+    const { data, error } = await client
+      .from("household_snapshot_members")
+      .select("owner_user_id")
+      .eq("member_email", normalizedEmail)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      setCloudMessage(`Shared household lookup failed: ${error.message}. Using your own household.`);
+      return userId;
+    }
+
+    const ownerUserId = typeof data?.owner_user_id === "string" ? data.owner_user_id : userId;
+
+    if (ownerUserId !== userId) {
+      setCloudMessage(`Using shared household for ${normalizedEmail}.`);
+    }
+
+    return ownerUserId;
+  }
+
+  async function connectCloudUser(user: { id: string; email?: string | null } | null) {
+    setCloudUser(user?.email ?? null);
+
+    if (!user) {
+      cloudUserIdRef.current = null;
+      cloudLoadedRef.current = false;
+      setSyncStatus("local");
+      return;
+    }
+
+    setSyncStatus("loading");
+    const snapshotOwnerId = await resolveSnapshotOwnerForUser(user.id, user.email);
+    cloudUserIdRef.current = snapshotOwnerId;
+    await loadCloudSnapshotForUser(snapshotOwnerId);
   }
 
   async function sendMagicLink(event: FormEvent) {

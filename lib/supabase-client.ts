@@ -7,6 +7,13 @@ export function getSupabaseClient() {
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !anonKey) return null;
-  client ??= createClient(url, anonKey);
+  client ??= createClient(url, anonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      ...(typeof window !== "undefined" ? { storage: window.localStorage } : {})
+    }
+  });
   return client;
 }
