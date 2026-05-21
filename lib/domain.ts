@@ -58,6 +58,8 @@ export type PlannedMeal = {
 
 export type ShoppingListItem = {
   id: string;
+  mergeKey?: string;
+  splitGroupKey?: string;
   name: string;
   canonicalName?: string;
   quantity?: number;
@@ -66,12 +68,16 @@ export type ShoppingListItem = {
   category: GroceryCategory;
   sourceMeals: string[];
   sourceIngredients?: string[];
+  conversionNotes?: string[];
   mergeWarnings?: string[];
   mergeSuggestion?: {
     aliasName: string;
     canonicalName: string;
     label: string;
   };
+  canSplitMerge?: boolean;
+  splitFromConsolidation?: boolean;
+  canRestoreMerge?: boolean;
   checked: boolean;
   manual?: boolean;
   staple?: boolean;
@@ -85,6 +91,7 @@ export type AppSettings = {
   stapleIngredients: string[];
   includeStaples: boolean;
   ingredientAliases: Record<string, string>;
+  splitShoppingItems: Record<string, boolean>;
 };
 
 export type ImportDraft = {
@@ -163,6 +170,29 @@ const unitAliases: Record<string, string> = {
   tbsp: "tbsp",
   tablespoon: "tbsp",
   tablespoons: "tbsp",
+  oz: "oz",
+  ounce: "oz",
+  ounces: "oz",
+  lb: "lb",
+  lbs: "lb",
+  pound: "lb",
+  pounds: "lb",
+  floz: "fl oz",
+  "fl oz": "fl oz",
+  "fluid ounce": "fl oz",
+  "fluid ounces": "fl oz",
+  pt: "pt",
+  pts: "pt",
+  pint: "pt",
+  pints: "pt",
+  qt: "qt",
+  qts: "qt",
+  quart: "qt",
+  quarts: "qt",
+  gal: "gal",
+  gals: "gal",
+  gallon: "gal",
+  gallons: "gal",
   cup: "cup",
   cups: "cup",
   can: "can",
@@ -187,8 +217,14 @@ const unitConversions: Record<string, { family: string; base: string; factor: nu
   kg: { family: "mass", base: "g", factor: 1000 },
   ml: { family: "volume", base: "ml", factor: 1 },
   l: { family: "volume", base: "ml", factor: 1000 },
-  tsp: { family: "spoon", base: "ml", factor: 5 },
-  tbsp: { family: "spoon", base: "ml", factor: 15 },
+  tsp: { family: "spoon", base: "tsp", factor: 1 },
+  tbsp: { family: "spoon", base: "tsp", factor: 3 },
+  oz: { family: "mass", base: "g", factor: 28.3495 },
+  lb: { family: "mass", base: "g", factor: 453.592 },
+  "fl oz": { family: "volume", base: "ml", factor: 28.4131 },
+  pt: { family: "volume", base: "ml", factor: 568.261 },
+  qt: { family: "volume", base: "ml", factor: 1136.52 },
+  gal: { family: "volume", base: "ml", factor: 4546.09 },
   cup: { family: "volume", base: "ml", factor: 240 },
   can: { family: "count-can", base: "can", factor: 1 },
   pack: { family: "count-pack", base: "pack", factor: 1 },
@@ -402,6 +438,39 @@ export function normalizeUnit(unit?: string) {
   return unitAliases[cleaned] ?? cleaned;
 }
 
+function readLeadingQuantity(value: string) {
+  const match = value.match(/^((?:\d+(?:\.\d+)?)|(?:\d+\s+\d+\/\d+)|(?:\d+\/\d+)|[¼½¾⅓⅔⅛⅜⅝⅞])\s*(.*)$/);
+  if (!match) return { quantity: undefined, rest: value.trim() };
+  return {
+    quantity: parseQuantity(match[1]),
+    rest: match[2].trim()
+  };
+}
+
+function splitIngredientUnit(rest: string, hasQuantity: boolean) {
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (!hasQuantity || words.length < 2) return { unit: "", name: rest };
+
+  const twoWordCandidate = words.slice(0, 2).join(" ").toLowerCase().replace(/[.]/g, "");
+  const oneWordCandidate = words[0].toLowerCase().replace(/[.]/g, "");
+
+  if (unitAliases[twoWordCandidate]) {
+    return {
+      unit: normalizeUnit(twoWordCandidate),
+      name: words.slice(2).join(" ").trim()
+    };
+  }
+
+  if (unitAliases[oneWordCandidate]) {
+    return {
+      unit: normalizeUnit(oneWordCandidate),
+      name: words.slice(1).join(" ").trim()
+    };
+  }
+
+  return { unit: "", name: rest };
+}
+
 export function parseTags(value: string) {
   return value
     .split(",")
@@ -593,13 +662,11 @@ export function parseQuantity(value: string) {
 
 export function parseIngredientLine(line: string, options: { strict?: boolean } = {}): Ingredient {
   const cleaned = line.replace(/^[-*•]\s*/, "").trim();
-  const pattern =
-    /^((?:\d+(?:\.\d+)?)|(?:\d+\s+\d+\/\d+)|(?:\d+\/\d+)|[¼½¾⅓⅔⅛⅜⅝⅞])?\s*([a-zA-Z]+)?\s+(.+)$/;
-  const match = cleaned.match(pattern);
-  const quantity = match?.[1] ? parseQuantity(match[1]) : undefined;
-  const rawUnit = match?.[2]?.toLowerCase().replace(/[.]/g, "").trim();
-  const unit = rawUnit && unitAliases[rawUnit] ? normalizeUnit(rawUnit) : "";
-  const name = rawUnit && !unit ? `${match?.[2]} ${match?.[3]}`.trim() : match?.[3]?.trim() || cleaned;
+  const parsedQuantity = readLeadingQuantity(cleaned);
+  const parsedUnit = splitIngredientUnit(parsedQuantity.rest, typeof parsedQuantity.quantity === "number");
+  const quantity = parsedQuantity.quantity;
+  const unit = parsedUnit.unit;
+  const name = parsedUnit.name || parsedQuantity.rest || cleaned;
   const validation = validateIngredientLine(cleaned, options.strict);
   const canonical = canonicalizeIngredientName(name);
   const confidence =
@@ -739,6 +806,10 @@ function displayQuantity(quantity?: number, unit?: string) {
   if (typeof quantity !== "number") return unit ? unit : "";
   const normalUnit = normalizeUnit(unit);
 
+  if (normalUnit === "tsp") {
+    return Math.abs(quantity % 3) < 0.001 ? `${formatNumber(quantity / 3)} tbsp` : `${formatNumber(quantity)} tsp`;
+  }
+
   if (normalUnit === "g" && quantity >= 1000) {
     return `${formatNumber(quantity / 1000)} kg`;
   }
@@ -748,6 +819,15 @@ function displayQuantity(quantity?: number, unit?: string) {
   }
 
   return `${formatNumber(quantity)}${normalUnit ? ` ${normalUnit}` : ""}`;
+}
+
+function conversionNote(originalQuantity?: number, originalUnit?: string, convertedQuantity?: number, convertedUnit?: string) {
+  if (typeof originalQuantity !== "number" || typeof convertedQuantity !== "number") return "";
+  const unit = normalizeUnit(originalUnit);
+  if (!unit || ["g", "kg", "ml", "l", "tsp", "tbsp"].includes(unit)) return "";
+  const converted = displayQuantity(convertedQuantity, convertedUnit);
+  const original = displayQuantity(originalQuantity, unit);
+  return `${original} converted to ${converted}`;
 }
 
 function isStaple(name: string, staples: string[]) {
@@ -765,16 +845,22 @@ export function generateShoppingList(
 ) {
   type Bucket = {
     key: string;
+    mergeKey: string;
+    splitGroupKey?: string;
     name: string;
     canonicalName: string;
     category: GroceryCategory;
     unitFamily?: string;
     baseUnit?: string;
     quantity?: number;
+    sourceCount: number;
     sourceMeals: Set<string>;
     sourceIngredients: Set<string>;
+    conversionNotes: Set<string>;
     mergeWarnings: Set<string>;
     mergeSuggestion?: ShoppingListItem["mergeSuggestion"];
+    canSplitMerge?: boolean;
+    splitFromConsolidation?: boolean;
     incompatible?: boolean;
     staple: boolean;
   };
@@ -789,53 +875,73 @@ export function generateShoppingList(
     const factor = meal.peopleCount / Math.max(1, recipe.servings);
     recipe.ingredients.forEach((ingredient) => {
       const scaled = scaleIngredient(ingredient, factor);
-      const canonical = canonicalizeIngredientName(scaled.canonicalName || scaled.name, settings.ingredientAliases ?? {});
+      const canonical = canonicalizeIngredientName(scaled.name, settings.ingredientAliases ?? {});
       const nameKey = canonical.canonicalName;
-      const conversion = scaled.unit ? unitConversions[normalizeUnit(scaled.unit)] : undefined;
+      const normalizedUnit = normalizeUnit(scaled.unit);
+      const conversion = scaled.unit ? unitConversions[normalizedUnit] : undefined;
       const quantity = typeof scaled.quantity === "number" && conversion ? scaled.quantity * conversion.factor : scaled.quantity;
       const family = conversion?.family ?? (scaled.unit ? `raw-${scaled.unit}` : "no-unit");
       const baseUnit = conversion?.base ?? scaled.unit ?? "";
       const staple = isStaple(scaled.name, settings.stapleIngredients);
+      const note = conversionNote(scaled.quantity, normalizedUnit, quantity, baseUnit);
+      const canSplitMerge = Boolean(canonical.normalizedName && canonical.normalizedName !== nameKey);
 
       if (staple && !settings.includeStaples) return;
 
-      const key = `${nameKey}::${family}`;
+      const mergeKey = `${nameKey}::${family}`;
+      const splitFromConsolidation = Boolean(settings.splitShoppingItems?.[mergeKey]);
+      const key = splitFromConsolidation ? `${mergeKey}::${recipe.id}::${meal.id}::${ingredient.id}` : mergeKey;
       const existing = buckets.get(key);
       if (existing && typeof existing.quantity === "number" && typeof quantity === "number") {
         existing.quantity += quantity;
+        existing.sourceCount += 1;
         existing.sourceMeals.add(recipe.title);
         existing.sourceIngredients.add(scaled.name);
+        if (note) existing.conversionNotes.add(note);
         if (canonical.mergeWarning) existing.mergeWarnings.add(canonical.mergeWarning);
         if (canonical.mergeSuggestion) existing.mergeSuggestion = canonical.mergeSuggestion;
+        existing.canSplitMerge = existing.canSplitMerge || canSplitMerge;
       } else if (!existing) {
         buckets.set(key, {
           key,
-          name: nameKey || scaled.name,
+          mergeKey,
+          splitGroupKey: splitFromConsolidation ? mergeKey : undefined,
+          name: splitFromConsolidation ? scaled.name : nameKey || scaled.name,
           canonicalName: nameKey,
           category: scaled.category,
           unitFamily: family,
           baseUnit,
           quantity,
+          sourceCount: 1,
           sourceMeals: new Set([recipe.title]),
           sourceIngredients: new Set([scaled.name]),
+          conversionNotes: new Set(note ? [note] : []),
           mergeWarnings: new Set(canonical.mergeWarning ? [canonical.mergeWarning] : []),
           mergeSuggestion: canonical.mergeSuggestion,
+          canSplitMerge,
+          splitFromConsolidation,
           staple
         });
       } else {
         const separateKey = `${key}::${meal.id}`;
         buckets.set(separateKey, {
           key: separateKey,
-          name: nameKey || scaled.name,
+          mergeKey,
+          splitGroupKey: splitFromConsolidation ? mergeKey : undefined,
+          name: splitFromConsolidation ? scaled.name : nameKey || scaled.name,
           canonicalName: nameKey,
           category: scaled.category,
           unitFamily: family,
-          baseUnit: scaled.unit,
-          quantity: scaled.quantity,
+          baseUnit,
+          quantity,
+          sourceCount: 1,
           sourceMeals: new Set([recipe.title]),
           sourceIngredients: new Set([scaled.name]),
+          conversionNotes: new Set(note ? [note] : []),
           mergeWarnings: new Set(["This ingredient has another quantity or unit that could not be combined safely."]),
           mergeSuggestion: canonical.mergeSuggestion,
+          canSplitMerge,
+          splitFromConsolidation,
           incompatible: true,
           staple
         });
@@ -844,10 +950,12 @@ export function generateShoppingList(
   });
 
   const generated = Array.from(buckets.values()).map<ShoppingListItem>((bucket) => {
-    const id = `shop_${bucket.key}`;
-    return {
-      id,
-      name: bucket.name,
+      const id = `shop_${bucket.key}`;
+      return {
+        id,
+        mergeKey: bucket.mergeKey,
+        splitGroupKey: bucket.splitGroupKey,
+        name: bucket.name,
       canonicalName: bucket.canonicalName,
       quantity: bucket.quantity,
       unit: bucket.baseUnit,
@@ -855,8 +963,12 @@ export function generateShoppingList(
       category: bucket.category,
       sourceMeals: Array.from(bucket.sourceMeals),
       sourceIngredients: Array.from(bucket.sourceIngredients),
+      conversionNotes: Array.from(bucket.conversionNotes),
       mergeWarnings: Array.from(bucket.mergeWarnings),
       mergeSuggestion: bucket.mergeSuggestion,
+      canSplitMerge: !bucket.splitFromConsolidation && (bucket.canSplitMerge || bucket.sourceIngredients.size > 1 || bucket.sourceMeals.size > 1 || bucket.sourceCount > 1),
+      splitFromConsolidation: bucket.splitFromConsolidation,
+      canRestoreMerge: bucket.splitFromConsolidation && Boolean(bucket.splitGroupKey),
       checked: shoppingChecks[id] ?? false,
       staple: bucket.staple,
       incompatible: bucket.incompatible
@@ -975,7 +1087,8 @@ export function seedState(): AppState {
       hiddenSlots: [],
       stapleIngredients: ["salt", "black pepper", "olive oil", "plain flour", "sugar"],
       includeStaples: false,
-      ingredientAliases: {}
+      ingredientAliases: {},
+      splitShoppingItems: {}
     }
   };
 }

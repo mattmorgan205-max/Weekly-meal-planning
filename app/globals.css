@@ -1065,41 +1065,6 @@ h3 {
   grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.4fr) minmax(150px, 0.45fr) auto;
 }
 
-.merge-review {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid rgba(215, 166, 70, 0.38);
-  border-radius: 8px;
-  background: #fff7e6;
-}
-
-.merge-review-list {
-  display: grid;
-  gap: 8px;
-}
-
-.merge-review-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 8px;
-  border-radius: 8px;
-  background: #fffefa;
-}
-
-.merge-review-item div {
-  display: grid;
-  gap: 3px;
-}
-
-.merge-review-item span,
-.merge-review-item small,
-.merge-warning {
-  color: #7b5715;
-}
-
 .date-range-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(132px, 1fr));
@@ -1196,6 +1161,25 @@ h3 {
 
 .shopping-text span {
   color: var(--green-dark);
+}
+
+.shopping-note {
+  display: block;
+  color: var(--muted);
+}
+
+.shopping-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.shopping-inline-actions .text-button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .manual-edit {
@@ -1387,16 +1371,15 @@ h3 {
     grid-column: 1 / -1;
   }
 
-	  .manual-add,
-	  .cloud-form,
-	  .manual-meal-form,
-	  .date-range-controls,
-	  .photo-actions,
-	  .photo-controls,
-	  .ocr-line,
-	  .merge-review-item {
-	    grid-template-columns: 1fr;
-	  }
+  .manual-add,
+  .cloud-form,
+  .manual-meal-form,
+  .date-range-controls,
+  .photo-actions,
+  .photo-controls,
+  .ocr-line {
+    grid-template-columns: 1fr;
+  }
 
   .segmented-control {
     grid-template-columns: repeat(2, 1fr);

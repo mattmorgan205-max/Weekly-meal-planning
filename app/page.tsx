@@ -1108,6 +1108,44 @@ export default function Home() {
     }));
   }
 
+  function undoIngredientConsolidation(item: ShoppingListItem) {
+    if (!item.mergeKey) return;
+
+    updateState((current) => {
+      return {
+        ...current,
+        settings: {
+          ...current.settings,
+          splitShoppingItems: {
+            ...(current.settings.splitShoppingItems ?? {}),
+            [item.mergeKey!]: true
+          }
+        },
+        hiddenShoppingItems: {}
+      };
+    });
+  }
+
+  function restoreIngredientConsolidation(item: ShoppingListItem) {
+    const splitGroupKey = item.splitGroupKey;
+    if (!splitGroupKey) return;
+
+    updateState((current) => {
+      const splitShoppingItems = { ...(current.settings.splitShoppingItems ?? {}) };
+
+      delete splitShoppingItems[splitGroupKey];
+
+      return {
+        ...current,
+        settings: {
+          ...current.settings,
+          splitShoppingItems
+        },
+        hiddenShoppingItems: {}
+      };
+    });
+  }
+
   function addManualShoppingItem(event: FormEvent) {
     event.preventDefault();
     if (!manualItemName.trim()) return;
@@ -1167,7 +1205,10 @@ export default function Home() {
 
   async function copyShoppingList() {
     const text = shoppingList
-      .map((item) => `${item.checked ? "[x]" : "[ ]"} ${item.displayQuantity ? `${item.displayQuantity} ` : ""}${item.name}`)
+      .map((item) => {
+        const conversion = item.conversionNotes?.length ? ` (${item.conversionNotes.join("; ")})` : "";
+        return `${item.checked ? "[x]" : "[ ]"} ${item.displayQuantity ? `${item.displayQuantity} ` : ""}${item.name}${conversion}`;
+      })
       .join("\n");
     await navigator.clipboard.writeText(text);
   }
@@ -1490,9 +1531,11 @@ export default function Home() {
             onDeleteItem={deleteShoppingItem}
             onCopy={copyShoppingList}
             onPrint={() => window.print()}
-	            onRestoreGenerated={() => updateState((current) => ({ ...current, hiddenShoppingItems: {} }))}
-	            onRememberIngredientMerge={rememberIngredientMerge}
-	          />
+            onRestoreGenerated={() => updateState((current) => ({ ...current, hiddenShoppingItems: {} }))}
+            onRememberIngredientMerge={rememberIngredientMerge}
+            onUndoIngredientConsolidation={undoIngredientConsolidation}
+            onRestoreIngredientConsolidation={restoreIngredientConsolidation}
+          />
         )}
 
         {activeView === "settings" && (
@@ -2500,7 +2543,9 @@ function ShoppingView({
   onCopy,
   onPrint,
   onRestoreGenerated,
-  onRememberIngredientMerge
+  onRememberIngredientMerge,
+  onUndoIngredientConsolidation,
+  onRestoreIngredientConsolidation
 }: {
   items: ShoppingListItem[];
   settings: AppState["settings"];
@@ -2526,6 +2571,8 @@ function ShoppingView({
   onPrint: () => void;
   onRestoreGenerated: () => void;
   onRememberIngredientMerge: (aliasName: string, canonicalName: string) => void;
+  onUndoIngredientConsolidation: (item: ShoppingListItem) => void;
+  onRestoreIngredientConsolidation: (item: ShoppingListItem) => void;
 }) {
   const grouped = groceryCategories
     .map((category) => ({
@@ -2533,7 +2580,6 @@ function ShoppingView({
       items: items.filter((item) => item.category === category)
     }))
     .filter((group) => group.items.length > 0);
-  const possibleMerges = items.filter((item) => !item.manual && item.mergeWarnings?.length);
 
   return (
     <div className="view-stack">
@@ -2590,36 +2636,6 @@ function ShoppingView({
         </button>
       </form>
 
-      {possibleMerges.length > 0 && (
-        <section className="merge-review">
-          <div>
-            <p className="eyebrow">Possible duplicates</p>
-            <h3>Review grocery merges</h3>
-          </div>
-          <div className="merge-review-list">
-            {possibleMerges.map((item) => (
-              <div className="merge-review-item" key={`${item.id}-merge`}>
-                <div>
-                  <strong>{item.name}</strong>
-                  <span>{item.mergeWarnings?.join(" ")}</span>
-                  {item.sourceIngredients?.length ? <small>From: {item.sourceIngredients.join(", ")}</small> : null}
-                </div>
-                {item.mergeSuggestion && (
-                  <button
-                    className="icon-text-button"
-                    type="button"
-                    onClick={() => onRememberIngredientMerge(item.mergeSuggestion!.aliasName, item.mergeSuggestion!.canonicalName)}
-                  >
-                    <Check size={16} />
-                    {item.mergeSuggestion.label}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
       <section className="shopping-groups">
         {grouped.map((group) => (
           <div className="shopping-group" key={group.category}>
@@ -2642,14 +2658,42 @@ function ShoppingView({
                       <strong>
                         {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
                       </strong>
-	                      <small>
-	                        {item.sourceMeals.join(", ")}
-	                        {item.incompatible ? " · check unit" : ""}
-	                        {item.staple ? " · staple" : ""}
-	                        {item.sourceIngredients && item.sourceIngredients.length > 1 ? ` · combines ${item.sourceIngredients.join(", ")}` : ""}
-	                      </small>
-	                      {item.mergeWarnings?.length ? <small className="merge-warning">{item.mergeWarnings.join(" ")}</small> : null}
-	                    </div>
+                      <small>
+                        {item.sourceMeals.join(", ")}
+                        {item.incompatible ? " · check unit" : ""}
+                        {item.staple ? " · staple" : ""}
+                        {item.splitFromConsolidation ? " · split from consolidated item" : ""}
+                        {item.sourceIngredients && item.sourceIngredients.length > 1 ? ` · combines ${item.sourceIngredients.join(", ")}` : ""}
+                      </small>
+                      {item.conversionNotes?.length ? <small className="shopping-note">Metric conversion: {item.conversionNotes.join("; ")}</small> : null}
+                      {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
+                      {(item.canSplitMerge || item.canRestoreMerge || item.mergeSuggestion) && (
+                        <div className="shopping-inline-actions">
+                          {item.canSplitMerge && (
+                            <button className="text-button" type="button" onClick={() => onUndoIngredientConsolidation(item)}>
+                              <RefreshCw size={15} />
+                              Split consolidation
+                            </button>
+                          )}
+                          {item.canRestoreMerge && (
+                            <button className="text-button" type="button" onClick={() => onRestoreIngredientConsolidation(item)}>
+                              <Check size={15} />
+                              Combine again
+                            </button>
+                          )}
+                          {item.mergeSuggestion && (
+                            <button
+                              className="text-button"
+                              type="button"
+                              onClick={() => onRememberIngredientMerge(item.mergeSuggestion!.aliasName, item.mergeSuggestion!.canonicalName)}
+                            >
+                              <Check size={15} />
+                              {item.mergeSuggestion.label}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
