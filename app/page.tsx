@@ -103,9 +103,11 @@ function hydrateRecipe(recipe: Recipe): Recipe {
 }
 
 function hydratePlannedMeal(meal: AppState["plannedMeals"][number], defaultPeople: number): AppState["plannedMeals"][number] {
+  const parsedPeopleCount = Number(meal.peopleCount);
+
   return {
     ...meal,
-    peopleCount: Math.max(1, Number(meal.peopleCount) || defaultPeople),
+    peopleCount: Number.isFinite(parsedPeopleCount) ? Math.max(0, parsedPeopleCount) : defaultPeople,
     manualTitle: meal.manualTitle?.trim() || undefined
   };
 }
@@ -171,6 +173,14 @@ function classNames(...values: Array<string | false | undefined>) {
 
 function normalizeDateRange(startDate: string, endDate: string) {
   return startDate <= endDate ? { startDate, endDate } : { startDate: endDate, endDate: startDate };
+}
+
+function shoppingHiddenPrefixForRange(range: ReturnType<typeof normalizeDateRange>) {
+  return `${range.startDate}__${range.endDate}__`;
+}
+
+function shoppingHiddenItemKey(range: ReturnType<typeof normalizeDateRange>, itemId: string) {
+  return `${shoppingHiddenPrefixForRange(range)}${itemId}`;
 }
 
 function parseJsonResponse<T>(text: string, fallbackError: string): T | { error: string } {
@@ -452,6 +462,21 @@ export default function Home() {
   );
   const days = useMemo(() => weekDates(weekStart), [weekStart]);
   const shoppingDateRange = useMemo(() => normalizeDateRange(shoppingStartDate, shoppingEndDate), [shoppingStartDate, shoppingEndDate]);
+  const shoppingHiddenPrefix = useMemo(
+    () => shoppingHiddenPrefixForRange(shoppingDateRange),
+    [shoppingDateRange.startDate, shoppingDateRange.endDate]
+  );
+  const rangeHiddenShoppingItems = useMemo(() => {
+    const scopedHiddenItems: Record<string, boolean> = {};
+
+    Object.entries(state.hiddenShoppingItems).forEach(([key, hidden]) => {
+      if (hidden && key.startsWith(shoppingHiddenPrefix)) {
+        scopedHiddenItems[key.slice(shoppingHiddenPrefix.length)] = true;
+      }
+    });
+
+    return scopedHiddenItems;
+  }, [shoppingHiddenPrefix, state.hiddenShoppingItems]);
   const shoppingList = useMemo(
     () =>
       generateShoppingList(
@@ -459,10 +484,10 @@ export default function Home() {
         state.plannedMeals.filter((meal) => meal.date >= shoppingDateRange.startDate && meal.date <= shoppingDateRange.endDate),
         state.settings,
         state.shoppingChecks,
-        state.hiddenShoppingItems,
+        rangeHiddenShoppingItems,
         state.manualShoppingItems
       ),
-    [shoppingDateRange, state]
+    [rangeHiddenShoppingItems, shoppingDateRange, state]
   );
   const filteredRecipes = useMemo(() => {
     const query = recipeSearch.toLowerCase().trim();
@@ -607,8 +632,7 @@ export default function Home() {
           recipeId,
           peopleCount: current.settings.defaultPeople
         }
-      ],
-      hiddenShoppingItems: {}
+      ]
     }));
     setMealPicker(null);
     setMealPickerQuery("");
@@ -629,8 +653,7 @@ export default function Home() {
           manualTitle,
           peopleCount: current.settings.defaultPeople
         }
-      ],
-      hiddenShoppingItems: {}
+      ]
     }));
     setMealPicker(null);
     setMealPickerQuery("");
@@ -639,24 +662,24 @@ export default function Home() {
   function movePlannedMeal(id: string, date: string, slot: MealSlot) {
     updateState((current) => ({
       ...current,
-      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...meal, date, slot } : meal)),
-      hiddenShoppingItems: {}
+      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...meal, date, slot } : meal))
     }));
   }
 
   function updatePlannedMeal(id: string, patch: Partial<Pick<(typeof state.plannedMeals)[number], "peopleCount" | "notes" | "producesLeftovers" | "leftoverTargetDate">>) {
+    const normalizedPatch =
+      typeof patch.peopleCount === "number" ? { ...patch, peopleCount: Math.max(0, patch.peopleCount) } : patch;
+
     updateState((current) => ({
       ...current,
-      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...meal, ...patch } : meal)),
-      hiddenShoppingItems: {}
+      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...meal, ...normalizedPatch } : meal))
     }));
   }
 
   function removePlannedMeal(id: string) {
     updateState((current) => ({
       ...current,
-      plannedMeals: current.plannedMeals.filter((meal) => meal.id !== id),
-      hiddenShoppingItems: {}
+      plannedMeals: current.plannedMeals.filter((meal) => meal.id !== id)
     }));
   }
 
@@ -672,11 +695,10 @@ export default function Home() {
           slot: "lunch",
           recipeId: meal.recipeId,
           manualTitle: meal.recipeId ? undefined : meal.manualTitle,
-          peopleCount: Math.max(1, Math.floor(meal.peopleCount / 2)),
+          peopleCount: 0,
           notes: "Leftovers"
         }
-      ],
-      hiddenShoppingItems: {}
+      ]
     }));
   }
 
@@ -694,8 +716,7 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      plannedMeals: [...current.plannedMeals, ...newMeals],
-      hiddenShoppingItems: {}
+      plannedMeals: [...current.plannedMeals, ...newMeals]
     }));
     setWeekStart(formatDateKey(nextWeek));
   }
@@ -705,8 +726,7 @@ export default function Home() {
     updateState((current) => ({
       ...current,
       plannedMeals: current.plannedMeals.filter((meal) => !dayKeys.has(meal.date)),
-      shoppingChecks: {},
-      hiddenShoppingItems: {}
+      shoppingChecks: {}
     }));
   }
 
@@ -749,8 +769,7 @@ export default function Home() {
                   updatedAt: new Date().toISOString()
                 }
               : item
-          ),
-          hiddenShoppingItems: {}
+          )
         };
       }
 
@@ -786,8 +805,7 @@ export default function Home() {
     updateState((current) => ({
       ...current,
       recipes: current.recipes.filter((recipe) => recipe.id !== recipeId),
-      plannedMeals: current.plannedMeals.filter((meal) => meal.recipeId !== recipeId),
-      hiddenShoppingItems: {}
+      plannedMeals: current.plannedMeals.filter((meal) => meal.recipeId !== recipeId)
     }));
   }
 
@@ -1103,8 +1121,7 @@ export default function Home() {
           ...(current.settings.ingredientAliases ?? {}),
           [canonicalizeIngredientName(aliasName).normalizedName]: canonicalizeIngredientName(canonicalName).canonicalName
         }
-      },
-      hiddenShoppingItems: {}
+      }
     }));
   }
 
@@ -1120,8 +1137,7 @@ export default function Home() {
             ...(current.settings.splitShoppingItems ?? {}),
             [item.mergeKey!]: true
           }
-        },
-        hiddenShoppingItems: {}
+        }
       };
     });
   }
@@ -1140,8 +1156,7 @@ export default function Home() {
         settings: {
           ...current.settings,
           splitShoppingItems
-        },
-        hiddenShoppingItems: {}
+        }
       };
     });
   }
@@ -1188,6 +1203,8 @@ export default function Home() {
   }
 
   function deleteShoppingItem(item: ShoppingListItem) {
+    const hiddenItemKey = shoppingHiddenItemKey(shoppingDateRange, item.id);
+
     updateState((current) => {
       if (item.manual) {
         return {
@@ -1198,9 +1215,32 @@ export default function Home() {
 
       return {
         ...current,
-        hiddenShoppingItems: { ...current.hiddenShoppingItems, [item.id]: true }
+        hiddenShoppingItems: { ...current.hiddenShoppingItems, [hiddenItemKey]: true }
       };
     });
+  }
+
+  function forgetHiddenShoppingItems() {
+    updateState((current) => (Object.keys(current.hiddenShoppingItems).length ? { ...current, hiddenShoppingItems: {} } : current));
+  }
+
+  function updateShoppingStartDate(value: string) {
+    setShoppingStartDate(value);
+    forgetHiddenShoppingItems();
+  }
+
+  function updateShoppingEndDate(value: string) {
+    setShoppingEndDate(value);
+    forgetHiddenShoppingItems();
+  }
+
+  function restoreHiddenGeneratedShoppingItems() {
+    updateState((current) => ({
+      ...current,
+      hiddenShoppingItems: Object.fromEntries(
+        Object.entries(current.hiddenShoppingItems).filter(([key]) => !key.startsWith(shoppingHiddenPrefix))
+      )
+    }));
   }
 
   async function copyShoppingList() {
@@ -1216,8 +1256,7 @@ export default function Home() {
   function updateSettings(patch: Partial<AppState["settings"]>) {
     updateState((current) => ({
       ...current,
-      settings: { ...current.settings, ...patch },
-      hiddenShoppingItems: {}
+      settings: { ...current.settings, ...patch }
     }));
   }
 
@@ -1514,8 +1553,8 @@ export default function Home() {
             manualItemName={manualItemName}
             manualItemQuantity={manualItemQuantity}
             manualItemCategory={manualItemCategory}
-            setStartDate={setShoppingStartDate}
-            setEndDate={setShoppingEndDate}
+            setStartDate={updateShoppingStartDate}
+            setEndDate={updateShoppingEndDate}
             setManualItemName={setManualItemName}
             setManualItemQuantity={setManualItemQuantity}
             setManualItemCategory={setManualItemCategory}
@@ -1523,15 +1562,17 @@ export default function Home() {
               const currentWeekStart = startOfWeek(new Date());
               setShoppingStartDate(formatDateKey(currentWeekStart));
               setShoppingEndDate(formatDateKey(addDays(currentWeekStart, 6)));
+              forgetHiddenShoppingItems();
             }}
             onToggleIncludeStaples={(includeStaples) => updateSettings({ includeStaples })}
             onAddManualItem={addManualShoppingItem}
             onToggleItem={toggleShoppingItem}
             onUpdateManualItem={updateManualShoppingItem}
             onDeleteItem={deleteShoppingItem}
+            onOpenRecipe={setSelectedRecipeId}
             onCopy={copyShoppingList}
             onPrint={() => window.print()}
-            onRestoreGenerated={() => updateState((current) => ({ ...current, hiddenShoppingItems: {} }))}
+            onRestoreGenerated={restoreHiddenGeneratedShoppingItems}
             onRememberIngredientMerge={rememberIngredientMerge}
             onUndoIngredientConsolidation={undoIngredientConsolidation}
             onRestoreIngredientConsolidation={restoreIngredientConsolidation}
@@ -1569,7 +1610,16 @@ export default function Home() {
           />
         )}
 
-        {selectedRecipe && <RecipeDetailModal recipe={selectedRecipe} onClose={() => setSelectedRecipeId(null)} />}
+        {selectedRecipe && (
+          <RecipeDetailModal
+            recipe={selectedRecipe}
+            onClose={() => setSelectedRecipeId(null)}
+            onEditRecipe={(recipe) => {
+              setSelectedRecipeId(null);
+              editRecipe(recipe);
+            }}
+          />
+        )}
       </section>
     </main>
   );
@@ -1737,10 +1787,13 @@ function PlannerView({
                                 <input
                                   aria-label="People eating"
                                   type="number"
-                                  min={1}
+                                  min={0}
                                   value={meal.peopleCount}
                                   onClick={(event) => event.stopPropagation()}
-                                  onChange={(event) => onUpdateMeal(meal.id, { peopleCount: Number(event.target.value) || 1 })}
+                                  onChange={(event) => {
+                                    const peopleCount = Number(event.target.value);
+                                    onUpdateMeal(meal.id, { peopleCount: Number.isFinite(peopleCount) ? Math.max(0, peopleCount) : 0 });
+                                  }}
                                 />
                               </label>
                               {recipe ? (
@@ -1990,7 +2043,15 @@ function RecipePickerButton({
   );
 }
 
-function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
+function RecipeDetailModal({
+  recipe,
+  onClose,
+  onEditRecipe
+}: {
+  recipe: Recipe;
+  onClose: () => void;
+  onEditRecipe: (recipe: Recipe) => void;
+}) {
   const totalMinutes = totalRecipeMinutes(recipe);
   const source = recipe.source ?? recipe.sourceUrl;
 
@@ -2002,9 +2063,15 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe; onClose: () =>
             <p className="eyebrow">Recipe</p>
             <h2>{recipe.title}</h2>
           </div>
-          <button className="icon-button" title="Close" onClick={onClose}>
-            <X size={18} />
-          </button>
+          <div className="button-row">
+            <button className="icon-text-button" type="button" onClick={() => onEditRecipe(recipe)}>
+              <Wand2 size={18} />
+              Edit
+            </button>
+            <button className="icon-button" title="Close" onClick={onClose}>
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="recipe-meta-row">
@@ -2540,6 +2607,7 @@ function ShoppingView({
   onToggleItem,
   onUpdateManualItem,
   onDeleteItem,
+  onOpenRecipe,
   onCopy,
   onPrint,
   onRestoreGenerated,
@@ -2567,6 +2635,7 @@ function ShoppingView({
   onToggleItem: (id: string, checked: boolean) => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
+  onOpenRecipe: (recipeId: string) => void;
   onCopy: () => void;
   onPrint: () => void;
   onRestoreGenerated: () => void;
@@ -2641,66 +2710,82 @@ function ShoppingView({
           <div className="shopping-group" key={group.category}>
             <h2>{group.category}</h2>
             <div className="shopping-list">
-              {group.items.map((item) => (
-                <article className={classNames("shopping-item", item.checked && "checked")} key={item.id}>
-                  <label className="check-control">
-                    <input type="checkbox" checked={item.checked} onChange={(event) => onToggleItem(item.id, event.target.checked)} />
-                    <Check size={16} />
-                  </label>
+              {group.items.map((item) => {
+                const sourceRecipeId = item.sourceRecipeIds?.[0];
 
-                  {item.manual ? (
-                    <div className="manual-edit">
-                      <input value={item.displayQuantity} onChange={(event) => onUpdateManualItem(item.id, { displayQuantity: event.target.value })} />
-                      <input value={item.name} onChange={(event) => onUpdateManualItem(item.id, { name: event.target.value })} />
-                    </div>
-                  ) : (
-                    <div className="shopping-text">
-                      <strong>
-                        {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
-                      </strong>
-                      <small>
-                        {item.sourceMeals.join(", ")}
-                        {item.incompatible ? " · check unit" : ""}
-                        {item.staple ? " · staple" : ""}
-                        {item.splitFromConsolidation ? " · split from consolidated item" : ""}
-                        {item.sourceIngredients && item.sourceIngredients.length > 1 ? ` · combines ${item.sourceIngredients.join(", ")}` : ""}
-                      </small>
-                      {item.conversionNotes?.length ? <small className="shopping-note">Metric conversion: {item.conversionNotes.join("; ")}</small> : null}
-                      {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
-                      {(item.canSplitMerge || item.canRestoreMerge || item.mergeSuggestion) && (
-                        <div className="shopping-inline-actions">
-                          {item.canSplitMerge && (
-                            <button className="text-button" type="button" onClick={() => onUndoIngredientConsolidation(item)}>
-                              <RefreshCw size={15} />
-                              Split consolidation
-                            </button>
-                          )}
-                          {item.canRestoreMerge && (
-                            <button className="text-button" type="button" onClick={() => onRestoreIngredientConsolidation(item)}>
-                              <Check size={15} />
-                              Combine again
-                            </button>
-                          )}
-                          {item.mergeSuggestion && (
-                            <button
-                              className="text-button"
-                              type="button"
-                              onClick={() => onRememberIngredientMerge(item.mergeSuggestion!.aliasName, item.mergeSuggestion!.canonicalName)}
-                            >
-                              <Check size={15} />
-                              {item.mergeSuggestion.label}
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                return (
+                  <article className={classNames("shopping-item", item.checked && "checked")} key={item.id}>
+                    <label className="check-control">
+                      <input type="checkbox" checked={item.checked} onChange={(event) => onToggleItem(item.id, event.target.checked)} />
+                      <Check size={16} />
+                    </label>
 
-                  <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
-                    <Trash2 size={16} />
-                  </button>
-                </article>
-              ))}
+                    {item.manual ? (
+                      <div className="manual-edit">
+                        <input value={item.displayQuantity} onChange={(event) => onUpdateManualItem(item.id, { displayQuantity: event.target.value })} />
+                        <input value={item.name} onChange={(event) => onUpdateManualItem(item.id, { name: event.target.value })} />
+                      </div>
+                    ) : (
+                      <div
+                        className={classNames("shopping-text", sourceRecipeId && "clickable")}
+                        role={sourceRecipeId ? "button" : undefined}
+                        tabIndex={sourceRecipeId ? 0 : undefined}
+                        onClick={() => {
+                          if (sourceRecipeId) onOpenRecipe(sourceRecipeId);
+                        }}
+                        onKeyDown={(event) => {
+                          if (!sourceRecipeId || (event.key !== "Enter" && event.key !== " ")) return;
+                          event.preventDefault();
+                          onOpenRecipe(sourceRecipeId);
+                        }}
+                      >
+                        <strong>
+                          {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
+                        </strong>
+                        <small>
+                          {item.sourceMeals.join(", ")}
+                          {item.incompatible ? " · check unit" : ""}
+                          {item.staple ? " · staple" : ""}
+                          {item.splitFromConsolidation ? " · split from consolidated item" : ""}
+                          {item.sourceIngredients && item.sourceIngredients.length > 1 ? ` · combines ${item.sourceIngredients.join(", ")}` : ""}
+                        </small>
+                        {item.conversionNotes?.length ? <small className="shopping-note">Metric conversion: {item.conversionNotes.join("; ")}</small> : null}
+                        {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
+                        {(item.canSplitMerge || item.canRestoreMerge || item.mergeSuggestion) && (
+                          <div className="shopping-inline-actions" onClick={(event) => event.stopPropagation()}>
+                            {item.canSplitMerge && (
+                              <button className="text-button" type="button" onClick={() => onUndoIngredientConsolidation(item)}>
+                                <RefreshCw size={15} />
+                                Split consolidation
+                              </button>
+                            )}
+                            {item.canRestoreMerge && (
+                              <button className="text-button" type="button" onClick={() => onRestoreIngredientConsolidation(item)}>
+                                <Check size={15} />
+                                Combine again
+                              </button>
+                            )}
+                            {item.mergeSuggestion && (
+                              <button
+                                className="text-button"
+                                type="button"
+                                onClick={() => onRememberIngredientMerge(item.mergeSuggestion!.aliasName, item.mergeSuggestion!.canonicalName)}
+                              >
+                                <Check size={15} />
+                                {item.mergeSuggestion.label}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
+                      <Trash2 size={16} />
+                    </button>
+                  </article>
+                );
+              })}
             </div>
           </div>
         ))}
