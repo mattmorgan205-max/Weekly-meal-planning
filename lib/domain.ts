@@ -85,6 +85,8 @@ export type ShoppingListItem = {
   incompatible?: boolean;
 };
 
+export type StoreShoppingStatus = "opened" | "added" | "unavailable";
+
 export type AppSettings = {
   householdName: string;
   defaultPeople: number;
@@ -121,6 +123,8 @@ export type AppState = {
   shoppingChecks: Record<string, boolean>;
   hiddenShoppingItems: Record<string, boolean>;
   manualShoppingItems: ShoppingListItem[];
+  asdaProductLinks: Record<string, string>;
+  asdaShoppingStatus: Record<string, StoreShoppingStatus>;
   settings: AppSettings;
 };
 
@@ -1108,6 +1112,8 @@ export function seedState(): AppState {
     shoppingChecks: {},
     hiddenShoppingItems: {},
     manualShoppingItems: [],
+    asdaProductLinks: {},
+    asdaShoppingStatus: {},
     settings: {
       householdName: "Home",
       defaultPeople: 4,

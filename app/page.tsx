@@ -67,7 +67,8 @@ import {
   type Ingredient,
   type MealSlot,
   type Recipe,
-  type ShoppingListItem
+  type ShoppingListItem,
+  type StoreShoppingStatus
 } from "@/lib/domain";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
@@ -144,7 +145,9 @@ function hydrateState(value: unknown): AppState {
     settings: { ...seeded.settings, ...parsed.settings },
     shoppingChecks: parsed.shoppingChecks ?? {},
     hiddenShoppingItems: parsed.hiddenShoppingItems ?? {},
-    manualShoppingItems: parsed.manualShoppingItems ?? []
+    manualShoppingItems: parsed.manualShoppingItems ?? [],
+    asdaProductLinks: parsed.asdaProductLinks ?? {},
+    asdaShoppingStatus: parsed.asdaShoppingStatus ?? {}
   };
 }
 
@@ -206,6 +209,14 @@ function shoppingHiddenItemKey(range: ReturnType<typeof normalizeDateRange>, ite
   return `${shoppingHiddenPrefixForRange(range)}${itemId}`;
 }
 
+function storeStatusPrefixForRange(range: ReturnType<typeof normalizeDateRange>) {
+  return `asda__${range.startDate}__${range.endDate}__`;
+}
+
+function storeStatusItemKey(range: ReturnType<typeof normalizeDateRange>, itemId: string) {
+  return `${storeStatusPrefixForRange(range)}${itemId}`;
+}
+
 function parseJsonResponse<T>(text: string, fallbackError: string): T | { error: string } {
   if (!text) return { error: fallbackError };
 
@@ -262,6 +273,20 @@ function createManualShoppingItemFromLine(line: string): ShoppingListItem | null
     checked: false,
     manual: true
   };
+}
+
+function shoppingPreferenceKey(item: Pick<ShoppingListItem, "canonicalName" | "name">) {
+  return canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
+}
+
+function asdaSearchUrl(item: ShoppingListItem) {
+  return `https://groceries.asda.com/search/${encodeURIComponent(item.name)}`;
+}
+
+function normalizeStoreUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
 function mergeManualShoppingItems(items: ShoppingListItem[]) {
@@ -559,6 +584,10 @@ export default function Home() {
     () => shoppingHiddenPrefixForRange(shoppingDateRange),
     [shoppingDateRange.startDate, shoppingDateRange.endDate]
   );
+  const asdaStatusPrefix = useMemo(
+    () => storeStatusPrefixForRange(shoppingDateRange),
+    [shoppingDateRange.startDate, shoppingDateRange.endDate]
+  );
   const rangeHiddenShoppingItems = useMemo(() => {
     const scopedHiddenItems: Record<string, boolean> = {};
 
@@ -570,6 +599,17 @@ export default function Home() {
 
     return scopedHiddenItems;
   }, [shoppingHiddenPrefix, state.hiddenShoppingItems]);
+  const rangeAsdaShoppingStatus = useMemo(() => {
+    const scopedStatus: Record<string, StoreShoppingStatus> = {};
+
+    Object.entries(state.asdaShoppingStatus).forEach(([key, status]) => {
+      if (key.startsWith(asdaStatusPrefix)) {
+        scopedStatus[key.slice(asdaStatusPrefix.length)] = status;
+      }
+    });
+
+    return scopedStatus;
+  }, [asdaStatusPrefix, state.asdaShoppingStatus]);
   const shoppingList = useMemo(
     () =>
       generateShoppingList(
@@ -1341,6 +1381,47 @@ export default function Home() {
     }));
   }
 
+  function updateAsdaProductLink(itemKey: string, value: string) {
+    const normalizedUrl = normalizeStoreUrl(value);
+
+    updateState((current) => {
+      const asdaProductLinks = { ...current.asdaProductLinks };
+
+      if (normalizedUrl) {
+        asdaProductLinks[itemKey] = normalizedUrl;
+      } else {
+        delete asdaProductLinks[itemKey];
+      }
+
+      return { ...current, asdaProductLinks };
+    });
+  }
+
+  function updateAsdaShoppingStatus(itemId: string, status?: StoreShoppingStatus) {
+    const statusKey = storeStatusItemKey(shoppingDateRange, itemId);
+
+    updateState((current) => {
+      const asdaShoppingStatus = { ...current.asdaShoppingStatus };
+
+      if (status) {
+        asdaShoppingStatus[statusKey] = status;
+      } else {
+        delete asdaShoppingStatus[statusKey];
+      }
+
+      return { ...current, asdaShoppingStatus };
+    });
+  }
+
+  function resetCurrentAsdaRun() {
+    updateState((current) => ({
+      ...current,
+      asdaShoppingStatus: Object.fromEntries(
+        Object.entries(current.asdaShoppingStatus).filter(([key]) => !key.startsWith(asdaStatusPrefix))
+      )
+    }));
+  }
+
   async function copyShoppingList() {
     const text = shoppingList
       .map((item) => {
@@ -1657,6 +1738,8 @@ export default function Home() {
             manualItemQuantity={manualItemQuantity}
             manualItemCategory={manualItemCategory}
             manualBulkItems={manualBulkItems}
+            asdaProductLinks={state.asdaProductLinks}
+            asdaShoppingStatus={rangeAsdaShoppingStatus}
             setStartDate={updateShoppingStartDate}
             setEndDate={updateShoppingEndDate}
             setManualItemName={setManualItemName}
@@ -1677,6 +1760,9 @@ export default function Home() {
             onUpdateManualItem={updateManualShoppingItem}
             onDeleteItem={deleteShoppingItem}
             onOpenRecipe={setSelectedRecipeId}
+            onUpdateAsdaProductLink={updateAsdaProductLink}
+            onUpdateAsdaShoppingStatus={updateAsdaShoppingStatus}
+            onResetAsdaRun={resetCurrentAsdaRun}
             onCopy={copyShoppingList}
             onPrint={() => window.print()}
             onRestoreGenerated={restoreHiddenGeneratedShoppingItems}
@@ -2765,6 +2851,8 @@ function ShoppingView({
   manualItemQuantity,
   manualItemCategory,
   manualBulkItems,
+  asdaProductLinks,
+  asdaShoppingStatus,
   setStartDate,
   setEndDate,
   setManualItemName,
@@ -2780,6 +2868,9 @@ function ShoppingView({
   onUpdateManualItem,
   onDeleteItem,
   onOpenRecipe,
+  onUpdateAsdaProductLink,
+  onUpdateAsdaShoppingStatus,
+  onResetAsdaRun,
   onCopy,
   onPrint,
   onRestoreGenerated
@@ -2794,6 +2885,8 @@ function ShoppingView({
   manualItemQuantity: string;
   manualItemCategory: GroceryCategory;
   manualBulkItems: string;
+  asdaProductLinks: Record<string, string>;
+  asdaShoppingStatus: Record<string, StoreShoppingStatus>;
   setStartDate: (value: string) => void;
   setEndDate: (value: string) => void;
   setManualItemName: (value: string) => void;
@@ -2809,12 +2902,16 @@ function ShoppingView({
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
   onOpenRecipe: (recipeId: string) => void;
+  onUpdateAsdaProductLink: (itemKey: string, value: string) => void;
+  onUpdateAsdaShoppingStatus: (itemId: string, status?: StoreShoppingStatus) => void;
+  onResetAsdaRun: () => void;
   onCopy: () => void;
   onPrint: () => void;
   onRestoreGenerated: () => void;
 }) {
   const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
+  const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const grouped = groceryCategories
     .map((category) => ({
       category,
@@ -2903,6 +3000,84 @@ function ShoppingView({
           Add
         </button>
       </form>
+
+      <section className="asda-shop-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Asda shop</p>
+            <h3>
+              {asdaAddedCount}/{items.length} added
+            </h3>
+          </div>
+          <button className="text-button" type="button" onClick={onResetAsdaRun}>
+            Reset run
+          </button>
+        </div>
+
+        <div className="asda-shop-list">
+          {items.map((item) => {
+            const itemKey = shoppingPreferenceKey(item);
+            const savedProductUrl = asdaProductLinks[itemKey] ?? "";
+            const openUrl = savedProductUrl || asdaSearchUrl(item);
+            const status = asdaShoppingStatus[item.id];
+
+            return (
+              <div className={classNames("asda-shop-row", status && `status-${status}`)} key={item.id}>
+                <div className="asda-shop-item">
+                  <strong>
+                    {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
+                  </strong>
+                  <small>{savedProductUrl ? "Saved product" : "Search Asda"}</small>
+                </div>
+
+                <input
+                  aria-label={`Asda product link for ${item.name}`}
+                  value={savedProductUrl}
+                  onChange={(event) => onUpdateAsdaProductLink(itemKey, event.target.value)}
+                  placeholder="Asda product link"
+                />
+
+                <div className="asda-shop-actions">
+                  <a
+                    className="text-button"
+                    href={openUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => {
+                      if (!status) onUpdateAsdaShoppingStatus(item.id, "opened");
+                    }}
+                  >
+                    <Link size={15} />
+                    Open
+                  </a>
+                  <button
+                    className={classNames("status-button", status === "added" && "active")}
+                    type="button"
+                    onClick={() => {
+                      onUpdateAsdaShoppingStatus(item.id, "added");
+                      onToggleItem(item.id, true);
+                    }}
+                  >
+                    Added
+                  </button>
+                  <button
+                    className={classNames("status-button", status === "unavailable" && "active")}
+                    type="button"
+                    onClick={() => onUpdateAsdaShoppingStatus(item.id, "unavailable")}
+                  >
+                    Unavailable
+                  </button>
+                  {status ? (
+                    <button className="icon-button" type="button" title="Clear Asda status" onClick={() => onUpdateAsdaShoppingStatus(item.id)}>
+                      <X size={15} />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       <section className="shopping-groups">
         {grouped.map((group) => (

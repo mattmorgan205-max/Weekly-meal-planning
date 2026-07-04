@@ -1151,6 +1151,80 @@ h3 {
   min-width: 0;
 }
 
+.asda-shop-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.94);
+  box-shadow: var(--shadow);
+}
+
+.asda-shop-list {
+  display: grid;
+  gap: 8px;
+}
+
+.asda-shop-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(280px, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f6f0e6;
+}
+
+.asda-shop-row.status-added {
+  background: #e7f3e9;
+}
+
+.asda-shop-row.status-unavailable {
+  background: #fff3ed;
+}
+
+.asda-shop-item {
+  display: grid;
+  gap: 2px;
+}
+
+.asda-shop-item span {
+  color: var(--green-dark);
+}
+
+.asda-shop-item small {
+  color: var(--muted);
+}
+
+.asda-shop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.asda-shop-actions .text-button {
+  min-height: 36px;
+  text-decoration: none;
+}
+
+.status-button {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefa;
+  color: var(--ink);
+  font-weight: 850;
+}
+
+.status-button.active {
+  border-color: var(--green);
+  background: var(--green);
+  color: #fff;
+}
+
 .date-range-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(132px, 1fr));
@@ -1472,10 +1546,20 @@ h3 {
   .cloud-form,
   .manual-meal-form,
   .date-range-controls,
+  .asda-shop-row,
   .photo-actions,
   .photo-controls,
   .ocr-line {
     grid-template-columns: 1fr;
+  }
+
+  .asda-shop-actions {
+    justify-content: stretch;
+  }
+
+  .asda-shop-actions .text-button,
+  .asda-shop-actions .status-button {
+    flex: 1 1 130px;
   }
 
   .segmented-control {
