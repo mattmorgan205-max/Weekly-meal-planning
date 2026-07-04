@@ -86,7 +86,19 @@
         return new Promise((resolve) => {
             chrome.scripting.executeScript({
                 target: { tabId },
-                func: () => window.__WEEKWISE_ASDA_QUEUE__ ?? null
+                func: () => {
+                    const queueElement = document.getElementById("weekwise-asda-helper-queue");
+                    const queueText = queueElement?.textContent?.trim();
+                    if (queueText) {
+                        try {
+                            return JSON.parse(queueText);
+                        }
+                        catch {
+                            return null;
+                        }
+                    }
+                    return window.__WEEKWISE_ASDA_QUEUE__ ?? null;
+                }
             }, (results) => {
                 if (chrome.runtime.lastError) {
                     resolve(null);

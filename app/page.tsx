@@ -137,6 +137,7 @@ const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
 const asdaHelperAppSource = "weekwise-meal-planner";
 const asdaHelperExtensionSource = "weekwise-asda-helper-extension";
+const asdaHelperQueueElementId = "weekwise-asda-helper-queue";
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   weekday: "short",
@@ -325,6 +326,23 @@ function normalizeStoreUrl(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return "";
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function publishAsdaHelperQueue(queue: AsdaHelperQueue) {
+  if (typeof window === "undefined") return;
+
+  (window as AsdaHelperWindow).__WEEKWISE_ASDA_QUEUE__ = queue;
+
+  let queueElement = document.getElementById(asdaHelperQueueElementId) as HTMLScriptElement | null;
+  if (!queueElement) {
+    queueElement = document.createElement("script");
+    queueElement.id = asdaHelperQueueElementId;
+    queueElement.type = "application/json";
+    queueElement.hidden = true;
+    document.body.append(queueElement);
+  }
+
+  queueElement.textContent = JSON.stringify(queue);
 }
 
 function mergeManualShoppingItems(items: ShoppingListItem[]) {
@@ -3036,7 +3054,7 @@ function ShoppingView({
   }
 
   useEffect(() => {
-    (window as AsdaHelperWindow).__WEEKWISE_ASDA_QUEUE__ = buildAsdaHelperQueue();
+    publishAsdaHelperQueue(buildAsdaHelperQueue());
   });
 
   useEffect(() => {
@@ -3064,7 +3082,7 @@ function ShoppingView({
   function sendToAsdaHelper() {
     const queue = buildAsdaHelperQueue();
 
-    (window as AsdaHelperWindow).__WEEKWISE_ASDA_QUEUE__ = queue;
+    publishAsdaHelperQueue(queue);
     window.postMessage({ source: asdaHelperAppSource, type: "ASDA_HELPER_IMPORT_QUEUE", payload: queue }, window.location.origin);
     setAsdaHelperMessage("Sending shopping queue to Asda Helper...");
     if (asdaHelperTimerRef.current) clearTimeout(asdaHelperTimerRef.current);
