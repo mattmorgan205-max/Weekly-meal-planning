@@ -880,7 +880,7 @@ export function generateShoppingList(
     const factor = meal.peopleCount / Math.max(1, plannedRecipe.servings);
     plannedRecipe.ingredients.forEach((ingredient) => {
       const scaled = scaleIngredient(ingredient, factor);
-      const canonical = canonicalizeIngredientName(scaled.name, settings.ingredientAliases ?? {});
+      const canonical = canonicalizeIngredientName(scaled.canonicalName || scaled.name, settings.ingredientAliases ?? {});
       const nameKey = canonical.canonicalName;
       const normalizedUnit = normalizeUnit(scaled.unit);
       const conversion = scaled.unit ? unitConversions[normalizedUnit] : undefined;
@@ -889,13 +889,11 @@ export function generateShoppingList(
       const baseUnit = conversion?.base ?? scaled.unit ?? "";
       const staple = isStaple(scaled.name, settings.stapleIngredients);
       const note = conversionNote(scaled.quantity, normalizedUnit, quantity, baseUnit);
-      const canSplitMerge = Boolean(canonical.normalizedName && canonical.normalizedName !== nameKey);
 
       if (staple && !settings.includeStaples) return;
 
       const mergeKey = `${nameKey}::${family}`;
-      const splitFromConsolidation = Boolean(settings.splitShoppingItems?.[mergeKey]);
-      const key = splitFromConsolidation ? `${mergeKey}::${plannedRecipe.id}::${meal.id}::${ingredient.id}` : mergeKey;
+      const key = mergeKey;
       const existing = buckets.get(key);
 
       function addSourceToBucket(bucket: Bucket) {
@@ -904,9 +902,6 @@ export function generateShoppingList(
         bucket.sourceRecipeIds.add(plannedRecipe.id);
         bucket.sourceIngredients.add(scaled.name);
         if (note) bucket.conversionNotes.add(note);
-        if (canonical.mergeWarning) bucket.mergeWarnings.add(canonical.mergeWarning);
-        if (canonical.mergeSuggestion) bucket.mergeSuggestion = canonical.mergeSuggestion;
-        bucket.canSplitMerge = bucket.canSplitMerge || canSplitMerge;
       }
 
       if (existing && typeof existing.quantity === "number" && typeof quantity === "number") {
@@ -918,8 +913,7 @@ export function generateShoppingList(
         buckets.set(key, {
           key,
           mergeKey,
-          splitGroupKey: splitFromConsolidation ? mergeKey : undefined,
-          name: splitFromConsolidation ? scaled.name : nameKey || scaled.name,
+          name: nameKey || scaled.name,
           canonicalName: nameKey,
           category: scaled.category,
           unitFamily: family,
@@ -930,10 +924,7 @@ export function generateShoppingList(
           sourceRecipeIds: new Set([plannedRecipe.id]),
           sourceIngredients: new Set([scaled.name]),
           conversionNotes: new Set(note ? [note] : []),
-          mergeWarnings: new Set(canonical.mergeWarning ? [canonical.mergeWarning] : []),
-          mergeSuggestion: canonical.mergeSuggestion,
-          canSplitMerge,
-          splitFromConsolidation,
+          mergeWarnings: new Set(),
           staple
         });
       } else {
@@ -941,8 +932,7 @@ export function generateShoppingList(
         buckets.set(separateKey, {
           key: separateKey,
           mergeKey,
-          splitGroupKey: splitFromConsolidation ? mergeKey : undefined,
-          name: splitFromConsolidation ? scaled.name : nameKey || scaled.name,
+          name: nameKey || scaled.name,
           canonicalName: nameKey,
           category: scaled.category,
           unitFamily: family,
@@ -954,9 +944,6 @@ export function generateShoppingList(
           sourceIngredients: new Set([scaled.name]),
           conversionNotes: new Set(note ? [note] : []),
           mergeWarnings: new Set(["This ingredient has another quantity or unit that could not be combined safely."]),
-          mergeSuggestion: canonical.mergeSuggestion,
-          canSplitMerge,
-          splitFromConsolidation,
           incompatible: true,
           staple
         });
@@ -981,10 +968,10 @@ export function generateShoppingList(
       sourceIngredients: Array.from(bucket.sourceIngredients),
       conversionNotes: Array.from(bucket.conversionNotes),
       mergeWarnings: Array.from(bucket.mergeWarnings),
-      mergeSuggestion: bucket.mergeSuggestion,
-      canSplitMerge: !bucket.splitFromConsolidation && (bucket.canSplitMerge || bucket.sourceIngredients.size > 1 || bucket.sourceMeals.size > 1 || bucket.sourceCount > 1),
+      mergeSuggestion: undefined,
+      canSplitMerge: false,
       splitFromConsolidation: bucket.splitFromConsolidation,
-      canRestoreMerge: bucket.splitFromConsolidation && Boolean(bucket.splitGroupKey),
+      canRestoreMerge: false,
       checked: shoppingChecks[id] ?? false,
       staple: bucket.staple,
       incompatible: bucket.incompatible

@@ -78,6 +78,24 @@ type MealPickerGroup = MealSlot | "all";
 type RecipeGroupFilter = MealSlot | "all";
 type PhotoCropMode = "whole" | "ingredients" | "method";
 
+const commonExtraItems = [
+  "Milk",
+  "Bread",
+  "Eggs",
+  "Bananas",
+  "Apples",
+  "Onions",
+  "Potatoes",
+  "Cheese",
+  "Yogurt",
+  "Cereal",
+  "Pasta",
+  "Rice",
+  "Coffee",
+  "Tea bags",
+  "Toilet roll"
+];
+
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
 
@@ -1182,55 +1200,6 @@ export default function Home() {
     }));
   }
 
-  function rememberIngredientMerge(aliasName: string, canonicalName: string) {
-    updateState((current) => ({
-      ...current,
-      settings: {
-        ...current.settings,
-        ingredientAliases: {
-          ...(current.settings.ingredientAliases ?? {}),
-          [canonicalizeIngredientName(aliasName).normalizedName]: canonicalizeIngredientName(canonicalName).canonicalName
-        }
-      }
-    }));
-  }
-
-  function undoIngredientConsolidation(item: ShoppingListItem) {
-    if (!item.mergeKey) return;
-
-    updateState((current) => {
-      return {
-        ...current,
-        settings: {
-          ...current.settings,
-          splitShoppingItems: {
-            ...(current.settings.splitShoppingItems ?? {}),
-            [item.mergeKey!]: true
-          }
-        }
-      };
-    });
-  }
-
-  function restoreIngredientConsolidation(item: ShoppingListItem) {
-    const splitGroupKey = item.splitGroupKey;
-    if (!splitGroupKey) return;
-
-    updateState((current) => {
-      const splitShoppingItems = { ...(current.settings.splitShoppingItems ?? {}) };
-
-      delete splitShoppingItems[splitGroupKey];
-
-      return {
-        ...current,
-        settings: {
-          ...current.settings,
-          splitShoppingItems
-        }
-      };
-    });
-  }
-
   function addManualShoppingItem(event: FormEvent) {
     event.preventDefault();
     if (!manualItemName.trim()) return;
@@ -1268,6 +1237,16 @@ export default function Home() {
       manualShoppingItems: [...current.manualShoppingItems, ...newItems]
     }));
     setManualBulkItems("");
+  }
+
+  function addCommonManualShoppingItem(itemName: string) {
+    const item = createManualShoppingItemFromLine(itemName);
+    if (!item) return;
+
+    updateState((current) => ({
+      ...current,
+      manualShoppingItems: [...current.manualShoppingItems, item]
+    }));
   }
 
   function toggleShoppingItem(id: string, checked: boolean) {
@@ -1659,6 +1638,7 @@ export default function Home() {
             onToggleIncludeStaples={(includeStaples) => updateSettings({ includeStaples })}
             onAddManualItem={addManualShoppingItem}
             onAddBulkManualItems={addBulkManualShoppingItems}
+            onAddCommonManualItem={addCommonManualShoppingItem}
             onToggleItem={toggleShoppingItem}
             onUpdateManualItem={updateManualShoppingItem}
             onDeleteItem={deleteShoppingItem}
@@ -1666,9 +1646,6 @@ export default function Home() {
             onCopy={copyShoppingList}
             onPrint={() => window.print()}
             onRestoreGenerated={restoreHiddenGeneratedShoppingItems}
-            onRememberIngredientMerge={rememberIngredientMerge}
-            onUndoIngredientConsolidation={undoIngredientConsolidation}
-            onRestoreIngredientConsolidation={restoreIngredientConsolidation}
           />
         )}
 
@@ -2676,6 +2653,30 @@ function AddRecipeView({
 	                <button className="icon-button danger" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
 	                  <Trash2 size={16} />
 	                </button>
+                  <div className="ingredient-standard-row">
+                    <label>
+                      Shopping name
+                      <input
+                        aria-label="Shopping name"
+                        value={ingredient.canonicalName ?? ""}
+                        onChange={(event) => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
+                        placeholder={canonicalizeIngredientName(ingredient.name).canonicalName || "shopping name"}
+                      />
+                    </label>
+                    <button
+                      className="text-button"
+                      type="button"
+                      onClick={() =>
+                        onUpdateIngredient(ingredient.id, {
+                          canonicalName: canonicalizeIngredientName(ingredient.name).canonicalName,
+                          needsReview: false
+                        })
+                      }
+                    >
+                      Use suggestion
+                    </button>
+                    <small>Used to combine matching shopping-list items.</small>
+                  </div>
 	                {(ingredient.needsReview || ingredient.originalLine) && (
 	                  <small className="ingredient-review-note">
 	                    {ingredient.needsReview ? "Check this line" : "Imported line"}{ingredient.originalLine ? `: ${ingredient.originalLine}` : ""}
@@ -2732,16 +2733,14 @@ function ShoppingView({
   onToggleIncludeStaples,
   onAddManualItem,
   onAddBulkManualItems,
+  onAddCommonManualItem,
   onToggleItem,
   onUpdateManualItem,
   onDeleteItem,
   onOpenRecipe,
   onCopy,
   onPrint,
-  onRestoreGenerated,
-  onRememberIngredientMerge,
-  onUndoIngredientConsolidation,
-  onRestoreIngredientConsolidation
+  onRestoreGenerated
 }: {
   items: ShoppingListItem[];
   settings: AppState["settings"];
@@ -2763,6 +2762,7 @@ function ShoppingView({
   onToggleIncludeStaples: (value: boolean) => void;
   onAddManualItem: (event: FormEvent) => void;
   onAddBulkManualItems: (event: FormEvent) => void;
+  onAddCommonManualItem: (itemName: string) => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
@@ -2770,10 +2770,9 @@ function ShoppingView({
   onCopy: () => void;
   onPrint: () => void;
   onRestoreGenerated: () => void;
-  onRememberIngredientMerge: (aliasName: string, canonicalName: string) => void;
-  onUndoIngredientConsolidation: (item: ShoppingListItem) => void;
-  onRestoreIngredientConsolidation: (item: ShoppingListItem) => void;
 }) {
+  const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
+  const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
   const grouped = groceryCategories
     .map((category) => ({
       category,
@@ -2833,6 +2832,20 @@ function ShoppingView({
         </button>
       </form>
 
+      <section className="common-extra-panel">
+        <div className="section-heading">
+          <h3>Common extras</h3>
+        </div>
+        <div className="common-extra-list">
+          {commonExtraItems.map((itemName) => (
+            <button className="text-button" type="button" key={itemName} onClick={() => onAddCommonManualItem(itemName)}>
+              <Plus size={15} />
+              {itemName}
+            </button>
+          ))}
+        </div>
+      </section>
+
       <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>
         <input value={manualItemName} onChange={(event) => setManualItemName(event.target.value)} placeholder="Add extra item" />
         <input value={manualItemQuantity} onChange={(event) => setManualItemQuantity(event.target.value)} placeholder="Quantity" />
@@ -2856,6 +2869,14 @@ function ShoppingView({
             <div className="shopping-list">
               {group.items.map((item) => {
                 const sourceRecipeId = item.sourceRecipeIds?.[0];
+                const itemIsClickable = item.manual || Boolean(sourceRecipeId);
+                const openItem = () => {
+                  if (item.manual) {
+                    setEditingManualItemId(item.id);
+                  } else if (sourceRecipeId) {
+                    onOpenRecipe(sourceRecipeId);
+                  }
+                };
 
                 return (
                   <article className={classNames("shopping-item", item.checked && "checked")} key={item.id}>
@@ -2864,65 +2885,28 @@ function ShoppingView({
                       <Check size={16} />
                     </label>
 
-                    {item.manual ? (
-                      <div className="manual-edit">
-                        <input value={item.displayQuantity} onChange={(event) => onUpdateManualItem(item.id, { displayQuantity: event.target.value })} />
-                        <input value={item.name} onChange={(event) => onUpdateManualItem(item.id, { name: event.target.value })} />
-                      </div>
-                    ) : (
-                      <div
-                        className={classNames("shopping-text", sourceRecipeId && "clickable")}
-                        role={sourceRecipeId ? "button" : undefined}
-                        tabIndex={sourceRecipeId ? 0 : undefined}
-                        onClick={() => {
-                          if (sourceRecipeId) onOpenRecipe(sourceRecipeId);
-                        }}
-                        onKeyDown={(event) => {
-                          if (!sourceRecipeId || (event.key !== "Enter" && event.key !== " ")) return;
-                          event.preventDefault();
-                          onOpenRecipe(sourceRecipeId);
-                        }}
-                      >
-                        <strong>
-                          {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
-                        </strong>
-                        <small>
-                          {item.sourceMeals.join(", ")}
-                          {item.incompatible ? " · check unit" : ""}
-                          {item.staple ? " · staple" : ""}
-                          {item.splitFromConsolidation ? " · split from consolidated item" : ""}
-                          {item.sourceIngredients && item.sourceIngredients.length > 1 ? ` · combines ${item.sourceIngredients.join(", ")}` : ""}
-                        </small>
-                        {item.conversionNotes?.length ? <small className="shopping-note">Metric conversion: {item.conversionNotes.join("; ")}</small> : null}
-                        {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
-                        {(item.canSplitMerge || item.canRestoreMerge || item.mergeSuggestion) && (
-                          <div className="shopping-inline-actions" onClick={(event) => event.stopPropagation()}>
-                            {item.canSplitMerge && (
-                              <button className="text-button" type="button" onClick={() => onUndoIngredientConsolidation(item)}>
-                                <RefreshCw size={15} />
-                                Split consolidation
-                              </button>
-                            )}
-                            {item.canRestoreMerge && (
-                              <button className="text-button" type="button" onClick={() => onRestoreIngredientConsolidation(item)}>
-                                <Check size={15} />
-                                Combine again
-                              </button>
-                            )}
-                            {item.mergeSuggestion && (
-                              <button
-                                className="text-button"
-                                type="button"
-                                onClick={() => onRememberIngredientMerge(item.mergeSuggestion!.aliasName, item.mergeSuggestion!.canonicalName)}
-                              >
-                                <Check size={15} />
-                                {item.mergeSuggestion.label}
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <div
+                      className={classNames("shopping-text", itemIsClickable && "clickable")}
+                      role={itemIsClickable ? "button" : undefined}
+                      tabIndex={itemIsClickable ? 0 : undefined}
+                      onClick={itemIsClickable ? openItem : undefined}
+                      onKeyDown={(event) => {
+                        if (!itemIsClickable || (event.key !== "Enter" && event.key !== " ")) return;
+                        event.preventDefault();
+                        openItem();
+                      }}
+                    >
+                      <strong>
+                        {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
+                      </strong>
+                      <small>
+                        {item.manual ? "Added item" : item.sourceMeals.join(", ")}
+                        {item.incompatible ? " · check unit" : ""}
+                        {item.staple ? " · staple" : ""}
+                      </small>
+                      {item.conversionNotes?.length ? <small className="shopping-note">Metric conversion: {item.conversionNotes.join("; ")}</small> : null}
+                      {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
+                    </div>
 
                     <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
                       <Trash2 size={16} />
@@ -2934,6 +2918,99 @@ function ShoppingView({
           </div>
         ))}
       </section>
+
+      {editingManualItem && (
+        <ManualShoppingItemModal
+          key={editingManualItem.id}
+          item={editingManualItem}
+          onClose={() => setEditingManualItemId(null)}
+          onSave={(patch) => {
+            onUpdateManualItem(editingManualItem.id, patch);
+            setEditingManualItemId(null);
+          }}
+          onDelete={() => {
+            onDeleteItem(editingManualItem);
+            setEditingManualItemId(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ManualShoppingItemModal({
+  item,
+  onClose,
+  onSave,
+  onDelete
+}: {
+  item: ShoppingListItem;
+  onClose: () => void;
+  onSave: (patch: Partial<ShoppingListItem>) => void;
+  onDelete: () => void;
+}) {
+  const [name, setName] = useState(item.name);
+  const [quantity, setQuantity] = useState(item.displayQuantity);
+  const [category, setCategory] = useState<GroceryCategory>(item.category);
+
+  function saveItem(event: FormEvent) {
+    event.preventDefault();
+    const cleanName = name.trim();
+    if (!cleanName) return;
+
+    onSave({
+      name: cleanName,
+      canonicalName: canonicalizeIngredientName(cleanName).canonicalName,
+      displayQuantity: quantity.trim(),
+      category
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <form className="modal-panel manual-item-modal" role="dialog" aria-modal="true" onSubmit={saveItem} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-heading">
+          <div>
+            <p className="eyebrow">Added item</p>
+            <h2>Edit shopping item</h2>
+          </div>
+          <button className="icon-button" type="button" title="Close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="form-grid">
+          <label>
+            Item
+            <input value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label>
+            Quantity
+            <input value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+          </label>
+          <label>
+            Category
+            <select value={category} onChange={(event) => setCategory(event.target.value as GroceryCategory)}>
+              {groceryCategories.map((groceryCategory) => (
+                <option key={groceryCategory} value={groceryCategory}>
+                  {groceryCategory}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="button-row">
+          <button className="primary-button" type="submit">
+            <Check size={18} />
+            Save
+          </button>
+          <button className="ghost-danger" type="button" onClick={onDelete}>
+            <Trash2 size={18} />
+            Delete
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

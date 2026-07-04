@@ -1078,6 +1078,19 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.ingredient-standard-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.ingredient-standard-row small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
 .method-row {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) 42px;
@@ -1115,6 +1128,27 @@ h3 {
 
 .bulk-manual-add .primary-button {
   align-self: end;
+}
+
+.common-extra-panel {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.9);
+  box-shadow: var(--shadow);
+}
+
+.common-extra-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.common-extra-list .text-button {
+  min-height: 36px;
+  min-width: 0;
 }
 
 .date-range-controls {
@@ -1175,8 +1209,7 @@ h3 {
   opacity: 0.6;
 }
 
-.shopping-item.checked .shopping-text strong,
-.shopping-item.checked .manual-edit input {
+.shopping-item.checked .shopping-text strong {
   text-decoration: line-through;
 }
 
@@ -1244,10 +1277,8 @@ h3 {
   gap: 5px;
 }
 
-.manual-edit {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 8px;
+.manual-item-modal {
+  width: min(520px, 100%);
 }
 
 .settings-layout {
@@ -1427,6 +1458,10 @@ h3 {
 
   .ingredient-row {
     grid-template-columns: 0.55fr 0.55fr 1fr 42px;
+  }
+
+  .ingredient-standard-row {
+    grid-template-columns: 1fr;
   }
 
   .ingredient-row select {
