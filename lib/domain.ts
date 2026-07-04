@@ -279,8 +279,10 @@ const ingredientAliasRules: Array<{
   { canonicalName: "pork mince", patterns: [/\b(pork mince|minced pork|ground pork)\b/] },
   { canonicalName: "sweet potato", patterns: [/\b(sweet potato|sweet potatoes)\b/] },
   { canonicalName: "potato", patterns: [/\b(potato|potatoes|new potatoes|baby potatoes)\b/] },
-  { canonicalName: "tinned tomatoes", patterns: [/\b(tinned tomatoes|canned tomatoes|chopped tomatoes|tin of tomatoes|can of tomatoes)\b/] },
-  { canonicalName: "tomato", patterns: [/\b(tomato|tomatoes|cherry tomatoes|plum tomatoes)\b/] },
+  { canonicalName: "chopped tomatoes", patterns: [/\b(chopped tomatoes|tinned tomatoes|canned tomatoes|tin of tomatoes|can of tomatoes)\b/] },
+  { canonicalName: "cherry tomatoes", patterns: [/\b(cherry tomatoes)\b/] },
+  { canonicalName: "tomato puree", patterns: [/\b(tomato puree|tomato purée|tomato paste)\b/] },
+  { canonicalName: "tomato", patterns: [/\b(tomato|tomatoes|plum tomatoes)\b/] },
   { canonicalName: "pepper", patterns: [/\b(red pepper|red peppers|yellow pepper|yellow peppers|green pepper|green peppers|bell pepper|bell peppers|pepper|peppers)\b/] },
   { canonicalName: "carrot", patterns: [/\b(carrot|carrots)\b/] },
   { canonicalName: "mushroom", patterns: [/\b(mushroom|mushrooms)\b/] },
@@ -397,13 +399,27 @@ export function canonicalizeIngredientName(
 }
 
 function singularizeIngredientName(name: string) {
-  return name
+  const preservedPhrases: Record<string, string> = {
+    "__chopped_tomatoes__": "chopped tomatoes",
+    "__cherry_tomatoes__": "cherry tomatoes",
+    "__tinned_tomatoes__": "tinned tomatoes",
+    "__canned_tomatoes__": "canned tomatoes"
+  };
+
+  let normalized = name;
+  Object.values(preservedPhrases).forEach((phrase, index) => {
+    normalized = normalized.replace(new RegExp(`\\b${phrase}\\b`, "g"), Object.keys(preservedPhrases)[index]);
+  });
+
+  const singularized = normalized
     .replace(/\b(tomatoes)\b/g, "tomato")
     .replace(/\b(potatoes)\b/g, "potato")
     .replace(/\b(leaves)\b/g, "leaf")
     .replace(/\b(cloves)\b/g, "clove")
     .replace(/\b([a-z]{4,})s\b/g, "$1")
     .trim();
+
+  return Object.entries(preservedPhrases).reduce((value, [token, phrase]) => value.replace(new RegExp(token, "g"), phrase), singularized);
 }
 
 export function validateIngredientLine(line: string, strict = false) {
@@ -613,6 +629,10 @@ export function inferCategory(name: string): GroceryCategory {
 
   if (/(salt|pepper|paprika|cumin|cinnamon|oregano|basil|thyme|chilli|chili|curry|spice)/.test(normal)) {
     return "Spices";
+  }
+
+  if (/(chopped tomatoes|tinned tomatoes|canned tomatoes|tin of tomatoes|can of tomatoes|tomato puree|tomato purée|tomato paste|passata)/.test(normal)) {
+    return "Pantry";
   }
 
   if (
@@ -880,7 +900,10 @@ export function generateShoppingList(
     const factor = meal.peopleCount / Math.max(1, plannedRecipe.servings);
     plannedRecipe.ingredients.forEach((ingredient) => {
       const scaled = scaleIngredient(ingredient, factor);
-      const canonical = canonicalizeIngredientName(scaled.canonicalName || scaled.name, settings.ingredientAliases ?? {});
+      const savedShoppingName = scaled.canonicalName ? singularizeIngredientName(normalizeIngredientAliasKey(scaled.canonicalName)) : "";
+      const canonical = savedShoppingName
+        ? { canonicalName: savedShoppingName, normalizedName: savedShoppingName }
+        : canonicalizeIngredientName(scaled.name, settings.ingredientAliases ?? {});
       const nameKey = canonical.canonicalName;
       const normalizedUnit = normalizeUnit(scaled.unit);
       const conversion = scaled.unit ? unitConversions[normalizedUnit] : undefined;

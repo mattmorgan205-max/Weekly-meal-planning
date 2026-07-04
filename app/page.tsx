@@ -264,6 +264,32 @@ function createManualShoppingItemFromLine(line: string): ShoppingListItem | null
   };
 }
 
+function mergeManualShoppingItems(items: ShoppingListItem[]) {
+  const merged = new Map<string, ShoppingListItem>();
+
+  items.forEach((item) => {
+    const canonicalName = canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
+    const key = [canonicalName, item.category, item.displayQuantity.trim().toLowerCase()].join("::");
+    const existing = merged.get(key);
+
+    if (existing) {
+      merged.set(key, {
+        ...existing,
+        checked: existing.checked || item.checked
+      });
+    } else {
+      merged.set(key, {
+        ...item,
+        canonicalName,
+        manual: true,
+        sourceMeals: ["Manual"]
+      });
+    }
+  });
+
+  return Array.from(merged.values());
+}
+
 function likelyHeicPhoto(file: File) {
   const name = file.name.toLowerCase();
   return name.endsWith(".heic") || name.endsWith(".heif") || file.type.includes("heic") || file.type.includes("heif");
@@ -1223,7 +1249,7 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: [...current.manualShoppingItems, item]
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
     }));
     setManualItemName("");
     setManualItemQuantity("");
@@ -1240,7 +1266,7 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: [...current.manualShoppingItems, ...newItems]
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...newItems])
     }));
     setManualBulkItems("");
   }
@@ -1251,7 +1277,7 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: [...current.manualShoppingItems, item]
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
     }));
   }
 
@@ -1266,8 +1292,10 @@ export default function Home() {
   function updateManualShoppingItem(id: string, patch: Partial<ShoppingListItem>) {
     updateState((current) => ({
       ...current,
-      manualShoppingItems: current.manualShoppingItems.map((item) =>
-        item.id === id ? { ...item, ...patch, manual: true } : item
+      manualShoppingItems: mergeManualShoppingItems(
+        current.manualShoppingItems.map((item) =>
+          item.id === id ? { ...item, ...patch, manual: true } : item
+        )
       )
     }));
   }
