@@ -117,6 +117,7 @@ export type ImportDraft = {
 export type AppState = {
   recipes: Recipe[];
   plannedMeals: PlannedMeal[];
+  dayNotes: Record<string, string>;
   shoppingChecks: Record<string, boolean>;
   hiddenShoppingItems: Record<string, boolean>;
   manualShoppingItems: ShoppingListItem[];
@@ -1093,6 +1094,7 @@ export function seedState(): AppState {
         peopleCount: 5
       }
     ],
+    dayNotes: {},
     shoppingChecks: {},
     hiddenShoppingItems: {},
     manualShoppingItems: [],

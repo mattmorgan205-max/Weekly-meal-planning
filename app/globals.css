@@ -291,6 +291,36 @@ h3 {
   gap: 8px;
 }
 
+.compact-date-control {
+  min-width: 156px;
+  gap: 4px;
+  font-size: 0.76rem;
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(78px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefa;
+}
+
+.segmented-control button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 850;
+}
+
+.segmented-control button.active {
+  background: var(--green);
+  color: #fff;
+}
+
 .primary-button {
   padding: 0 14px;
   background: var(--green);
@@ -365,6 +395,12 @@ h3 {
   border-radius: 8px;
   background: var(--green-dark);
   color: #fff;
+}
+
+.day-note-input {
+  min-height: 64px;
+  resize: vertical;
+  background: #fffefa;
 }
 
 .meal-slot {
@@ -1062,7 +1098,23 @@ h3 {
 
 .manual-add {
   display: grid;
+}
+
+.single-manual-add {
   grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.4fr) minmax(150px, 0.45fr) auto;
+}
+
+.bulk-manual-add {
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: stretch;
+}
+
+.bulk-manual-add textarea {
+  min-height: 94px;
+}
+
+.bulk-manual-add .primary-button {
+  align-self: end;
 }
 
 .date-range-controls {

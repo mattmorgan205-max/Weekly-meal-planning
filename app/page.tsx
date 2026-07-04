@@ -61,7 +61,6 @@ import {
   seedState,
   startOfWeek,
   totalRecipeMinutes,
-  weekDates,
   type AppState,
   type GroceryCategory,
   type ImportDraft,
@@ -123,6 +122,7 @@ function hydrateState(value: unknown): AppState {
     plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople))
       .filter((meal) => meal.recipeId || meal.manualTitle),
+    dayNotes: parsed.dayNotes ?? {},
     settings: { ...seeded.settings, ...parsed.settings },
     shoppingChecks: parsed.shoppingChecks ?? {},
     hiddenShoppingItems: parsed.hiddenShoppingItems ?? {},
@@ -175,6 +175,11 @@ function normalizeDateRange(startDate: string, endDate: string) {
   return startDate <= endDate ? { startDate, endDate } : { startDate: endDate, endDate: startDate };
 }
 
+function dateRangeDates(startDate: string, dayCount: number) {
+  const start = new Date(`${startDate}T12:00:00`);
+  return Array.from({ length: dayCount }, (_, index) => addDays(start, index));
+}
+
 function shoppingHiddenPrefixForRange(range: ReturnType<typeof normalizeDateRange>) {
   return `${range.startDate}__${range.endDate}__`;
 }
@@ -197,6 +202,48 @@ function parseNumberInput(value: string) {
   if (value.trim() === "") return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function splitManualShoppingLines(value: string) {
+  const normalized = value.replace(/\r/g, "\n").trim();
+  if (!normalized) return [];
+
+  const primaryLines = normalized.split(/\n+/);
+  const lines = primaryLines.length === 1 ? primaryLines[0].split(/;|,(?=\s*[A-Za-z])/g) : primaryLines;
+
+  return lines
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)]|\[[ x]\])\s*/i, "").trim())
+    .filter(Boolean);
+}
+
+function formatManualQuantity(ingredient: Ingredient) {
+  const quantity =
+    typeof ingredient.quantity === "number"
+      ? Number.isInteger(ingredient.quantity)
+        ? ingredient.quantity.toString()
+        : ingredient.quantity.toFixed(2).replace(/\.?0+$/, "")
+      : "";
+
+  return [quantity, ingredient.unit].filter(Boolean).join(" ");
+}
+
+function createManualShoppingItemFromLine(line: string): ShoppingListItem | null {
+  const cleanedLine = line.trim();
+  if (!cleanedLine) return null;
+
+  const parsed = parseIngredientLine(cleanedLine, { strict: false });
+  const name = parsed.name.trim() || cleanedLine;
+
+  return {
+    id: createId("manual"),
+    name,
+    canonicalName: canonicalizeIngredientName(name).canonicalName,
+    displayQuantity: formatManualQuantity(parsed),
+    category: parsed.category || inferCategory(name),
+    sourceMeals: ["Manual"],
+    checked: false,
+    manual: true
+  };
 }
 
 function likelyHeicPhoto(file: File) {
@@ -414,6 +461,7 @@ export default function Home() {
   const [hasHydratedLocalState, setHasHydratedLocalState] = useState(false);
   const [activeView, setActiveView] = useState<View>("planner");
   const [weekStart, setWeekStart] = useState(() => formatDateKey(startOfWeek(new Date())));
+  const [plannerDayCount, setPlannerDayCount] = useState<7 | 14>(7);
   const [shoppingStartDate, setShoppingStartDate] = useState(() => formatDateKey(startOfWeek(new Date())));
   const [shoppingEndDate, setShoppingEndDate] = useState(() => formatDateKey(addDays(startOfWeek(new Date()), 6)));
   const [recipeSearch, setRecipeSearch] = useState("");
@@ -437,6 +485,7 @@ export default function Home() {
   const [manualItemName, setManualItemName] = useState("");
   const [manualItemQuantity, setManualItemQuantity] = useState("");
   const [manualItemCategory, setManualItemCategory] = useState<GroceryCategory>("Other");
+  const [manualBulkItems, setManualBulkItems] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
   const [cloudUser, setCloudUser] = useState<string | null>(null);
   const [cloudMessage, setCloudMessage] = useState("");
@@ -460,7 +509,7 @@ export default function Home() {
     () => mealSlots.filter((slot) => !state.settings.hiddenSlots.includes(slot)),
     [state.settings.hiddenSlots]
   );
-  const days = useMemo(() => weekDates(weekStart), [weekStart]);
+  const days = useMemo(() => dateRangeDates(weekStart, plannerDayCount), [plannerDayCount, weekStart]);
   const shoppingDateRange = useMemo(() => normalizeDateRange(shoppingStartDate, shoppingEndDate), [shoppingStartDate, shoppingEndDate]);
   const shoppingHiddenPrefix = useMemo(
     () => shoppingHiddenPrefixForRange(shoppingDateRange),
@@ -703,20 +752,40 @@ export default function Home() {
   }
 
   function moveWeek(direction: -1 | 1) {
-    setWeekStart((current) => formatDateKey(addDays(new Date(`${current}T12:00:00`), direction * 7)));
+    setWeekStart((current) => formatDateKey(addDays(new Date(`${current}T12:00:00`), direction * plannerDayCount)));
+  }
+
+  function updateDayNote(date: string, note: string) {
+    updateState((current) => {
+      const dayNotes = { ...current.dayNotes };
+      if (note.trim()) {
+        dayNotes[date] = note;
+      } else {
+        delete dayNotes[date];
+      }
+
+      return { ...current, dayNotes };
+    });
   }
 
   function duplicateWeekToNext() {
-    const nextWeek = addDays(new Date(`${weekStart}T12:00:00`), 7);
+    const nextWeek = addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount);
     const newMeals = weekMeals.map((meal) => ({
       ...meal,
       id: createId("meal"),
       date: formatDateKey(addDays(nextWeek, days.findIndex((day) => formatDateKey(day) === meal.date)))
     }));
+    const newDayNotes = days.reduce<Record<string, string>>((notes, day, index) => {
+      const sourceDate = formatDateKey(day);
+      const note = state.dayNotes[sourceDate];
+      if (note) notes[formatDateKey(addDays(nextWeek, index))] = note;
+      return notes;
+    }, {});
 
     updateState((current) => ({
       ...current,
-      plannedMeals: [...current.plannedMeals, ...newMeals]
+      plannedMeals: [...current.plannedMeals, ...newMeals],
+      dayNotes: { ...current.dayNotes, ...newDayNotes }
     }));
     setWeekStart(formatDateKey(nextWeek));
   }
@@ -726,6 +795,7 @@ export default function Home() {
     updateState((current) => ({
       ...current,
       plannedMeals: current.plannedMeals.filter((meal) => !dayKeys.has(meal.date)),
+      dayNotes: Object.fromEntries(Object.entries(current.dayNotes).filter(([date]) => !dayKeys.has(date))),
       shoppingChecks: {}
     }));
   }
@@ -1165,12 +1235,12 @@ export default function Home() {
     event.preventDefault();
     if (!manualItemName.trim()) return;
 
-	  const item: ShoppingListItem = {
-	    id: createId("manual"),
-	    name: manualItemName.trim(),
-	    canonicalName: canonicalizeIngredientName(manualItemName).canonicalName,
-	    displayQuantity: manualItemQuantity.trim(),
-	    category: manualItemCategory,
+    const item: ShoppingListItem = {
+      id: createId("manual"),
+      name: manualItemName.trim(),
+      canonicalName: canonicalizeIngredientName(manualItemName).canonicalName,
+      displayQuantity: manualItemQuantity.trim(),
+      category: manualItemCategory,
       sourceMeals: ["Manual"],
       checked: false,
       manual: true
@@ -1183,6 +1253,21 @@ export default function Home() {
     setManualItemName("");
     setManualItemQuantity("");
     setManualItemCategory("Other");
+  }
+
+  function addBulkManualShoppingItems(event: FormEvent) {
+    event.preventDefault();
+    const newItems = splitManualShoppingLines(manualBulkItems)
+      .map(createManualShoppingItemFromLine)
+      .filter((item): item is ShoppingListItem => Boolean(item));
+
+    if (!newItems.length) return;
+
+    updateState((current) => ({
+      ...current,
+      manualShoppingItems: [...current.manualShoppingItems, ...newItems]
+    }));
+    setManualBulkItems("");
   }
 
   function toggleShoppingItem(id: string, checked: boolean) {
@@ -1455,6 +1540,8 @@ export default function Home() {
           <PlannerView
             days={days}
             weekStart={weekStart}
+            plannerDayCount={plannerDayCount}
+            dayNotes={state.dayNotes}
             recipes={state.recipes}
             plannedMeals={state.plannedMeals}
             visibleSlots={visibleSlots}
@@ -1470,6 +1557,9 @@ export default function Home() {
             }}
             onOpenRecipe={setSelectedRecipeId}
             onMoveWeek={moveWeek}
+            onSetPlannerStart={setWeekStart}
+            onSetPlannerDayCount={setPlannerDayCount}
+            onUpdateDayNote={updateDayNote}
             onThisWeek={() => setWeekStart(formatDateKey(startOfWeek(new Date())))}
             onDuplicateWeek={duplicateWeekToNext}
             onClearWeek={clearWeek}
@@ -1553,11 +1643,13 @@ export default function Home() {
             manualItemName={manualItemName}
             manualItemQuantity={manualItemQuantity}
             manualItemCategory={manualItemCategory}
+            manualBulkItems={manualBulkItems}
             setStartDate={updateShoppingStartDate}
             setEndDate={updateShoppingEndDate}
             setManualItemName={setManualItemName}
             setManualItemQuantity={setManualItemQuantity}
             setManualItemCategory={setManualItemCategory}
+            setManualBulkItems={setManualBulkItems}
             onResetDateRange={() => {
               const currentWeekStart = startOfWeek(new Date());
               setShoppingStartDate(formatDateKey(currentWeekStart));
@@ -1566,6 +1658,7 @@ export default function Home() {
             }}
             onToggleIncludeStaples={(includeStaples) => updateSettings({ includeStaples })}
             onAddManualItem={addManualShoppingItem}
+            onAddBulkManualItems={addBulkManualShoppingItems}
             onToggleItem={toggleShoppingItem}
             onUpdateManualItem={updateManualShoppingItem}
             onDeleteItem={deleteShoppingItem}
@@ -1649,6 +1742,8 @@ function NavButton({
 function PlannerView({
   days,
   weekStart,
+  plannerDayCount,
+  dayNotes,
   recipes,
   plannedMeals,
   visibleSlots,
@@ -1661,12 +1756,17 @@ function PlannerView({
   onOpenMealPicker,
   onOpenRecipe,
   onMoveWeek,
+  onSetPlannerStart,
+  onSetPlannerDayCount,
+  onUpdateDayNote,
   onThisWeek,
   onDuplicateWeek,
   onClearWeek
 }: {
   days: Date[];
   weekStart: string;
+  plannerDayCount: 7 | 14;
+  dayNotes: Record<string, string>;
   recipes: Recipe[];
   plannedMeals: AppState["plannedMeals"];
   visibleSlots: MealSlot[];
@@ -1679,11 +1779,15 @@ function PlannerView({
   onOpenMealPicker: (date: string, slot: MealSlot) => void;
   onOpenRecipe: (recipeId: string) => void;
   onMoveWeek: (direction: -1 | 1) => void;
+  onSetPlannerStart: (date: string) => void;
+  onSetPlannerDayCount: (dayCount: 7 | 14) => void;
+  onUpdateDayNote: (date: string, note: string) => void;
   onThisWeek: () => void;
   onDuplicateWeek: () => void;
   onClearWeek: () => void;
 }) {
   const [dragOverSlot, setDragOverSlot] = useState<string | null>(null);
+  const endDate = formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount - 1));
 
   function handleDrop(event: DragEvent<HTMLDivElement>, date: string, slot: MealSlot) {
     event.preventDefault();
@@ -1696,15 +1800,29 @@ function PlannerView({
     <div className="view-stack">
       <section className="toolbar-band">
         <div>
-          <p className="eyebrow">Week of</p>
-          <h2>{dateFormatter.format(new Date(`${weekStart}T12:00:00`))}</h2>
+          <p className="eyebrow">Planner range</p>
+          <h2>
+            {dateFormatter.format(new Date(`${weekStart}T12:00:00`))} to {dateFormatter.format(new Date(`${endDate}T12:00:00`))}
+          </h2>
         </div>
         <div className="button-row">
-          <button className="icon-button" title="Previous week" onClick={() => onMoveWeek(-1)}>
+          <label className="compact-date-control">
+            Start
+            <input type="date" value={weekStart} onChange={(event) => onSetPlannerStart(event.target.value)} />
+          </label>
+          <div className="segmented-control" aria-label="Planner days shown">
+            <button className={classNames(plannerDayCount === 7 && "active")} type="button" onClick={() => onSetPlannerDayCount(7)}>
+              7 days
+            </button>
+            <button className={classNames(plannerDayCount === 14 && "active")} type="button" onClick={() => onSetPlannerDayCount(14)}>
+              14 days
+            </button>
+          </div>
+          <button className="icon-button" title="Previous range" onClick={() => onMoveWeek(-1)}>
             <Minus size={18} />
           </button>
           <button className="text-button" onClick={onThisWeek}>This week</button>
-          <button className="icon-button" title="Next week" onClick={() => onMoveWeek(1)}>
+          <button className="icon-button" title="Next range" onClick={() => onMoveWeek(1)}>
             <Plus size={18} />
           </button>
           <button className="icon-text-button" onClick={onDuplicateWeek}>
@@ -1727,6 +1845,13 @@ function PlannerView({
               <div className="day-heading">
                 <strong>{dateFormatter.format(date)}</strong>
               </div>
+              <textarea
+                className="day-note-input"
+                value={dayNotes[dateKey] ?? ""}
+                onChange={(event) => onUpdateDayNote(dateKey, event.target.value)}
+                placeholder="Day note"
+                rows={2}
+              />
 
               {visibleSlots.map((slot) => {
                 const slotMeals = plannedMeals.filter((meal) => meal.date === dateKey && meal.slot === slot);
@@ -2596,14 +2721,17 @@ function ShoppingView({
   manualItemName,
   manualItemQuantity,
   manualItemCategory,
+  manualBulkItems,
   setStartDate,
   setEndDate,
   setManualItemName,
   setManualItemQuantity,
   setManualItemCategory,
+  setManualBulkItems,
   onResetDateRange,
   onToggleIncludeStaples,
   onAddManualItem,
+  onAddBulkManualItems,
   onToggleItem,
   onUpdateManualItem,
   onDeleteItem,
@@ -2624,14 +2752,17 @@ function ShoppingView({
   manualItemName: string;
   manualItemQuantity: string;
   manualItemCategory: GroceryCategory;
+  manualBulkItems: string;
   setStartDate: (value: string) => void;
   setEndDate: (value: string) => void;
   setManualItemName: (value: string) => void;
   setManualItemQuantity: (value: string) => void;
   setManualItemCategory: (value: GroceryCategory) => void;
+  setManualBulkItems: (value: string) => void;
   onResetDateRange: () => void;
   onToggleIncludeStaples: (value: boolean) => void;
   onAddManualItem: (event: FormEvent) => void;
+  onAddBulkManualItems: (event: FormEvent) => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
@@ -2689,7 +2820,20 @@ function ShoppingView({
         </div>
       </section>
 
-      <form className="manual-add" onSubmit={onAddManualItem}>
+      <form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
+        <textarea
+          value={manualBulkItems}
+          onChange={(event) => setManualBulkItems(event.target.value)}
+          placeholder={"Milk\n2 onions\nBread"}
+          rows={3}
+        />
+        <button className="primary-button" type="submit">
+          <Plus size={18} />
+          Add list
+        </button>
+      </form>
+
+      <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>
         <input value={manualItemName} onChange={(event) => setManualItemName(event.target.value)} placeholder="Add extra item" />
         <input value={manualItemQuantity} onChange={(event) => setManualItemQuantity(event.target.value)} placeholder="Quantity" />
         <select value={manualItemCategory} onChange={(event) => setManualItemCategory(event.target.value as GroceryCategory)}>
