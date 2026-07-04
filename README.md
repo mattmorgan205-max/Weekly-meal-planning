@@ -62,4 +62,26 @@ Photo import is free-first and privacy-conscious:
 - "Try free online OCR" is optional and sends the compressed selected crop to OCR.Space through the app server. Add `OCR_SPACE_API_KEY` to enable it.
 - No recipe is saved until the review screen is accepted.
 
+## Private Asda Helper Extension
+
+The repo includes a private Chrome/Edge extension for semi-automated Asda shopping. It imports the current shopping date range from the Shopping tab, opens saved Asda product links or search pages, remembers chosen product pages, and syncs `opened`, `added`, and `unavailable` statuses back to Weekwise.
+
+Build it from the project root:
+
+```bash
+npm run build:extension
+```
+
+Then load it:
+
+1. Open `chrome://extensions` or `edge://extensions`.
+2. Turn on Developer mode.
+3. Click Load unpacked.
+4. Select `extension/asda-helper`.
+5. In Weekwise, open Shopping and click Send to Asda Helper.
+
+The extension does not store Asda passwords and does not automate checkout, delivery slots, payment, or bot checks. It is designed as a guided helper: you stay logged in to Asda normally, confirm products yourself, and keep final checkout manual.
+
+If your deployed Vercel URL changes, edit `extension/asda-helper/manifest.json` and replace `https://weekly-meal-planning-alpha.vercel.app/*` with your live app URL, then reload the extension.
+
 The normalized meal-planner tables are included for a future row-level sync migration.

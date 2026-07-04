@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weekwise Asda Helper</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header>
+        <p>Weekwise</p>
+        <h1>Asda Helper</h1>
+      </header>
+      <section id="status" class="status-panel">Open Weekwise Shopping and send a list to the helper.</section>
+      <section id="current" class="current-panel"></section>
+      <section class="action-row">
+        <button id="open-current" type="button">Open current</button>
+        <button id="open-next" type="button">Open next</button>
+      </section>
+      <section class="action-row">
+        <button id="mark-added" type="button">Mark added</button>
+        <button id="mark-unavailable" type="button">Unavailable</button>
+      </section>
+      <section id="queue" class="queue-list"></section>
+      <footer>
+        <button id="clear-run" type="button">Reset run</button>
+      </footer>
+    </main>
+    <script src="build/popup.js"></script>
+  </body>
+</html>

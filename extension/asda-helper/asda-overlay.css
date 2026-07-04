@@ -1,0 +1,81 @@
+#weekwise-asda-helper {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  width: min(360px, calc(100vw - 32px));
+  border: 1px solid #d9decf;
+  border-radius: 8px;
+  background: #fffefa;
+  color: #253126;
+  box-shadow: 0 16px 48px rgba(37, 49, 38, 0.22);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#weekwise-asda-helper.weekwise-collapsed .weekwise-body {
+  display: none;
+}
+
+#weekwise-asda-helper * {
+  box-sizing: border-box;
+}
+
+#weekwise-asda-helper button {
+  min-height: 34px;
+  border: 1px solid #d9decf;
+  border-radius: 8px;
+  background: #fff;
+  color: #253126;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+#weekwise-asda-helper button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+#weekwise-asda-helper .weekwise-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #d9decf;
+}
+
+#weekwise-asda-helper .weekwise-head strong {
+  font-size: 0.95rem;
+}
+
+#weekwise-asda-helper .weekwise-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+#weekwise-asda-helper .weekwise-item {
+  display: grid;
+  gap: 4px;
+}
+
+#weekwise-asda-helper .weekwise-item strong {
+  font-size: 1rem;
+}
+
+#weekwise-asda-helper .weekwise-item small,
+#weekwise-asda-helper .weekwise-note {
+  color: #697568;
+}
+
+#weekwise-asda-helper .weekwise-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+#weekwise-asda-helper .weekwise-primary {
+  background: #2f6f4e;
+  border-color: #2f6f4e;
+  color: #fff;
+}

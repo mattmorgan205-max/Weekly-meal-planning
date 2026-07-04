@@ -78,6 +78,39 @@ type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error"
 type MealPickerGroup = MealSlot | "all";
 type RecipeGroupFilter = MealSlot | "all";
 type PhotoCropMode = "whole" | "ingredients" | "method";
+type AsdaHelperQueueItem = {
+  itemId: string;
+  shoppingKey: string;
+  statusKey: string;
+  name: string;
+  displayQuantity: string;
+  quantity?: number;
+  unit?: string;
+  category: GroceryCategory;
+  sourceMeals: string[];
+  savedProductUrl: string;
+  searchUrl: string;
+  status?: StoreShoppingStatus;
+};
+type AsdaHelperQueue = {
+  version: 1;
+  createdAt: string;
+  sourceUrl: string;
+  rangeStartDate: string;
+  rangeEndDate: string;
+  items: AsdaHelperQueueItem[];
+};
+type AsdaHelperExtensionMessage = {
+  source?: string;
+  type?: string;
+  payload?: {
+    itemId?: string;
+    shoppingKey?: string;
+    statusKey?: string;
+    productUrl?: string;
+    status?: StoreShoppingStatus;
+  };
+};
 
 const commonExtraItems = [
   "Milk",
@@ -99,6 +132,8 @@ const commonExtraItems = [
 
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
+const asdaHelperAppSource = "weekwise-meal-planner";
+const asdaHelperExtensionSource = "weekwise-asda-helper-extension";
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   weekday: "short",
@@ -739,6 +774,54 @@ export default function Home() {
   function updateState(updater: (current: AppState) => AppState) {
     setState((current) => updater(current));
   }
+
+  useEffect(() => {
+    if (!hasHydratedLocalState) return;
+
+    function handleAsdaHelperMessage(event: MessageEvent<AsdaHelperExtensionMessage>) {
+      if (event.source !== window || event.origin !== window.location.origin) return;
+      const message = event.data;
+      if (!message || message.source !== asdaHelperExtensionSource || message.type !== "ASDA_HELPER_UPDATE_ITEM") return;
+
+      const payload = message.payload ?? {};
+      const status = payload.status;
+      const validStatus = status === "opened" || status === "added" || status === "unavailable" ? status : undefined;
+      const normalizedUrl = typeof payload.productUrl === "string" ? normalizeStoreUrl(payload.productUrl) : "";
+      const shoppingKey = typeof payload.shoppingKey === "string" ? payload.shoppingKey : "";
+      const statusKey = typeof payload.statusKey === "string" ? payload.statusKey : "";
+      const itemId = typeof payload.itemId === "string" ? payload.itemId : "";
+
+      if (!shoppingKey && !statusKey && !itemId) return;
+
+      updateState((current) => {
+        const asdaProductLinks = { ...current.asdaProductLinks };
+        const asdaShoppingStatus = { ...current.asdaShoppingStatus };
+        const shoppingChecks = { ...current.shoppingChecks };
+
+        if (shoppingKey && normalizedUrl) {
+          asdaProductLinks[shoppingKey] = normalizedUrl;
+        }
+
+        if (statusKey && validStatus) {
+          asdaShoppingStatus[statusKey] = validStatus;
+        }
+
+        if (itemId && validStatus === "added") {
+          shoppingChecks[itemId] = true;
+        }
+
+        return {
+          ...current,
+          asdaProductLinks,
+          asdaShoppingStatus,
+          shoppingChecks
+        };
+      });
+    }
+
+    window.addEventListener("message", handleAsdaHelperMessage);
+    return () => window.removeEventListener("message", handleAsdaHelperMessage);
+  }, [hasHydratedLocalState]);
 
   function applyDraft(nextDraft: ImportDraft) {
     const hydratedDraft = {
@@ -2910,6 +2993,7 @@ function ShoppingView({
   onRestoreGenerated: () => void;
 }) {
   const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
+  const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const grouped = groceryCategories
@@ -2918,6 +3002,54 @@ function ShoppingView({
       items: items.filter((item) => item.category === category)
     }))
     .filter((group) => group.items.length > 0);
+
+  useEffect(() => {
+    function handleAsdaHelperResult(event: MessageEvent<{ source?: string; type?: string; payload?: { itemCount?: number; error?: string } }>) {
+      if (event.source !== window || event.origin !== window.location.origin) return;
+      const message = event.data;
+      if (!message || message.source !== asdaHelperExtensionSource || message.type !== "ASDA_HELPER_IMPORT_RESULT") return;
+
+      if (message.payload?.error) {
+        setAsdaHelperMessage(message.payload.error);
+      } else {
+        setAsdaHelperMessage(`Asda Helper imported ${message.payload?.itemCount ?? items.length} items.`);
+      }
+    }
+
+    window.addEventListener("message", handleAsdaHelperResult);
+    return () => window.removeEventListener("message", handleAsdaHelperResult);
+  }, [items.length]);
+
+  function sendToAsdaHelper() {
+    const queue: AsdaHelperQueue = {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      sourceUrl: window.location.href,
+      rangeStartDate,
+      rangeEndDate,
+      items: items.map((item) => {
+        const shoppingKey = shoppingPreferenceKey(item);
+
+        return {
+          itemId: item.id,
+          shoppingKey,
+          statusKey: storeStatusItemKey({ startDate: rangeStartDate, endDate: rangeEndDate }, item.id),
+          name: item.name,
+          displayQuantity: item.displayQuantity,
+          quantity: item.quantity,
+          unit: item.unit,
+          category: item.category,
+          sourceMeals: item.sourceMeals,
+          savedProductUrl: asdaProductLinks[shoppingKey] ?? "",
+          searchUrl: asdaSearchUrl(item),
+          status: asdaShoppingStatus[item.id]
+        };
+      })
+    };
+
+    window.postMessage({ source: asdaHelperAppSource, type: "ASDA_HELPER_IMPORT_QUEUE", payload: queue }, window.location.origin);
+    setAsdaHelperMessage("Shopping queue sent. Open the Asda Helper extension to start.");
+  }
 
   return (
     <div className="view-stack">
@@ -3009,10 +3141,17 @@ function ShoppingView({
               {asdaAddedCount}/{items.length} added
             </h3>
           </div>
-          <button className="text-button" type="button" onClick={onResetAsdaRun}>
-            Reset run
-          </button>
+          <div className="asda-shop-header-actions">
+            <button className="icon-text-button" type="button" onClick={sendToAsdaHelper} disabled={!items.length}>
+              <ShoppingCart size={18} />
+              Send to Asda Helper
+            </button>
+            <button className="text-button" type="button" onClick={onResetAsdaRun}>
+              Reset run
+            </button>
+          </div>
         </div>
+        {asdaHelperMessage ? <p className="helper-message">{asdaHelperMessage}</p> : null}
 
         <div className="asda-shop-list">
           {items.map((item) => {
