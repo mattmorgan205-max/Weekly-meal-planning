@@ -85,8 +85,9 @@
             : `
               <div class="weekwise-item">
                 <strong>No shopping queue</strong>
-                <small>Open Weekwise Shopping and click Send to Asda Helper.</small>
+                <small>Open Weekwise Shopping and click Send to Asda Helper, or import from an open Weekwise tab.</small>
               </div>
+              <button id="weekwise-import" class="weekwise-primary" type="button">Import from Weekwise</button>
               <button id="weekwise-refresh" type="button">Refresh</button>
             `
         }
@@ -105,6 +106,10 @@
       render();
     });
     document.getElementById("weekwise-refresh")?.addEventListener("click", () => void refresh());
+    document.getElementById("weekwise-import")?.addEventListener("click", async () => {
+      await sendMessage({ type: "IMPORT_FROM_APP_TAB" });
+      await refresh();
+    });
     document.getElementById("weekwise-remember")?.addEventListener("click", async () => {
       await sendMessage({ type: "SAVE_CURRENT_PRODUCT_URL", productUrl: window.location.href });
       await refresh();

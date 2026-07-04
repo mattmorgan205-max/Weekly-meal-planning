@@ -98,8 +98,13 @@ footer {
   gap: 8px;
 }
 
+.action-row.one {
+  grid-template-columns: 1fr;
+}
+
 #open-next,
-#mark-added {
+#mark-added,
+#import-weekwise {
   background: var(--green);
   border-color: var(--green);
   color: #fff;

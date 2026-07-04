@@ -111,6 +111,9 @@ type AsdaHelperExtensionMessage = {
     status?: StoreShoppingStatus;
   };
 };
+type AsdaHelperWindow = Window & {
+  __WEEKWISE_ASDA_QUEUE__?: AsdaHelperQueue;
+};
 
 const commonExtraItems = [
   "Milk",
@@ -2994,6 +2997,7 @@ function ShoppingView({
 }) {
   const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
+  const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const grouped = groceryCategories
@@ -3003,25 +3007,8 @@ function ShoppingView({
     }))
     .filter((group) => group.items.length > 0);
 
-  useEffect(() => {
-    function handleAsdaHelperResult(event: MessageEvent<{ source?: string; type?: string; payload?: { itemCount?: number; error?: string } }>) {
-      if (event.source !== window || event.origin !== window.location.origin) return;
-      const message = event.data;
-      if (!message || message.source !== asdaHelperExtensionSource || message.type !== "ASDA_HELPER_IMPORT_RESULT") return;
-
-      if (message.payload?.error) {
-        setAsdaHelperMessage(message.payload.error);
-      } else {
-        setAsdaHelperMessage(`Asda Helper imported ${message.payload?.itemCount ?? items.length} items.`);
-      }
-    }
-
-    window.addEventListener("message", handleAsdaHelperResult);
-    return () => window.removeEventListener("message", handleAsdaHelperResult);
-  }, [items.length]);
-
-  function sendToAsdaHelper() {
-    const queue: AsdaHelperQueue = {
+  function buildAsdaHelperQueue(): AsdaHelperQueue {
+    return {
       version: 1,
       createdAt: new Date().toISOString(),
       sourceUrl: window.location.href,
@@ -3046,9 +3033,44 @@ function ShoppingView({
         };
       })
     };
+  }
 
+  useEffect(() => {
+    (window as AsdaHelperWindow).__WEEKWISE_ASDA_QUEUE__ = buildAsdaHelperQueue();
+  });
+
+  useEffect(() => {
+    function handleAsdaHelperResult(event: MessageEvent<{ source?: string; type?: string; payload?: { itemCount?: number; error?: string } }>) {
+      if (event.source !== window || event.origin !== window.location.origin) return;
+      const message = event.data;
+      if (!message || message.source !== asdaHelperExtensionSource || message.type !== "ASDA_HELPER_IMPORT_RESULT") return;
+
+      if (asdaHelperTimerRef.current) clearTimeout(asdaHelperTimerRef.current);
+
+      if (message.payload?.error) {
+        setAsdaHelperMessage(message.payload.error);
+      } else {
+        setAsdaHelperMessage(`Asda Helper imported ${message.payload?.itemCount ?? items.length} items.`);
+      }
+    }
+
+    window.addEventListener("message", handleAsdaHelperResult);
+    return () => {
+      window.removeEventListener("message", handleAsdaHelperResult);
+      if (asdaHelperTimerRef.current) clearTimeout(asdaHelperTimerRef.current);
+    };
+  }, [items.length]);
+
+  function sendToAsdaHelper() {
+    const queue = buildAsdaHelperQueue();
+
+    (window as AsdaHelperWindow).__WEEKWISE_ASDA_QUEUE__ = queue;
     window.postMessage({ source: asdaHelperAppSource, type: "ASDA_HELPER_IMPORT_QUEUE", payload: queue }, window.location.origin);
-    setAsdaHelperMessage("Shopping queue sent. Open the Asda Helper extension to start.");
+    setAsdaHelperMessage("Sending shopping queue to Asda Helper...");
+    if (asdaHelperTimerRef.current) clearTimeout(asdaHelperTimerRef.current);
+    asdaHelperTimerRef.current = setTimeout(() => {
+      setAsdaHelperMessage("Asda Helper did not respond. Reload the extension and this Weekwise tab, or open the extension and click Import from Weekwise.");
+    }, 1500);
   }
 
   return (

@@ -1,5 +1,5 @@
 (() => {
-  const appUrlPatterns = ["http://localhost/*", "http://127.0.0.1/*", "https://weekly-meal-planning-alpha.vercel.app/*"];
+  const appUrlPatterns = ["http://localhost/*", "http://127.0.0.1/*", "https://weekly-meal-planning-alpha.vercel.app/*", "https://*.vercel.app/*"];
   const defaultState: AsdaHelperState = {
     currentIndex: 0,
     productLinks: {},
@@ -77,6 +77,41 @@
     });
   }
 
+  function queryTabs(queryInfo: Record<string, unknown>): Promise<Array<{ id?: number }>> {
+    return new Promise((resolve) => chrome.tabs.query(queryInfo, resolve));
+  }
+
+  function isQueue(value: unknown): value is AsdaHelperQueue {
+    const possibleQueue = value as Partial<AsdaHelperQueue> | null;
+    return Boolean(
+      possibleQueue &&
+        possibleQueue.version === 1 &&
+        typeof possibleQueue.rangeStartDate === "string" &&
+        typeof possibleQueue.rangeEndDate === "string" &&
+        Array.isArray(possibleQueue.items)
+    );
+  }
+
+  function readQueueFromTab(tabId: number): Promise<AsdaHelperQueue | null> {
+    return new Promise((resolve) => {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          func: () => (window as any).__WEEKWISE_ASDA_QUEUE__ ?? null
+        },
+        (results: Array<{ result?: unknown }> | undefined) => {
+          if (chrome.runtime.lastError) {
+            resolve(null);
+            return;
+          }
+
+          const queue = results?.[0]?.result;
+          resolve(isQueue(queue) ? queue : null);
+        }
+      );
+    });
+  }
+
   async function importQueue(queue: AsdaHelperQueue): Promise<AsdaHelperRuntimeResponse> {
     const state = await getState();
     const productLinks = { ...state.productLinks };
@@ -101,6 +136,21 @@
       if (rememberedUrl && rememberedUrl !== item.savedProductUrl) sendUpdateToApp(item, { productUrl: rememberedUrl });
     });
     return { ok: true, state: nextState };
+  }
+
+  async function importFromAppTab(): Promise<AsdaHelperRuntimeResponse> {
+    const tabs = await queryTabs({ url: appUrlPatterns });
+
+    for (const tab of tabs) {
+      if (!tab.id) continue;
+      const queue = await readQueueFromTab(tab.id);
+      if (queue) return importQueue(queue);
+    }
+
+    return {
+      ok: false,
+      error: "No Weekwise shopping queue was found. Open Weekwise on the Shopping tab, then click Send to Asda Helper."
+    };
   }
 
   async function openItem(itemId?: string): Promise<AsdaHelperRuntimeResponse> {
@@ -184,6 +234,8 @@
     switch (message.type) {
       case "IMPORT_QUEUE":
         return message.queue ? importQueue(message.queue) : { ok: false, error: "No shopping queue was received." };
+      case "IMPORT_FROM_APP_TAB":
+        return importFromAppTab();
       case "GET_STATE":
         return { ok: true, state: await getState() };
       case "OPEN_ITEM":

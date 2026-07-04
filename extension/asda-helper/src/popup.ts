@@ -2,6 +2,7 @@
   const statusElement = document.getElementById("status") as HTMLElement;
   const currentElement = document.getElementById("current") as HTMLElement;
   const queueElement = document.getElementById("queue") as HTMLElement;
+  const importWeekwiseButton = document.getElementById("import-weekwise") as HTMLButtonElement;
   const openCurrentButton = document.getElementById("open-current") as HTMLButtonElement;
   const openNextButton = document.getElementById("open-next") as HTMLButtonElement;
   const markAddedButton = document.getElementById("mark-added") as HTMLButtonElement;
@@ -50,7 +51,7 @@
 
     statusElement.textContent = items.length
       ? `${addedCount}/${items.length} added${unavailableCount ? `, ${unavailableCount} unavailable` : ""}`
-      : "Open Weekwise Shopping and send a list to the helper.";
+      : "Open Weekwise Shopping, then click Send to Asda Helper or Import from Weekwise.";
 
     openCurrentButton.disabled = !activeItem;
     openNextButton.disabled = !items.length;
@@ -93,6 +94,21 @@
 
     render(response.state);
   }
+
+  async function importFromWeekwise() {
+    statusElement.textContent = "Looking for an open Weekwise Shopping tab...";
+    const response = await sendMessage({ type: "IMPORT_FROM_APP_TAB" });
+    if (!response.ok || !response.state) {
+      statusElement.textContent = response.error ?? "Asda Helper could not import from Weekwise.";
+      return;
+    }
+
+    render(response.state);
+  }
+
+  importWeekwiseButton.addEventListener("click", async () => {
+    await importFromWeekwise();
+  });
 
   openCurrentButton.addEventListener("click", async () => {
     const item = latestState ? currentItem(latestState) : null;
