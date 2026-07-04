@@ -907,17 +907,23 @@ export default function Home() {
   }
 
   function updateDraftIngredient(id: string, patch: Partial<Ingredient>) {
+    const hasCanonicalNamePatch = Object.prototype.hasOwnProperty.call(patch, "canonicalName");
+
     setDraft((current) => ({
       ...current,
       ingredients: current.ingredients.map((ingredient) =>
         ingredient.id === id
-	          ? {
-	              ...ingredient,
-	              ...patch,
-	              category: patch.name && !patch.category ? inferCategory(patch.name) : patch.category ?? ingredient.category,
-	              canonicalName: patch.name ? canonicalizeIngredientName(patch.name).canonicalName : patch.canonicalName ?? ingredient.canonicalName,
-	              needsReview: patch.name ? false : patch.needsReview ?? ingredient.needsReview
-	            }
+          ? {
+              ...ingredient,
+              ...patch,
+              category: patch.name && !patch.category ? inferCategory(patch.name) : patch.category ?? ingredient.category,
+              canonicalName: hasCanonicalNamePatch
+                ? patch.canonicalName
+                : patch.name
+                  ? canonicalizeIngredientName(patch.name).canonicalName
+                  : ingredient.canonicalName,
+              needsReview: patch.name ? false : patch.needsReview ?? ingredient.needsReview
+            }
           : ingredient
       )
     }));
@@ -2606,7 +2612,10 @@ function AddRecipeView({
             </button>
           </div>
           <div className="ingredient-editor">
-	            {draft.ingredients.map((ingredient) => (
+	            {draft.ingredients.map((ingredient) => {
+                  const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name).canonicalName : "";
+
+                  return (
 	              <div
 	                className={classNames("ingredient-row", (ingredient.confidence === "low" || ingredient.needsReview) && "needs-review")}
 	                key={ingredient.id}
@@ -2650,7 +2659,7 @@ function AddRecipeView({
 	                    </option>
 	                  ))}
 	                </select>
-	                <button className="icon-button danger" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
+	                <button className="icon-button danger" type="button" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
 	                  <Trash2 size={16} />
 	                </button>
                   <div className="ingredient-standard-row">
@@ -2660,20 +2669,24 @@ function AddRecipeView({
                         aria-label="Shopping name"
                         value={ingredient.canonicalName ?? ""}
                         onChange={(event) => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
-                        placeholder={canonicalizeIngredientName(ingredient.name).canonicalName || "shopping name"}
+                        placeholder={suggestedShoppingName || "shopping name"}
                       />
                     </label>
                     <button
                       className="text-button"
                       type="button"
-                      onClick={() =>
+                      disabled={!suggestedShoppingName}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (!suggestedShoppingName) return;
                         onUpdateIngredient(ingredient.id, {
-                          canonicalName: canonicalizeIngredientName(ingredient.name).canonicalName,
+                          canonicalName: suggestedShoppingName,
                           needsReview: false
-                        })
-                      }
+                        });
+                      }}
                     >
-                      Use suggestion
+                      {suggestedShoppingName ? `Use "${suggestedShoppingName}"` : "Use suggestion"}
                     </button>
                     <small>Used to combine matching shopping-list items.</small>
                   </div>
@@ -2683,7 +2696,8 @@ function AddRecipeView({
 	                  </small>
 	                )}
 	              </div>
-	            ))}
+                  );
+                })}
           </div>
         </div>
 
