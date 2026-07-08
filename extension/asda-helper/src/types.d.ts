@@ -67,6 +67,40 @@ interface AsdaProductCandidate {
   rawText?: string;
 }
 
+interface AsdaBasketLine {
+  index: number;
+  url?: string;
+  name: string;
+  rawText?: string;
+  lineQuantity?: number;
+  packQuantity?: number;
+  packUnit?: string;
+  totalQuantity?: number;
+  totalUnit?: string;
+  canIncrease?: boolean;
+}
+
+type AsdaBasketCheckStatus = "ok" | "short" | "missing" | "unknown";
+
+interface AsdaBasketCheck {
+  itemId: string;
+  shoppingKey: string;
+  name: string;
+  displayQuantity: string;
+  sourceMeals: string[];
+  status: AsdaBasketCheckStatus;
+  requiredQuantity?: number;
+  requiredUnit?: string;
+  basketQuantity?: number;
+  basketUnit?: string;
+  basketLineIndex?: number;
+  basketLineName?: string;
+  basketProductUrl?: string;
+  openUrl: string;
+  message: string;
+  canIncrease?: boolean;
+}
+
 interface AsdaRecommendation {
   product: AsdaProductCandidate;
   score: number;

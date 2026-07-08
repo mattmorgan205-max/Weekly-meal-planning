@@ -122,7 +122,8 @@ footer {
 #open-next,
 #mark-added,
 #import-weekwise,
-#auto-add-saved {
+#auto-add-saved,
+#verify-basket {
   background: var(--green);
   border-color: var(--green);
   color: #fff;

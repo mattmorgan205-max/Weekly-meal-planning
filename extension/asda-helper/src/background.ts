@@ -1,6 +1,7 @@
 (() => {
   const appUrlPatterns = ["http://localhost/*", "http://127.0.0.1/*", "https://weekly-meal-planning-alpha.vercel.app/*", "https://*.vercel.app/*"];
   const asdaUrlPatterns = ["https://groceries.asda.com/*", "https://www.asda.com/groceries/*"];
+  const asdaBasketUrl = "https://www.asda.com/groceries/trolley";
   const defaultState: AsdaHelperState = {
     currentIndex: 0,
     productLinks: {},
@@ -445,6 +446,23 @@
     return openItem(items[nextIndex].itemId, state);
   }
 
+  async function openBasket(fallbackState?: AsdaHelperState): Promise<AsdaHelperRuntimeResponse> {
+    const state = await getState(fallbackState);
+
+    try {
+      const opened = await openOrReuseShoppingTab(asdaBasketUrl, state);
+      await saveState(opened.state);
+      return { ok: true, state: opened.state, openUrl: asdaBasketUrl, tabId: opened.tabId };
+    } catch (error) {
+      return {
+        ok: false,
+        state,
+        openUrl: asdaBasketUrl,
+        error: error instanceof Error ? `Chrome could not open the Asda basket: ${error.message}` : "Chrome could not open the Asda basket."
+      };
+    }
+  }
+
   async function setStatus(
     itemId: string | undefined,
     status: StoreShoppingStatus | undefined,
@@ -665,6 +683,8 @@
         return openItem(message.itemId, message.fallbackState);
       case "OPEN_NEXT":
         return openNextItem(message.fallbackState);
+      case "OPEN_BASKET":
+        return openBasket(message.fallbackState);
       case "SET_STATUS":
         return setStatus(message.itemId, message.status, message.fallbackState, { advance: message.advance, openNext: message.openNext });
       case "AUTO_ADD_SAVED":

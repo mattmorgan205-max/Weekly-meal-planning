@@ -87,6 +87,13 @@
   border-top: 1px solid #d9decf;
 }
 
+#weekwise-asda-helper .weekwise-basket {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #d9decf;
+}
+
 #weekwise-asda-helper .weekwise-recommend-head {
   display: flex;
   align-items: center;
@@ -143,4 +150,46 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
+}
+
+#weekwise-asda-helper .weekwise-basket-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+#weekwise-asda-helper .weekwise-basket-card {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #d9decf;
+  border-radius: 8px;
+  background: #f6f0e6;
+}
+
+#weekwise-asda-helper .weekwise-basket-card strong {
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+#weekwise-asda-helper .weekwise-basket-card small {
+  color: #697568;
+  line-height: 1.25;
+}
+
+#weekwise-asda-helper .weekwise-basket-short,
+#weekwise-asda-helper .weekwise-basket-missing {
+  border-color: #e0b9a5;
+  background: #fff3ed;
+}
+
+#weekwise-asda-helper .weekwise-basket-unknown {
+  border-color: #d8c480;
+  background: #fff9dc;
+}
+
+#weekwise-asda-helper .weekwise-basket-ok {
+  border-color: #b8d7c0;
+  background: #e6f2ea;
 }

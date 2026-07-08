@@ -5,6 +5,9 @@
     let recommendations = [];
     let recommendationItemId = "";
     let recommendationMessage = "";
+    let basketChecks = [];
+    let basketLines = [];
+    let basketMessage = "";
     function sendMessage(message) {
         const messageWithFallback = latestState ? { ...message, fallbackState: latestState } : message;
         return new Promise((resolve) => chrome.runtime.sendMessage(messageWithFallback, (response) => {
@@ -210,6 +213,251 @@
             });
         }
         return Array.from(products.values()).slice(0, 24);
+    }
+    function isBasketPage() {
+        return /\/groceries\/(?:trolley|basket|cart)\b/i.test(window.location.pathname) || /\b(trolley|basket)\b/i.test(document.title);
+    }
+    function displayBaseQuantity(quantity, unit) {
+        if (typeof quantity !== "number" || Number.isNaN(quantity))
+            return "";
+        if (unit === "g" && quantity >= 1000)
+            return `${Number((quantity / 1000).toFixed(2))} kg`;
+        if (unit === "ml" && quantity >= 1000)
+            return `${Number((quantity / 1000).toFixed(2))} l`;
+        return `${Number(quantity.toFixed(2))} ${unit || "items"}`.trim();
+    }
+    function extractBasketLineQuantity(container) {
+        const input = Array.from(container.querySelectorAll("input")).find((element) => {
+            const label = `${element.getAttribute("aria-label") ?? ""} ${element.name ?? ""} ${element.id ?? ""}`.toLowerCase();
+            return elementVisible(element) && /qty|quantity|amount/.test(label) && Number(element.value) > 0;
+        });
+        if (input)
+            return Number(input.value);
+        const select = Array.from(container.querySelectorAll("select")).find((element) => {
+            const label = `${element.getAttribute("aria-label") ?? ""} ${element.name ?? ""} ${element.id ?? ""}`.toLowerCase();
+            return elementVisible(element) && /qty|quantity|amount/.test(label) && Number(element.value) > 0;
+        });
+        if (select)
+            return Number(select.value);
+        const text = visibleText(container);
+        const quantityMatch = text.match(/\b(?:qty|quantity)\s*:?\s*(\d+)\b/i);
+        if (quantityMatch)
+            return Number(quantityMatch[1]);
+        return 1;
+    }
+    function findIncreaseButton(container) {
+        return Array.from(container.querySelectorAll("button, [role='button']")).find((button) => {
+            if (!elementVisible(button) || buttonDisabled(button))
+                return false;
+            const text = `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.getAttribute("data-testid") ?? ""} ${button.getAttribute("data-auto-id") ?? ""}`
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            if (/(increase|increment|add one|plus|more|quantity up)/.test(text))
+                return true;
+            return text === "+" || text === "＋";
+        });
+    }
+    function scanBasketLines() {
+        const lines = new Map();
+        const anchors = Array.from(document.querySelectorAll("a[href]")).filter((anchor) => /\/(?:groceries\/)?product\//i.test(anchor.href));
+        anchors.forEach((anchor) => {
+            const url = absoluteUrl(anchor.href);
+            if (lines.has(url))
+                return;
+            const container = findProductContainer(anchor);
+            if (!container)
+                return;
+            const rawText = visibleText(container);
+            if (rawText.length < 20)
+                return;
+            if (!/(remove|quantity|qty|subtotal|save for later|£|\u00a3)/i.test(rawText))
+                return;
+            const image = container.querySelector("img") ?? anchor.querySelector("img");
+            const name = firstUsefulLine(image?.alt || anchor.getAttribute("aria-label") || visibleText(anchor) || rawText);
+            const lineQuantity = extractBasketLineQuantity(container);
+            const packQuantity = extractProductQuantity(`${name} ${rawText}`);
+            const totalQuantity = packQuantity?.quantity && lineQuantity ? packQuantity.quantity * lineQuantity : lineQuantity;
+            const totalUnit = packQuantity?.unit ?? "item";
+            lines.set(url, {
+                index: lines.size,
+                url,
+                name,
+                rawText,
+                lineQuantity,
+                packQuantity: packQuantity?.quantity,
+                packUnit: packQuantity?.unit,
+                totalQuantity,
+                totalUnit,
+                canIncrease: Boolean(findIncreaseButton(container)),
+                element: container
+            });
+        });
+        basketLines = Array.from(lines.values()).map((line, index) => ({ ...line, index }));
+        return basketLines;
+    }
+    function lineMatchScore(item, state, line) {
+        let score = 0;
+        const productText = normalizeText(`${line.name} ${line.rawText ?? ""}`);
+        const targetName = normalizeText(item.canonicalName || item.name);
+        const savedUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl;
+        if (savedUrl && line.url && absoluteUrl(savedUrl) === line.url)
+            score += 100;
+        if (targetName && productText.includes(targetName))
+            score += 40;
+        tokenize(item.canonicalName || item.name).forEach((token) => {
+            if (productText.includes(token))
+                score += 12;
+            else
+                score -= 8;
+        });
+        (item.avoidTerms ?? []).forEach((term) => {
+            if (productText.includes(normalizeText(term)))
+                score -= 50;
+        });
+        return score;
+    }
+    function bestBasketLine(item, state, lines) {
+        return lines
+            .map((line) => ({ line, score: lineMatchScore(item, state, line) }))
+            .filter((entry) => entry.score >= 20)
+            .sort((a, b) => b.score - a.score)[0]?.line;
+    }
+    function basketCheckForItem(item, state, lines) {
+        const openUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl || item.searchUrl;
+        const required = toBaseQuantity(item.requiredQuantity ?? item.quantity, item.requiredUnit ?? item.unit);
+        const line = bestBasketLine(item, state, lines);
+        if (!line) {
+            return {
+                itemId: item.itemId,
+                shoppingKey: item.shoppingKey,
+                name: item.name,
+                displayQuantity: item.displayQuantity,
+                sourceMeals: item.sourceMeals,
+                status: "missing",
+                requiredQuantity: required?.quantity,
+                requiredUnit: required?.unit,
+                openUrl,
+                message: "Not found in the visible basket."
+            };
+        }
+        const basket = toBaseQuantity(line.totalQuantity, line.totalUnit);
+        const base = {
+            itemId: item.itemId,
+            shoppingKey: item.shoppingKey,
+            name: item.name,
+            displayQuantity: item.displayQuantity,
+            sourceMeals: item.sourceMeals,
+            requiredQuantity: required?.quantity,
+            requiredUnit: required?.unit,
+            basketQuantity: basket?.quantity,
+            basketUnit: basket?.unit,
+            basketLineIndex: line.index,
+            basketLineName: line.name,
+            basketProductUrl: line.url,
+            openUrl,
+            canIncrease: line.canIncrease
+        };
+        if (!required || !basket || required.family !== basket.family) {
+            return {
+                ...base,
+                status: "unknown",
+                message: "Found a likely basket item, but quantity could not be compared safely."
+            };
+        }
+        if (basket.quantity >= required.quantity) {
+            return {
+                ...base,
+                status: "ok",
+                message: `Enough in basket: ${displayBaseQuantity(basket.quantity, basket.unit)} for ${displayBaseQuantity(required.quantity, required.unit)} needed.`
+            };
+        }
+        return {
+            ...base,
+            status: "short",
+            message: `Need more: basket has ${displayBaseQuantity(basket.quantity, basket.unit)}, list needs ${displayBaseQuantity(required.quantity, required.unit)}.`
+        };
+    }
+    function verifyBasket(state) {
+        if (!state.queue?.items.length) {
+            basketChecks = [];
+            basketMessage = "No Weekwise shopping list is imported.";
+            return;
+        }
+        if (!isBasketPage()) {
+            basketChecks = [];
+            basketMessage = "Open the Asda basket first, then run the verifier.";
+            return;
+        }
+        const lines = scanBasketLines();
+        basketChecks = state.queue.items.map((item) => basketCheckForItem(item, state, lines));
+        const shortCount = basketChecks.filter((check) => check.status === "short").length;
+        const missingCount = basketChecks.filter((check) => check.status === "missing").length;
+        const unknownCount = basketChecks.filter((check) => check.status === "unknown").length;
+        basketMessage = shortCount || missingCount || unknownCount
+            ? `${shortCount} short, ${missingCount} missing, ${unknownCount} need manual review.`
+            : "Basket looks adequate for the imported shopping list.";
+    }
+    async function addOneMoreForCheck(check) {
+        const line = typeof check.basketLineIndex === "number" ? basketLines[check.basketLineIndex] : undefined;
+        const button = line?.element ? findIncreaseButton(line.element) : undefined;
+        if (!button) {
+            basketMessage = "Could not find a safe quantity increase button for that basket line.";
+            render();
+            return;
+        }
+        button.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+        button.focus();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        button.click();
+        basketMessage = "Increased the basket quantity. Rechecking...";
+        render();
+        await new Promise((resolve) => setTimeout(resolve, 1400));
+        const state = latestState;
+        if (state)
+            verifyBasket(state);
+        render();
+    }
+    function renderBasketVerifier(state) {
+        const counts = {
+            ok: basketChecks.filter((check) => check.status === "ok").length,
+            short: basketChecks.filter((check) => check.status === "short").length,
+            missing: basketChecks.filter((check) => check.status === "missing").length,
+            unknown: basketChecks.filter((check) => check.status === "unknown").length
+        };
+        const reviewChecks = basketChecks.filter((check) => check.status !== "ok");
+        return `
+      <div class="weekwise-basket">
+        <div class="weekwise-recommend-head">
+          <strong>Basket verifier</strong>
+          <button id="weekwise-verify-basket" type="button">${isBasketPage() ? "Verify basket" : "Open basket"}</button>
+        </div>
+        <small class="weekwise-note">${escapeHtml(basketMessage || "Check the visible Asda basket against the Weekwise shopping list.")}</small>
+        ${basketChecks.length
+            ? `<small class="weekwise-note">${counts.ok} ok · ${counts.short} short · ${counts.missing} missing · ${counts.unknown} review</small>`
+            : ""}
+        ${reviewChecks.length
+            ? `<div class="weekwise-basket-list">
+                ${reviewChecks
+                .map((check, index) => `
+                      <article class="weekwise-basket-card weekwise-basket-${check.status}">
+                        <strong>${escapeHtml([check.displayQuantity, check.name].filter(Boolean).join(" "))}</strong>
+                        <small>${escapeHtml(check.message)}</small>
+                        ${check.basketLineName ? `<small>${escapeHtml(`Matched: ${check.basketLineName}`)}</small>` : ""}
+                        <div class="weekwise-recommend-actions">
+                          <button id="weekwise-basket-open-${index}" type="button">Open product</button>
+                          <button id="weekwise-basket-plus-${index}" class="weekwise-primary" type="button" ${check.canIncrease ? "" : "disabled"}>Add one more</button>
+                          <button id="weekwise-basket-ok-${index}" type="button">Looks ok</button>
+                        </div>
+                      </article>
+                    `)
+                .join("")}
+              </div>`
+            : basketChecks.length
+                ? `<div class="weekwise-basket-card weekwise-basket-ok"><strong>All checked items look adequate</strong><small>Still review substitutions and freshness before checkout.</small></div>`
+                : ""}
+      </div>
+    `;
     }
     function scoreProduct(item, state, product) {
         let score = 0;
@@ -417,6 +665,7 @@
                 ? "Add + next clicks the visible Asda add button, marks this item added, then opens the next item."
                 : "No single safe Add button was detected. Add manually, then mark added."}</small>
               ${state ? renderRecommendations(item, state) : ""}
+              ${state ? renderBasketVerifier(state) : ""}
             `
             : `
               <div class="weekwise-item">
@@ -471,6 +720,33 @@
                 return;
             await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "added", advance: true, openNext: true });
             await refresh();
+        });
+        document.getElementById("weekwise-verify-basket")?.addEventListener("click", async () => {
+            if (!state)
+                return;
+            if (!isBasketPage()) {
+                basketMessage = "Opening Asda basket...";
+                render();
+                await sendMessage({ type: "OPEN_BASKET" });
+                return;
+            }
+            verifyBasket(state);
+            render();
+        });
+        basketChecks
+            .filter((check) => check.status !== "ok")
+            .forEach((check, index) => {
+            document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
+                window.location.href = check.basketProductUrl || check.openUrl;
+            });
+            document.getElementById(`weekwise-basket-plus-${index}`)?.addEventListener("click", () => {
+                void addOneMoreForCheck(check);
+            });
+            document.getElementById(`weekwise-basket-ok-${index}`)?.addEventListener("click", () => {
+                basketChecks = basketChecks.map((candidate) => (candidate.itemId === check.itemId ? { ...candidate, status: "ok", message: "Marked as adequate after review." } : candidate));
+                basketMessage = "Marked item as adequate.";
+                render();
+            });
         });
         document.getElementById("weekwise-scan-products")?.addEventListener("click", () => {
             if (!item || !state)

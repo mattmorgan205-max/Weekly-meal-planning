@@ -10,6 +10,7 @@
     const openNextButton = document.getElementById("open-next");
     const markAddedButton = document.getElementById("mark-added");
     const markUnavailableButton = document.getElementById("mark-unavailable");
+    const verifyBasketButton = document.getElementById("verify-basket");
     const clearRunButton = document.getElementById("clear-run");
     const popupBackupKey = "weekwise-asda-helper-popup-state";
     let latestState;
@@ -108,6 +109,7 @@
         openNextButton.disabled = !items.length;
         markAddedButton.disabled = !activeItem;
         markUnavailableButton.disabled = !activeItem;
+        verifyBasketButton.disabled = !items.length;
         autoAddSavedButton.disabled = !items.some((item) => statusFor(item, state) !== "added" && statusFor(item, state) !== "unavailable" && (item.savedProductUrl || state.productLinks[item.shoppingKey]));
         if (!activeItem) {
             currentElement.textContent = "No current item.";
@@ -214,6 +216,15 @@
             return;
         await openAndRefresh({ type: "SET_STATUS", itemId: item.itemId, status: "unavailable", advance: true, openNext: true });
         await refresh();
+    });
+    verifyBasketButton.addEventListener("click", async () => {
+        statusElement.textContent = "Opening Asda basket...";
+        const response = await sendMessage({ type: "OPEN_BASKET" });
+        if (response.state)
+            render(response.state);
+        statusElement.textContent = response.ok
+            ? "Basket opened. Use Verify basket in the Weekwise overlay."
+            : response.error ?? "Chrome could not open the Asda basket.";
     });
     clearRunButton.addEventListener("click", async () => {
         clearBackupState();
