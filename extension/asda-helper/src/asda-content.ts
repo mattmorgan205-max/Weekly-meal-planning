@@ -590,6 +590,13 @@
     const currentRecommendations = recommendationItemId === item.itemId ? recommendations : [];
     const savedRecommendation = state.lastRecommendations?.[item.shoppingKey];
 
+    function productPriceSummary(product: AsdaProductCandidate) {
+      const parts = [product.priceText, product.unitPriceText];
+      const offerText = product.offerText?.trim();
+      if (offerText && offerText.length < 80 && normalizeText(offerText) !== normalizeText(product.name)) parts.push(offerText);
+      return parts.filter(Boolean).join(" · ") || "No visible price";
+    }
+
     return `
       <div class="weekwise-recommend">
         <div class="weekwise-recommend-head">
@@ -608,11 +615,11 @@
                 ${currentRecommendations
                   .map(
                     (recommendation, index) => `
-                      <article class="weekwise-recommend-card">
+                      <article class="weekwise-recommend-card${recommendation.product.imageUrl ? "" : " weekwise-no-image"}">
                         ${recommendation.product.imageUrl ? `<img src="${escapeHtml(recommendation.product.imageUrl)}" alt="" />` : ""}
                         <div>
                           <strong>${escapeHtml(recommendation.product.name)}</strong>
-                          <small>${escapeHtml([recommendation.product.priceText, recommendation.product.unitPriceText, recommendation.product.offerText].filter(Boolean).join(" · ") || "No visible price")}</small>
+                          <small>${escapeHtml(productPriceSummary(recommendation.product))}</small>
                           <small>${escapeHtml(recommendation.reasons.join(" · ") || "possible match")}${recommendation.warnings?.length ? ` · Check: ${escapeHtml(recommendation.warnings.join(", "))}` : ""}</small>
                           <div class="weekwise-recommend-actions">
                             <button id="weekwise-rec-open-${index}" type="button">Open</button>
