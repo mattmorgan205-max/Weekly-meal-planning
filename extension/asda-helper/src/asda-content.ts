@@ -50,6 +50,23 @@
     return element instanceof HTMLButtonElement ? element.disabled : element.getAttribute("aria-disabled") === "true";
   }
 
+  function insideWeekwiseHelper(element: Element) {
+    return Boolean(element.closest("#weekwise-asda-helper"));
+  }
+
+  function controlLabel(element: HTMLElement) {
+    return `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("data-auto-id") ?? ""}`
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function visibleEnabledControls(container: HTMLElement) {
+    return Array.from(container.querySelectorAll<HTMLButtonElement | HTMLElement>("button, [role='button']")).filter(
+      (button) => !insideWeekwiseHelper(button) && elementVisible(button) && !buttonDisabled(button)
+    );
+  }
+
   function normalizeText(value: string) {
     return value
       .toLowerCase()
@@ -243,25 +260,104 @@
     return `${Number(quantity.toFixed(2))} ${unit || "items"}`.trim();
   }
 
-  function extractBasketLineQuantity(container: HTMLElement) {
-    const input = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find((element) => {
-      const label = `${element.getAttribute("aria-label") ?? ""} ${element.name ?? ""} ${element.id ?? ""}`.toLowerCase();
-      return elementVisible(element) && /qty|quantity|amount/.test(label) && Number(element.value) > 0;
-    });
-    if (input) return Number(input.value);
+  function wait(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
-    const select = Array.from(container.querySelectorAll<HTMLSelectElement>("select")).find((element) => {
+  async function activateElement(element: HTMLElement) {
+    element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+    element.focus();
+    await wait(150);
+
+    const pointerOptions = { bubbles: true, cancelable: true, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1 };
+    const mouseOptions = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
+
+    try {
+      element.dispatchEvent(new PointerEvent("pointerdown", pointerOptions));
+    } catch {
+      // Older embedded browsers can lack PointerEvent support.
+    }
+
+    element.dispatchEvent(new MouseEvent("mousedown", mouseOptions));
+    element.dispatchEvent(new MouseEvent("mouseup", { ...mouseOptions, buttons: 0 }));
+
+    try {
+      element.dispatchEvent(new PointerEvent("pointerup", { ...pointerOptions, buttons: 0 }));
+    } catch {
+      // Older embedded browsers can lack PointerEvent support.
+    }
+
+    element.click();
+  }
+
+  function quantityInput(container: HTMLElement) {
+    return Array.from(container.querySelectorAll<HTMLInputElement>("input")).find((element) => {
       const label = `${element.getAttribute("aria-label") ?? ""} ${element.name ?? ""} ${element.id ?? ""}`.toLowerCase();
-      return elementVisible(element) && /qty|quantity|amount/.test(label) && Number(element.value) > 0;
+      return !insideWeekwiseHelper(element) && elementVisible(element) && !element.disabled && /qty|quantity|amount/.test(label);
     });
-    if (select) return Number(select.value);
+  }
+
+  function quantitySelect(container: HTMLElement) {
+    return Array.from(container.querySelectorAll<HTMLSelectElement>("select")).find((element) => {
+      const label = `${element.getAttribute("aria-label") ?? ""} ${element.name ?? ""} ${element.id ?? ""}`.toLowerCase();
+      return !insideWeekwiseHelper(element) && elementVisible(element) && !element.disabled && /qty|quantity|amount/.test(label);
+    });
+  }
+
+  function setControlValue(control: HTMLInputElement | HTMLSelectElement, value: string) {
+    const prototype = control instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLSelectElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+
+    if (setter) setter.call(control, value);
+    else control.value = value;
+
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function increaseQuantityControl(container: HTMLElement) {
+    const button = findIncreaseButton(container);
+    if (button) {
+      await activateElement(button);
+      return true;
+    }
+
+    const input = quantityInput(container);
+    const inputValue = input ? Number(input.value) : Number.NaN;
+    if (input && Number.isFinite(inputValue)) {
+      setControlValue(input, String(inputValue + 1));
+      input.blur();
+      return true;
+    }
+
+    const select = quantitySelect(container);
+    if (select) {
+      const currentValue = Number(select.value);
+      const nextOption = Array.from(select.options)
+        .map((option) => ({ option, value: Number(option.value || option.textContent) }))
+        .filter((entry) => Number.isFinite(entry.value) && entry.value > currentValue)
+        .sort((a, b) => a.value - b.value)[0];
+
+      if (nextOption) {
+        setControlValue(select, nextOption.option.value);
+        select.blur();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function extractBasketLineQuantity(container: HTMLElement) {
+    const input = quantityInput(container);
+    if (input && Number(input.value) > 0) return Number(input.value);
+
+    const select = quantitySelect(container);
+    if (select && Number(select.value) > 0) return Number(select.value);
 
     const labelledQuantityElement = Array.from(container.querySelectorAll<HTMLElement>("[aria-label], [data-testid], [data-auto-id], [title]")).find((element) => {
-      if (!elementVisible(element)) return false;
-      const label = `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("data-auto-id") ?? ""}`
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase();
+      if (insideWeekwiseHelper(element) || !elementVisible(element)) return false;
+      const label = controlLabel(element);
       return /\b(qty|quantity)\b/.test(label) && /\b\d+\b/.test(label);
     });
     const labelledQuantity = labelledQuantityElement
@@ -269,11 +365,11 @@
       : null;
     if (labelledQuantity) return Number(labelledQuantity[1]);
 
-    const quantityButtons = Array.from(container.querySelectorAll<HTMLElement>("button, [role='button']")).filter((element) => elementVisible(element));
+    const quantityButtons = visibleEnabledControls(container);
     const quantityNumberButton = quantityButtons.find((element) => /^\d+$/.test(visibleText(element)));
     if (quantityNumberButton) return Number(visibleText(quantityNumberButton));
 
-    const quantityControl = quantityButtons.find((element) => /(increase|increment|add one|add 1|plus|more|decrease|minus|remove one|quantity)/i.test(`${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`));
+    const quantityControl = quantityButtons.find((element) => /(increase|increment|add one|add 1|plus|decrease|minus|remove one|quantity)/i.test(controlLabel(element)));
     const nearbyQuantity = quantityControl?.parentElement ? visibleText(quantityControl.parentElement).match(/\b(\d+)\b/) : null;
     if (nearbyQuantity) return Number(nearbyQuantity[1]);
 
@@ -285,14 +381,10 @@
   }
 
   function findIncreaseButton(container: HTMLElement) {
-    const visibleButtons = Array.from(container.querySelectorAll<HTMLButtonElement | HTMLElement>("button, [role='button']")).filter((button) => elementVisible(button) && !buttonDisabled(button));
+    const visibleButtons = visibleEnabledControls(container);
     const explicitIncreaseButton = visibleButtons.find((button) => {
-      if (!elementVisible(button) || buttonDisabled(button)) return false;
-      const text = `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.getAttribute("data-testid") ?? ""} ${button.getAttribute("data-auto-id") ?? ""}`
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase();
-      if (/(increase|increment|add one|add 1|plus|more|quantity up)/.test(text)) return true;
+      const text = controlLabel(button);
+      if (/(increase|increment|add one|add 1|plus|quantity up)/.test(text)) return true;
       return text === "+" || text === "＋";
     });
     if (explicitIncreaseButton) return explicitIncreaseButton;
@@ -301,12 +393,10 @@
     if (quantityButtonIndex >= 0) return visibleButtons[quantityButtonIndex + 1];
 
     const quantityTextElement = Array.from(container.querySelectorAll<HTMLElement>("span, div, p, strong")).find((element) => {
-      if (!elementVisible(element) || !/^\d+$/.test(visibleText(element))) return false;
-      return (element.parentElement?.querySelectorAll("button, [role='button']").length ?? 0) >= 2;
+      if (insideWeekwiseHelper(element) || !elementVisible(element) || !/^\d+$/.test(visibleText(element))) return false;
+      return visibleEnabledControls(element.parentElement ?? container).length >= 2;
     });
-    const siblingButtons = quantityTextElement?.parentElement
-      ? Array.from(quantityTextElement.parentElement.querySelectorAll<HTMLButtonElement | HTMLElement>("button, [role='button']")).filter((button) => elementVisible(button) && !buttonDisabled(button))
-      : [];
+    const siblingButtons = quantityTextElement?.parentElement ? visibleEnabledControls(quantityTextElement.parentElement) : [];
     if (siblingButtons.length >= 2) return siblingButtons[siblingButtons.length - 1];
 
     return undefined;
@@ -320,12 +410,8 @@
       const text = visibleText(current);
       const hasProductLink = Boolean(Array.from(current.querySelectorAll<HTMLAnchorElement>("a[href]")).some((link) => /\/(?:groceries\/)?product\//i.test(link.href)));
       const hasQuantityControl = Boolean(
-        current.querySelector("input, select") ||
-          Array.from(current.querySelectorAll<HTMLElement>("button, [role='button']")).some((button) =>
-            /(increase|increment|add one|add 1|plus|more|decrease|minus|quantity|\+|＋)/i.test(
-              `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.getAttribute("data-testid") ?? ""} ${button.getAttribute("data-auto-id") ?? ""}`
-            )
-          )
+        Array.from(current.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select")).some((control) => !insideWeekwiseHelper(control) && elementVisible(control)) ||
+          visibleEnabledControls(current).some((button) => /(increase|increment|add one|add 1|plus|decrease|minus|quantity|\+|＋)/i.test(controlLabel(button)))
       );
       const looksLikeBasketLine = hasProductLink && hasQuantityControl && /\b(remove|quantity|qty|subtotal|save for later|£|\u00a3)\b/i.test(text);
 
@@ -369,7 +455,7 @@
         packUnit: packQuantity?.unit,
         totalQuantity,
         totalUnit,
-        canIncrease: Boolean(findIncreaseButton(container)),
+        canIncrease: Boolean(findIncreaseButton(container) || quantityInput(container) || quantitySelect(container)),
         element: container
       });
     });
@@ -521,23 +607,44 @@
 
   async function addOneMoreForCheck(check: AsdaBasketCheck) {
     const line = typeof check.basketLineIndex === "number" ? basketLines[check.basketLineIndex] : undefined;
-    const button = line?.element ? findIncreaseButton(line.element) : undefined;
-    if (!button) {
+    if (!line?.element) {
       basketMessage = "Could not find a safe quantity increase button for that basket line.";
       render();
       return;
     }
 
-    button.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-    button.focus();
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    button.click();
-    basketMessage = "Increased the basket quantity. Rechecking...";
+    const beforeQuantity = check.basketQuantity;
+    const attempted = await increaseQuantityControl(line.element);
+    if (!attempted) {
+      basketMessage = "Could not find a safe quantity increase control for that basket line.";
+      render();
+      return;
+    }
+
+    basketMessage = "Trying to increase the basket quantity. Rechecking...";
     render();
-    await new Promise((resolve) => setTimeout(resolve, 1400));
+    await wait(1800);
     const state = latestState;
-    if (state) verifyBasket(state);
+    if (state) {
+      verifyBasket(state);
+      const afterCheck = basketChecks.find((candidate) => candidate.itemId === check.itemId);
+      const afterQuantity = afterCheck?.basketQuantity;
+
+      if (afterCheck?.status === "ok") {
+        basketMessage = `${afterCheck.name} now looks adequate.`;
+      } else if (typeof beforeQuantity === "number" && typeof afterQuantity === "number" && afterQuantity > beforeQuantity) {
+        basketMessage = `${afterCheck?.name ?? check.name} increased, but still looks short.`;
+      } else {
+        basketMessage = `I tried to increase ${check.name}, but Asda did not show a quantity change. Use Open product or adjust the basket quantity manually.`;
+      }
+    }
     render();
+  }
+
+  const basketStatusRank: Record<AsdaBasketCheckStatus, number> = { short: 0, missing: 1, unknown: 2, ok: 3 };
+
+  function reviewableBasketChecks() {
+    return basketChecks.filter((check) => check.status !== "ok").sort((a, b) => basketStatusRank[a.status] - basketStatusRank[b.status]);
   }
 
   function renderBasketVerifier(state: AsdaHelperState) {
@@ -547,10 +654,7 @@
       missing: basketChecks.filter((check) => check.status === "missing").length,
       unknown: basketChecks.filter((check) => check.status === "unknown").length
     };
-    const statusRank: Record<AsdaBasketCheckStatus, number> = { short: 0, missing: 1, unknown: 2, ok: 3 };
-    const reviewChecks = basketChecks
-      .filter((check) => check.status !== "ok")
-      .sort((a, b) => statusRank[a.status] - statusRank[b.status]);
+    const reviewChecks = reviewableBasketChecks();
 
     return `
       <div class="weekwise-basket">
@@ -898,21 +1002,19 @@
       verifyBasket(state);
       render();
     });
-    basketChecks
-      .filter((check) => check.status !== "ok")
-      .forEach((check, index) => {
-        document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
-          window.location.href = check.basketProductUrl || check.openUrl;
-        });
-        document.getElementById(`weekwise-basket-plus-${index}`)?.addEventListener("click", () => {
-          void addOneMoreForCheck(check);
-        });
-        document.getElementById(`weekwise-basket-ok-${index}`)?.addEventListener("click", () => {
-          basketChecks = basketChecks.map((candidate) => (candidate.itemId === check.itemId ? { ...candidate, status: "ok", message: "Marked as adequate after review." } : candidate));
-          basketMessage = "Marked item as adequate.";
-          render();
-        });
+    reviewableBasketChecks().forEach((check, index) => {
+      document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
+        window.location.href = check.basketProductUrl || check.openUrl;
       });
+      document.getElementById(`weekwise-basket-plus-${index}`)?.addEventListener("click", () => {
+        void addOneMoreForCheck(check);
+      });
+      document.getElementById(`weekwise-basket-ok-${index}`)?.addEventListener("click", () => {
+        basketChecks = basketChecks.map((candidate) => (candidate.itemId === check.itemId ? { ...candidate, status: "ok", message: "Marked as adequate after review." } : candidate));
+        basketMessage = "Marked item as adequate.";
+        render();
+      });
+    });
     document.getElementById("weekwise-scan-products")?.addEventListener("click", () => {
       if (!item || !state) return;
       recommendations = recommendProducts(item, state);
