@@ -6,6 +6,7 @@
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
     "https://groceries.asda.com/*",
+    "https://www.asda.com/groceries/*",
     "https://weekly-meal-planning-alpha.vercel.app/*",
     "https://*.vercel.app/*",
     "http://localhost/*",
@@ -30,7 +31,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://groceries.asda.com/*"],
+      "matches": ["https://groceries.asda.com/*", "https://www.asda.com/groceries/*"],
       "js": ["build/asda-content.js"],
       "css": ["asda-overlay.css"],
       "run_at": "document_idle"

@@ -29,9 +29,20 @@ interface AsdaHelperQueue {
 interface AsdaHelperState {
   queue?: AsdaHelperQueue;
   currentIndex: number;
+  activeAsdaTabId?: number;
   productLinks: Record<string, string>;
   itemStatus: Record<string, StoreShoppingStatus>;
+  autoAddReviews?: AutoAddReviewItem[];
+  lastAutoAddMessage?: string;
   lastImportedAt?: string;
+}
+
+interface AutoAddReviewItem {
+  itemId: string;
+  name: string;
+  displayQuantity: string;
+  openUrl: string;
+  reason: string;
 }
 
 interface AsdaHelperRuntimeMessage {
@@ -40,6 +51,9 @@ interface AsdaHelperRuntimeMessage {
   itemId?: string;
   status?: StoreShoppingStatus;
   productUrl?: string;
+  advance?: boolean;
+  openNext?: boolean;
+  fallbackState?: AsdaHelperState;
   payload?: Record<string, unknown>;
 }
 
@@ -47,5 +61,8 @@ interface AsdaHelperRuntimeResponse {
   ok: boolean;
   state?: AsdaHelperState;
   item?: AsdaHelperQueueItem;
+  openUrl?: string;
+  tabId?: number;
+  message?: string;
   error?: string;
 }

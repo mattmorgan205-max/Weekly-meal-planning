@@ -3,7 +3,11 @@
     let latestState;
     let collapsed = false;
     function sendMessage(message) {
-        return new Promise((resolve) => chrome.runtime.sendMessage(message, (response) => resolve(response)));
+        const messageWithFallback = latestState ? { ...message, fallbackState: latestState } : message;
+        return new Promise((resolve) => chrome.runtime.sendMessage(messageWithFallback, (response) => {
+            const error = chrome.runtime.lastError?.message;
+            resolve(response ?? { ok: false, error: error ?? "Asda Helper did not respond." });
+        }));
     }
     function escapeHtml(value) {
         return value.replace(/[&<>"']/g, (character) => {
@@ -23,19 +27,59 @@
     function statusFor(item, state) {
         return state.itemStatus[item.itemId] ?? item.status;
     }
+    function elementVisible(element) {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    }
+    function buttonDisabled(element) {
+        return element instanceof HTMLButtonElement ? element.disabled : element.getAttribute("aria-disabled") === "true";
+    }
     function findConfidentAddButton() {
-        const candidates = Array.from(document.querySelectorAll("button, [role='button']"))
-            .filter((element) => {
-            const text = `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""}`.trim();
-            const disabled = element instanceof HTMLButtonElement ? element.disabled : element.getAttribute("aria-disabled") === "true";
-            return !disabled && /\b(add|add to trolley|add item)\b/i.test(text);
-        });
-        const isProductPage = /\/product\//i.test(window.location.pathname);
-        if (isProductPage && candidates.length > 0)
-            return candidates[0];
-        if (candidates.length === 1)
-            return candidates[0];
-        return null;
+        const candidates = Array.from(document.querySelectorAll([
+            "button",
+            "[role='button']",
+            "[data-testid*='add' i]",
+            "[data-auto-id*='add' i]",
+            "[aria-label*='add' i]"
+        ].join(",")))
+            .filter((element) => elementVisible(element) && !buttonDisabled(element))
+            .map((element) => {
+            const text = `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("data-auto-id") ?? ""}`
+                .replace(/\s+/g, " ")
+                .trim();
+            const lowerText = text.toLowerCase();
+            let score = 0;
+            if (/\badd\b/.test(lowerText))
+                score += 4;
+            if (/add to (basket|trolley|cart)/.test(lowerText))
+                score += 8;
+            if (/^add$/.test(lowerText))
+                score += 6;
+            if (/\/product\//i.test(window.location.pathname))
+                score += 3;
+            if (/(favourite|favorite|list|address|voucher|promo|coupon)/.test(lowerText))
+                score -= 10;
+            return { element, score, text };
+        })
+            .filter((candidate) => candidate.score >= 4)
+            .sort((a, b) => b.score - a.score);
+        return candidates[0]?.element ?? null;
+    }
+    async function clickAddButtonWithRetry() {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+            const addButton = findConfidentAddButton();
+            if (addButton) {
+                addButton.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+                addButton.focus();
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                addButton.click();
+                await new Promise((resolve) => setTimeout(resolve, 1600));
+                return { ok: true };
+            }
+            await new Promise((resolve) => setTimeout(resolve, 700));
+        }
+        return { ok: false, error: "No single safe Asda add button was found." };
     }
     async function refresh() {
         const response = await sendMessage({ type: "GET_STATE" });
@@ -62,15 +106,15 @@
                 <small>${escapeHtml(item.sourceMeals.join(", ") || item.category)}</small>
               </div>
               <div class="weekwise-grid">
-                <button id="weekwise-click-add" class="weekwise-primary" type="button" ${confidentAddButton ? "" : "disabled"}>Add this item</button>
+                <button id="weekwise-click-add" class="weekwise-primary" type="button" ${confidentAddButton ? "" : "disabled"}>Add + next</button>
                 <button id="weekwise-remember" type="button">Remember page</button>
-                <button id="weekwise-added" type="button">Mark added</button>
-                <button id="weekwise-unavailable" type="button">Unavailable</button>
+                <button id="weekwise-added" type="button">Added + next</button>
+                <button id="weekwise-unavailable" type="button">Unavailable + next</button>
                 <button id="weekwise-next" class="weekwise-primary" type="button">Next item</button>
                 <button id="weekwise-refresh" type="button">Refresh</button>
               </div>
               <small class="weekwise-note">${confidentAddButton
-                ? "Add this item clicks the visible Asda add button, then marks the item added."
+                ? "Add + next clicks the visible Asda add button, marks this item added, then opens the next item."
                 : "No single safe Add button was detected. Add manually, then mark added."}</small>
             `
             : `
@@ -105,13 +149,13 @@
         document.getElementById("weekwise-added")?.addEventListener("click", async () => {
             if (!item)
                 return;
-            await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "added" });
+            await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "added", advance: true, openNext: true });
             await refresh();
         });
         document.getElementById("weekwise-unavailable")?.addEventListener("click", async () => {
             if (!item)
                 return;
-            await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "unavailable" });
+            await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "unavailable", advance: true, openNext: true });
             await refresh();
         });
         document.getElementById("weekwise-next")?.addEventListener("click", async () => {
@@ -119,15 +163,21 @@
             await refresh();
         });
         document.getElementById("weekwise-click-add")?.addEventListener("click", async () => {
-            const addButton = findConfidentAddButton();
-            if (!item || !addButton)
+            if (!item)
                 return;
-            addButton.click();
-            await new Promise((resolve) => setTimeout(resolve, 750));
-            await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "added" });
+            const result = await clickAddButtonWithRetry();
+            if (!result.ok)
+                return;
+            await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "added", advance: true, openNext: true });
             await refresh();
         });
     }
     void refresh();
     chrome.storage.onChanged.addListener(() => void refresh());
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message.type !== "CLICK_ADD_IF_CONFIDENT")
+            return;
+        clickAddButtonWithRetry().then(sendResponse);
+        return true;
+    });
 })();

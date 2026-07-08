@@ -36,6 +36,18 @@ button:disabled {
   opacity: 0.55;
 }
 
+.basket-link {
+  display: grid;
+  min-height: 36px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 800;
+  text-decoration: none;
+}
+
 .popup-shell {
   display: grid;
   gap: 12px;
@@ -81,6 +93,11 @@ header h1 {
   gap: 4px;
 }
 
+.manual-open-link {
+  color: var(--green);
+  font-weight: 850;
+}
+
 .current-panel strong,
 .queue-item strong {
   display: block;
@@ -104,7 +121,8 @@ footer {
 
 #open-next,
 #mark-added,
-#import-weekwise {
+#import-weekwise,
+#auto-add-saved {
   background: var(--green);
   border-color: var(--green);
   color: #fff;
@@ -113,14 +131,52 @@ footer {
 .queue-list {
   display: grid;
   gap: 6px;
-  max-height: 260px;
+  max-height: 320px;
   overflow: auto;
+}
+
+.queue-heading {
+  display: grid;
+  gap: 2px;
+  padding: 2px 2px 4px;
+}
+
+.queue-heading strong {
+  font-size: 0.95rem;
+}
+
+.queue-heading small {
+  color: var(--muted);
+}
+
+.review-list {
+  display: grid;
+  gap: 8px;
+}
+
+.review-item {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #e0b9a5;
+  border-radius: 8px;
+  background: #fff3ed;
+}
+
+.review-item a {
+  color: var(--green);
+  font-weight: 850;
 }
 
 .queue-item {
   display: grid;
   gap: 4px;
   padding: 8px;
+  text-align: left;
+}
+
+.queue-item small {
+  line-height: 1.25;
 }
 
 .queue-item.active {
