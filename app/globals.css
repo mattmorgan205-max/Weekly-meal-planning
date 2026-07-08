@@ -1081,7 +1081,7 @@ h3 {
 .ingredient-standard-row {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
   gap: 8px;
   align-items: end;
 }
@@ -1089,6 +1089,12 @@ h3 {
 .ingredient-standard-row small {
   grid-column: 1 / -1;
   color: var(--muted);
+}
+
+.shopping-name-controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(128px, 0.45fr);
+  gap: 8px;
 }
 
 .method-row {
@@ -1549,6 +1555,10 @@ h3 {
   }
 
   .ingredient-standard-row {
+    grid-template-columns: 1fr;
+  }
+
+  .shopping-name-controls {
     grid-template-columns: 1fr;
   }
 

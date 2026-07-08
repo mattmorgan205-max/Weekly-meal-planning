@@ -239,6 +239,28 @@
         });
         if (select)
             return Number(select.value);
+        const labelledQuantityElement = Array.from(container.querySelectorAll("[aria-label], [data-testid], [data-auto-id], [title]")).find((element) => {
+            if (!elementVisible(element))
+                return false;
+            const label = `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("data-auto-id") ?? ""}`
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            return /\b(qty|quantity)\b/.test(label) && /\b\d+\b/.test(label);
+        });
+        const labelledQuantity = labelledQuantityElement
+            ? `${labelledQuantityElement.textContent ?? ""} ${labelledQuantityElement.getAttribute("aria-label") ?? ""} ${labelledQuantityElement.getAttribute("title") ?? ""}`.match(/\b(\d+)\b/)
+            : null;
+        if (labelledQuantity)
+            return Number(labelledQuantity[1]);
+        const quantityButtons = Array.from(container.querySelectorAll("button, [role='button']")).filter((element) => elementVisible(element));
+        const quantityNumberButton = quantityButtons.find((element) => /^\d+$/.test(visibleText(element)));
+        if (quantityNumberButton)
+            return Number(visibleText(quantityNumberButton));
+        const quantityControl = quantityButtons.find((element) => /(increase|increment|add one|add 1|plus|more|decrease|minus|remove one|quantity)/i.test(`${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`));
+        const nearbyQuantity = quantityControl?.parentElement ? visibleText(quantityControl.parentElement).match(/\b(\d+)\b/) : null;
+        if (nearbyQuantity)
+            return Number(nearbyQuantity[1]);
         const text = visibleText(container);
         const quantityMatch = text.match(/\b(?:qty|quantity)\s*:?\s*(\d+)\b/i);
         if (quantityMatch)
@@ -246,17 +268,51 @@
         return 1;
     }
     function findIncreaseButton(container) {
-        return Array.from(container.querySelectorAll("button, [role='button']")).find((button) => {
+        const visibleButtons = Array.from(container.querySelectorAll("button, [role='button']")).filter((button) => elementVisible(button) && !buttonDisabled(button));
+        const explicitIncreaseButton = visibleButtons.find((button) => {
             if (!elementVisible(button) || buttonDisabled(button))
                 return false;
             const text = `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.getAttribute("data-testid") ?? ""} ${button.getAttribute("data-auto-id") ?? ""}`
                 .replace(/\s+/g, " ")
                 .trim()
                 .toLowerCase();
-            if (/(increase|increment|add one|plus|more|quantity up)/.test(text))
+            if (/(increase|increment|add one|add 1|plus|more|quantity up)/.test(text))
                 return true;
             return text === "+" || text === "＋";
         });
+        if (explicitIncreaseButton)
+            return explicitIncreaseButton;
+        const quantityButtonIndex = visibleButtons.findIndex((button) => /^\d+$/.test(visibleText(button)));
+        if (quantityButtonIndex >= 0)
+            return visibleButtons[quantityButtonIndex + 1];
+        const quantityTextElement = Array.from(container.querySelectorAll("span, div, p, strong")).find((element) => {
+            if (!elementVisible(element) || !/^\d+$/.test(visibleText(element)))
+                return false;
+            return (element.parentElement?.querySelectorAll("button, [role='button']").length ?? 0) >= 2;
+        });
+        const siblingButtons = quantityTextElement?.parentElement
+            ? Array.from(quantityTextElement.parentElement.querySelectorAll("button, [role='button']")).filter((button) => elementVisible(button) && !buttonDisabled(button))
+            : [];
+        if (siblingButtons.length >= 2)
+            return siblingButtons[siblingButtons.length - 1];
+        return undefined;
+    }
+    function findBasketContainer(anchor) {
+        let current = anchor;
+        let fallback = findProductContainer(anchor);
+        for (let depth = 0; current && depth < 12; depth += 1) {
+            const text = visibleText(current);
+            const hasProductLink = Boolean(Array.from(current.querySelectorAll("a[href]")).some((link) => /\/(?:groceries\/)?product\//i.test(link.href)));
+            const hasQuantityControl = Boolean(current.querySelector("input, select") ||
+                Array.from(current.querySelectorAll("button, [role='button']")).some((button) => /(increase|increment|add one|add 1|plus|more|decrease|minus|quantity|\+|＋)/i.test(`${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.getAttribute("data-testid") ?? ""} ${button.getAttribute("data-auto-id") ?? ""}`)));
+            const looksLikeBasketLine = hasProductLink && hasQuantityControl && /\b(remove|quantity|qty|subtotal|save for later|£|\u00a3)\b/i.test(text);
+            if (looksLikeBasketLine)
+                return current;
+            if (!fallback && hasProductLink && text.length > 40)
+                fallback = current;
+            current = current.parentElement;
+        }
+        return fallback;
     }
     function scanBasketLines() {
         const lines = new Map();
@@ -265,7 +321,7 @@
             const url = absoluteUrl(anchor.href);
             if (lines.has(url))
                 return;
-            const container = findProductContainer(anchor);
+            const container = findBasketContainer(anchor);
             if (!container)
                 return;
             const rawText = visibleText(container);
@@ -318,15 +374,28 @@
         return score;
     }
     function bestBasketLine(item, state, lines) {
+        return matchingBasketLines(item, state, lines)[0];
+    }
+    function matchingBasketLines(item, state, lines) {
         return lines
             .map((line) => ({ line, score: lineMatchScore(item, state, line) }))
             .filter((entry) => entry.score >= 20)
-            .sort((a, b) => b.score - a.score)[0]?.line;
+            .sort((a, b) => b.score - a.score)
+            .map((entry) => entry.line);
+    }
+    function basketQuantityForLine(line, required) {
+        if (required?.family === "count")
+            return toBaseQuantity(line.lineQuantity ?? line.totalQuantity, "item");
+        const basket = toBaseQuantity(line.totalQuantity, line.totalUnit);
+        if (!required || basket?.family === required.family)
+            return basket;
+        return toBaseQuantity(line.lineQuantity, "item");
     }
     function basketCheckForItem(item, state, lines) {
         const openUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl || item.searchUrl;
         const required = toBaseQuantity(item.requiredQuantity ?? item.quantity, item.requiredUnit ?? item.unit);
-        const line = bestBasketLine(item, state, lines);
+        const matchedLines = matchingBasketLines(item, state, lines);
+        const line = matchedLines[0];
         if (!line) {
             return {
                 itemId: item.itemId,
@@ -341,7 +410,17 @@
                 message: "Not found in the visible basket."
             };
         }
-        const basket = toBaseQuantity(line.totalQuantity, line.totalUnit);
+        const basketQuantities = matchedLines
+            .map((matchedLine) => ({ line: matchedLine, basket: basketQuantityForLine(matchedLine, required) }))
+            .filter((entry) => entry.basket && (!required || entry.basket.family === required.family));
+        const basket = basketQuantities.length > 0
+            ? {
+                quantity: basketQuantities.reduce((total, entry) => total + entry.basket.quantity, 0),
+                family: basketQuantities[0].basket.family,
+                unit: basketQuantities[0].basket.unit
+            }
+            : basketQuantityForLine(line, required);
+        const matchedLineNames = matchedLines.map((matchedLine) => matchedLine.name).slice(0, 3).join(", ");
         const base = {
             itemId: item.itemId,
             shoppingKey: item.shoppingKey,
@@ -353,7 +432,7 @@
             basketQuantity: basket?.quantity,
             basketUnit: basket?.unit,
             basketLineIndex: line.index,
-            basketLineName: line.name,
+            basketLineName: matchedLineNames || line.name,
             basketProductUrl: line.url,
             openUrl,
             canIncrease: line.canIncrease
@@ -425,7 +504,10 @@
             missing: basketChecks.filter((check) => check.status === "missing").length,
             unknown: basketChecks.filter((check) => check.status === "unknown").length
         };
-        const reviewChecks = basketChecks.filter((check) => check.status !== "ok");
+        const statusRank = { short: 0, missing: 1, unknown: 2, ok: 3 };
+        const reviewChecks = basketChecks
+            .filter((check) => check.status !== "ok")
+            .sort((a, b) => statusRank[a.status] - statusRank[b.status]);
         return `
       <div class="weekwise-basket">
         <div class="weekwise-recommend-head">

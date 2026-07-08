@@ -51,6 +51,7 @@ import {
   labelMealSlot,
   mealSlots,
   mergeAutomaticRecipeTags,
+  normalizeIngredientAliasKey,
   normalizeMealTypes,
   normalizeSuppressedAutomaticTags,
   normalizeUnit,
@@ -344,6 +345,40 @@ function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) 
   };
 
   return avoidTermsByName[canonicalName] ?? [];
+}
+
+function shoppingNameVariants(name: string, ingredientAliases: Record<string, string>) {
+  const canonicalName = canonicalizeIngredientName(name, ingredientAliases).canonicalName;
+  const variantsByCanonicalName: Record<string, string[]> = {
+    onion: ["onion", "red onion", "white onion", "brown onion", "yellow onion", "spring onion"],
+    "spring onion": ["spring onion", "onion"],
+    potato: ["potato", "new potato", "baby potato", "sweet potato"],
+    "sweet potato": ["sweet potato", "potato"],
+    tomato: ["tomato", "cherry tomatoes", "chopped tomatoes", "tomato puree", "passata"],
+    "chopped tomatoes": ["chopped tomatoes", "tinned tomatoes", "canned tomatoes", "cherry tomatoes", "tomato puree"],
+    "cherry tomatoes": ["cherry tomatoes", "tomato", "chopped tomatoes", "tomato puree"],
+    "tomato puree": ["tomato puree", "tomato paste", "chopped tomatoes", "cherry tomatoes"],
+    pepper: ["pepper", "red pepper", "yellow pepper", "green pepper"],
+    "chicken breast": ["chicken breast", "chicken thigh", "chicken"],
+    "chicken thigh": ["chicken thigh", "chicken breast", "chicken"],
+    "beef mince": ["beef mince", "minced beef"],
+    "pork mince": ["pork mince", "minced pork"],
+    milk: ["milk", "semi skimmed milk", "whole milk", "skimmed milk"],
+    pasta: ["pasta", "spaghetti", "penne", "fusilli", "tagliatelle"],
+    rice: ["rice", "basmati rice", "long grain rice", "jasmine rice"]
+  };
+  const customCanonicalName = normalizeIngredientAliasKey(canonicalName);
+  const variants = [canonicalName, ...(variantsByCanonicalName[customCanonicalName] ?? [])]
+    .map(normalizeIngredientAliasKey)
+    .filter(Boolean);
+
+  return Array.from(new Set(variants));
+}
+
+function aliasKeysForIngredientName(name: string) {
+  const normalizedName = normalizeIngredientAliasKey(name);
+  const simpleSingular = normalizedName.replace(/\b([a-z]{4,})s\b/g, "$1");
+  return Array.from(new Set([normalizedName, simpleSingular].filter(Boolean)));
 }
 
 function normalizeStoreUrl(value: string) {
@@ -1028,7 +1063,7 @@ export default function Home() {
           id: ingredient.id || createId("ing"),
           unit: normalizeUnit(ingredient.unit),
           category: ingredient.category || inferCategory(ingredient.name),
-          canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName,
+          canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
           needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
         })),
       instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
@@ -1114,7 +1149,7 @@ export default function Home() {
               canonicalName: hasCanonicalNamePatch
                 ? patch.canonicalName
                 : patch.name
-                  ? canonicalizeIngredientName(patch.name).canonicalName
+                  ? canonicalizeIngredientName(patch.name, state.settings.ingredientAliases).canonicalName
                   : ingredient.canonicalName,
               needsReview: patch.name ? false : patch.needsReview ?? ingredient.needsReview
             }
@@ -1130,6 +1165,23 @@ export default function Home() {
         ...current.ingredients,
         { id: createId("ing"), name: "", unit: "", category: "Other", canonicalName: "", confidence: "medium" }
       ]
+    }));
+  }
+
+  function rememberShoppingNameVariant(ingredientName: string, shoppingName: string) {
+    const cleanShoppingName = normalizeIngredientAliasKey(shoppingName);
+    if (!ingredientName.trim() || !cleanShoppingName) return;
+
+    const aliasEntries = aliasKeysForIngredientName(ingredientName).map((aliasKey) => [aliasKey, cleanShoppingName] as const);
+    updateState((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        ingredientAliases: {
+          ...current.settings.ingredientAliases,
+          ...Object.fromEntries(aliasEntries)
+        }
+      }
     }));
   }
 
@@ -1828,6 +1880,7 @@ export default function Home() {
 	            onPhotoChange={handlePhotoChange}
             draft={draft}
             setDraft={setDraft}
+            ingredientAliases={state.settings.ingredientAliases}
             tagInput={tagInput}
             setTagInput={setTagInput}
             editingRecipeId={editingRecipeId}
@@ -1846,6 +1899,7 @@ export default function Home() {
             }}
             onSaveDraft={saveDraft}
             onUpdateIngredient={updateDraftIngredient}
+            onRememberShoppingName={rememberShoppingNameVariant}
             onAddIngredient={addDraftIngredient}
             onRemoveIngredient={removeDraftIngredient}
             onUpdateInstruction={updateInstruction}
@@ -2500,6 +2554,7 @@ function AddRecipeView({
   onPhotoChange,
   draft,
   setDraft,
+  ingredientAliases,
   tagInput,
   setTagInput,
   editingRecipeId,
@@ -2514,6 +2569,7 @@ function AddRecipeView({
   onNewManual,
   onSaveDraft,
   onUpdateIngredient,
+  onRememberShoppingName,
   onAddIngredient,
   onRemoveIngredient,
   onUpdateInstruction,
@@ -2537,6 +2593,7 @@ function AddRecipeView({
   onPhotoChange: (file: File | null) => void;
   draft: ImportDraft;
   setDraft: (draft: ImportDraft | ((current: ImportDraft) => ImportDraft)) => void;
+  ingredientAliases: Record<string, string>;
   tagInput: string;
   setTagInput: (value: string) => void;
   editingRecipeId: string | null;
@@ -2551,6 +2608,7 @@ function AddRecipeView({
   onNewManual: () => void;
   onSaveDraft: () => void;
   onUpdateIngredient: (id: string, patch: Partial<Ingredient>) => void;
+  onRememberShoppingName: (ingredientName: string, shoppingName: string) => void;
   onAddIngredient: () => void;
   onRemoveIngredient: (id: string) => void;
   onUpdateInstruction: (index: number, value: string) => void;
@@ -2855,7 +2913,10 @@ function AddRecipeView({
           </div>
           <div className="ingredient-editor">
 	            {draft.ingredients.map((ingredient) => {
-                  const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name).canonicalName : "";
+                  const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName : "";
+                  const shoppingName = ingredient.canonicalName ?? "";
+                  const variantOptions = ingredient.name.trim() ? shoppingNameVariants(ingredient.name, ingredientAliases) : [];
+                  const selectedVariant = variantOptions.includes(normalizeIngredientAliasKey(shoppingName)) ? normalizeIngredientAliasKey(shoppingName) : "";
 
                   return (
 	              <div
@@ -2907,12 +2968,29 @@ function AddRecipeView({
                   <div className="ingredient-standard-row">
                     <label>
                       Shopping name
-                      <input
-                        aria-label="Shopping name"
-                        value={ingredient.canonicalName ?? ""}
-                        onChange={(event) => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
-                        placeholder={suggestedShoppingName || "shopping name"}
-                      />
+                      <div className="shopping-name-controls">
+                        <input
+                          aria-label="Shopping name"
+                          value={shoppingName}
+                          onChange={(event) => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
+                          placeholder={suggestedShoppingName || "shopping name"}
+                        />
+                        <select
+                          aria-label="Shopping name variants"
+                          value={selectedVariant}
+                          onChange={(event) => {
+                            if (!event.target.value) return;
+                            onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false });
+                          }}
+                        >
+                          <option value="">Variants</option>
+                          {variantOptions.map((variant) => (
+                            <option key={variant} value={variant}>
+                              {variant}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </label>
                     <button
                       className="text-button"
@@ -2929,6 +3007,18 @@ function AddRecipeView({
                       }}
                     >
                       {suggestedShoppingName ? `Use "${suggestedShoppingName}"` : "Use suggestion"}
+                    </button>
+                    <button
+                      className="text-button"
+                      type="button"
+                      disabled={!ingredient.name.trim() || !shoppingName.trim()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onRememberShoppingName(ingredient.name, shoppingName);
+                      }}
+                    >
+                      Remember
                     </button>
                     <small>Used to combine matching shopping-list items.</small>
                   </div>
