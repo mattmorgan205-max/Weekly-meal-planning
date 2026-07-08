@@ -20,6 +20,8 @@
       productLinks: value?.productLinks ?? {},
       itemStatus: value?.itemStatus ?? {},
       autoAddReviews: Array.isArray(value?.autoAddReviews) ? value.autoAddReviews : [],
+      lastRecommendations: value?.lastRecommendations ?? {},
+      rejectedRecommendations: value?.rejectedRecommendations ?? {},
       lastAutoAddMessage: value?.lastAutoAddMessage,
       lastImportedAt: value?.lastImportedAt
     };
@@ -370,6 +372,8 @@
       productLinks,
       itemStatus: itemStatusMap,
       autoAddReviews: [],
+      lastRecommendations: state.lastRecommendations ?? {},
+      rejectedRecommendations: state.rejectedRecommendations ?? {},
       lastAutoAddMessage: "",
       activeAsdaTabId: state.activeAsdaTabId,
       currentIndex: findNextIndex(queue.items, itemStatusMap, 0),
@@ -571,6 +575,69 @@
     return { ok: true, state: nextState, item };
   }
 
+  async function saveRecommendation(
+    itemId: string | undefined,
+    productUrl: string | undefined,
+    candidate: AsdaProductCandidate | undefined,
+    fallbackState?: AsdaHelperState
+  ): Promise<AsdaHelperRuntimeResponse> {
+    const cleanUrl = normalizeOpenUrl(productUrl ?? candidate?.url ?? "");
+    if (!cleanUrl) return { ok: false, error: "No Asda product URL was supplied." };
+
+    const state = await getState(fallbackState);
+    const { item, index } = findItem(state, itemId);
+    if (!item) return { ok: false, error: "That shopping item is no longer in the helper queue." };
+
+    const nextState: AsdaHelperState = {
+      ...state,
+      currentIndex: index >= 0 ? index : state.currentIndex,
+      productLinks: { ...state.productLinks, [item.shoppingKey]: cleanUrl },
+      lastRecommendations: {
+        ...(state.lastRecommendations ?? {}),
+        [item.shoppingKey]: {
+          itemId: item.itemId,
+          shoppingKey: item.shoppingKey,
+          productUrl: cleanUrl,
+          productName: candidate?.name ?? cleanUrl,
+          priceText: candidate?.priceText,
+          unitPriceText: candidate?.unitPriceText,
+          offerText: candidate?.offerText,
+          selectedAt: new Date().toISOString()
+        }
+      }
+    };
+
+    await saveState(nextState);
+    sendUpdateToApp(item, { productUrl: cleanUrl });
+    return { ok: true, state: nextState, item, openUrl: cleanUrl };
+  }
+
+  async function rejectRecommendation(
+    itemId: string | undefined,
+    productUrl: string | undefined,
+    fallbackState?: AsdaHelperState
+  ): Promise<AsdaHelperRuntimeResponse> {
+    const cleanUrl = normalizeOpenUrl(productUrl ?? "");
+    if (!cleanUrl) return { ok: false, error: "No Asda product URL was supplied." };
+
+    const state = await getState(fallbackState);
+    const { item, index } = findItem(state, itemId);
+    if (!item) return { ok: false, error: "That shopping item is no longer in the helper queue." };
+
+    const rejectedForItem = new Set([...(state.rejectedRecommendations?.[item.itemId] ?? []), cleanUrl]);
+    const nextState: AsdaHelperState = {
+      ...state,
+      currentIndex: index >= 0 ? index : state.currentIndex,
+      rejectedRecommendations: {
+        ...(state.rejectedRecommendations ?? {}),
+        [item.itemId]: Array.from(rejectedForItem)
+      }
+    };
+
+    await saveState(nextState);
+    return { ok: true, state: nextState, item };
+  }
+
   async function clearRun(fallbackState?: AsdaHelperState): Promise<AsdaHelperRuntimeResponse> {
     const state = await getState(fallbackState);
     const nextState: AsdaHelperState = {
@@ -578,6 +645,7 @@
       currentIndex: 0,
       itemStatus: {},
       autoAddReviews: [],
+      rejectedRecommendations: {},
       lastAutoAddMessage: ""
     };
 
@@ -601,6 +669,10 @@
         return setStatus(message.itemId, message.status, message.fallbackState, { advance: message.advance, openNext: message.openNext });
       case "AUTO_ADD_SAVED":
         return autoAddSavedProducts(message.fallbackState);
+      case "SAVE_RECOMMENDATION":
+        return saveRecommendation(message.itemId, message.productUrl, message.candidate, message.fallbackState);
+      case "REJECT_RECOMMENDATION":
+        return rejectRecommendation(message.itemId, message.productUrl, message.fallbackState);
       case "SAVE_PRODUCT_LINK":
         return saveProductLink(message.itemId, message.productUrl, message.fallbackState);
       case "SAVE_CURRENT_PRODUCT_URL":

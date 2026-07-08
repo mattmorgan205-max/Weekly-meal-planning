@@ -79,3 +79,68 @@
   border-color: #2f6f4e;
   color: #fff;
 }
+
+#weekwise-asda-helper .weekwise-recommend {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #d9decf;
+}
+
+#weekwise-asda-helper .weekwise-recommend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#weekwise-asda-helper .weekwise-recommend-head strong {
+  font-size: 0.9rem;
+}
+
+#weekwise-asda-helper .weekwise-recommend-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+#weekwise-asda-helper .weekwise-recommend-card {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #d9decf;
+  border-radius: 8px;
+  background: #f6f0e6;
+}
+
+#weekwise-asda-helper .weekwise-recommend-card img {
+  width: 58px;
+  height: 58px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #fff;
+}
+
+#weekwise-asda-helper .weekwise-recommend-card > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+#weekwise-asda-helper .weekwise-recommend-card strong {
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+#weekwise-asda-helper .weekwise-recommend-card small {
+  color: #697568;
+  line-height: 1.25;
+}
+
+#weekwise-asda-helper .weekwise-recommend-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}

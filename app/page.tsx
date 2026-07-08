@@ -83,11 +83,16 @@ type AsdaHelperQueueItem = {
   shoppingKey: string;
   statusKey: string;
   name: string;
+  canonicalName?: string;
   displayQuantity: string;
   quantity?: number;
   unit?: string;
+  requiredQuantity?: number;
+  requiredUnit?: string;
   category: GroceryCategory;
   sourceMeals: string[];
+  sourceIngredients?: string[];
+  avoidTerms?: string[];
   savedProductUrl: string;
   searchUrl: string;
   status?: StoreShoppingStatus;
@@ -320,6 +325,25 @@ function shoppingPreferenceKey(item: Pick<ShoppingListItem, "canonicalName" | "n
 
 function asdaSearchUrl(item: ShoppingListItem) {
   return `https://groceries.asda.com/search/${encodeURIComponent(item.name)}`;
+}
+
+function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) {
+  const canonicalName = canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
+  const avoidTermsByName: Record<string, string[]> = {
+    "tomato puree": ["cherry tomato", "cherry tomatoes", "chopped tomato", "chopped tomatoes", "tinned tomato", "passata", "ketchup"],
+    "chopped tomatoes": ["cherry tomato", "cherry tomatoes", "tomato puree", "tomato paste", "ketchup"],
+    "cherry tomatoes": ["chopped tomato", "chopped tomatoes", "tomato puree", "tomato paste", "tinned tomato", "canned tomato"],
+    onion: ["spring onion", "spring onions", "pickled onion", "onion rings"],
+    "spring onion": ["red onion", "white onion", "brown onion", "yellow onion", "pickled onion"],
+    potato: ["sweet potato", "sweet potatoes", "crisps", "chips", "waffles"],
+    "sweet potato": ["white potato", "new potato", "baby potato", "crisps", "chips"],
+    milk: ["milk chocolate", "milkshake"],
+    pasta: ["pasta sauce", "ready meal"],
+    rice: ["rice pudding", "rice cakes"],
+    stock: ["gravy", "soup"]
+  };
+
+  return avoidTermsByName[canonicalName] ?? [];
 }
 
 function normalizeStoreUrl(value: string) {
@@ -3034,17 +3058,23 @@ function ShoppingView({
       rangeEndDate,
       items: items.map((item) => {
         const shoppingKey = shoppingPreferenceKey(item);
+        const canonicalName = item.canonicalName || shoppingKey;
 
         return {
           itemId: item.id,
           shoppingKey,
           statusKey: storeStatusItemKey({ startDate: rangeStartDate, endDate: rangeEndDate }, item.id),
           name: item.name,
+          canonicalName,
           displayQuantity: item.displayQuantity,
           quantity: item.quantity,
           unit: item.unit,
+          requiredQuantity: item.quantity,
+          requiredUnit: item.unit,
           category: item.category,
           sourceMeals: item.sourceMeals,
+          sourceIngredients: item.sourceIngredients,
+          avoidTerms: asdaAvoidTerms(item),
           savedProductUrl: asdaProductLinks[shoppingKey] ?? "",
           searchUrl: asdaSearchUrl(item),
           status: asdaShoppingStatus[item.id]
