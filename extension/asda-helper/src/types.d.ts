@@ -123,6 +123,7 @@ interface AsdaHelperRuntimeMessage {
   type?: string;
   queue?: AsdaHelperQueue;
   itemId?: string;
+  statusKey?: string;
   status?: StoreShoppingStatus;
   productUrl?: string;
   candidate?: AsdaProductCandidate;

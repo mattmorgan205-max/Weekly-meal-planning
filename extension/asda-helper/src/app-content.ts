@@ -31,21 +31,36 @@
     }
   }
 
-  window.addEventListener("message", (event: MessageEvent<{ source?: string; type?: string; payload?: AsdaHelperQueue }>) => {
+  window.addEventListener("message", (event: MessageEvent<{ source?: string; type?: string; payload?: unknown }>) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
 
     const message = event.data;
-    if (!message || message.source !== appSource || message.type !== "ASDA_HELPER_IMPORT_QUEUE" || !message.payload) return;
+    if (!message || message.source !== appSource || !message.payload) return;
 
     if (!extensionContextReady()) {
       postImportResult({ error: invalidContextMessage });
       return;
     }
 
+    if (message.type === "ASDA_HELPER_SYNC_ITEM") {
+      try {
+        const payload = message.payload as { itemId?: string; statusKey?: string; status?: StoreShoppingStatus };
+        chrome.runtime.sendMessage({ type: "SYNC_ITEM_STATUS", ...payload }, () => {
+          void chrome.runtime.lastError;
+        });
+      } catch {
+        // A refreshed Weekwise tab will reconnect a stale extension content script.
+      }
+      return;
+    }
+
+    if (message.type !== "ASDA_HELPER_IMPORT_QUEUE") return;
+    const queue = message.payload as AsdaHelperQueue;
+
     try {
-      chrome.runtime.sendMessage({ type: "IMPORT_QUEUE", queue: message.payload }, (response: AsdaHelperRuntimeResponse) => {
+      chrome.runtime.sendMessage({ type: "IMPORT_QUEUE", queue }, (response: AsdaHelperRuntimeResponse) => {
         const runtimeError = chrome.runtime.lastError?.message;
-        const itemCount = response?.state?.queue?.items.length ?? message.payload?.items.length ?? 0;
+        const itemCount = response?.state?.queue?.items.length ?? queue.items.length ?? 0;
 
         postImportResult(
           response?.ok

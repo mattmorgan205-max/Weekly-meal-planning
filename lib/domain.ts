@@ -94,6 +94,8 @@ export type AppSettings = {
   stapleIngredients: string[];
   includeStaples: boolean;
   ingredientAliases: Record<string, string>;
+  shoppingNameVariants: Record<string, string[]>;
+  commonExtraItems: string[];
   splitShoppingItems: Record<string, boolean>;
 };
 
@@ -140,6 +142,47 @@ export const groceryCategories: GroceryCategory[] = [
   "Frozen",
   "Spices",
   "Other"
+];
+
+export const defaultCommonExtraItems = [
+  "Milk",
+  "Bread",
+  "Eggs",
+  "Bananas",
+  "Apples",
+  "Onions",
+  "Potatoes",
+  "Cheese",
+  "Yogurt",
+  "Cereal",
+  "Pasta",
+  "Rice",
+  "Coffee",
+  "Tea bags",
+  "Toilet roll"
+];
+
+export const standardIngredientUnits = [
+  "g",
+  "kg",
+  "ml",
+  "l",
+  "tsp",
+  "tbsp",
+  "item",
+  "can",
+  "jar",
+  "bottle",
+  "pack",
+  "clove",
+  "slice",
+  "bunch",
+  "sprig",
+  "pinch",
+  "handful",
+  "head",
+  "stalk",
+  "sheet"
 ];
 
 const autoMealTypeTags = ["vegetarian", "chicken", "duck", "pork", "beef", "fish"];
@@ -215,7 +258,35 @@ const unitAliases: Record<string, string> = {
   slices: "slice",
   item: "item",
   items: "item",
-  whole: "item"
+  whole: "item",
+  each: "item",
+  ea: "item",
+  piece: "item",
+  pieces: "item",
+  pc: "item",
+  pcs: "item",
+  jar: "jar",
+  jars: "jar",
+  bottle: "bottle",
+  bottles: "bottle",
+  bunch: "bunch",
+  bunches: "bunch",
+  sprig: "sprig",
+  sprigs: "sprig",
+  pinch: "pinch",
+  pinches: "pinch",
+  handful: "handful",
+  handfuls: "handful",
+  head: "head",
+  heads: "head",
+  stalk: "stalk",
+  stalks: "stalk",
+  sheet: "sheet",
+  sheets: "sheet",
+  fillet: "item",
+  fillets: "item",
+  bulb: "item",
+  bulbs: "item"
 };
 
 const unitConversions: Record<string, { family: string; base: string; factor: number }> = {
@@ -233,14 +304,23 @@ const unitConversions: Record<string, { family: string; base: string; factor: nu
   gal: { family: "volume", base: "ml", factor: 4546.09 },
   cup: { family: "volume", base: "ml", factor: 240 },
   can: { family: "count-can", base: "can", factor: 1 },
+  jar: { family: "count-jar", base: "jar", factor: 1 },
+  bottle: { family: "count-bottle", base: "bottle", factor: 1 },
   pack: { family: "count-pack", base: "pack", factor: 1 },
   clove: { family: "count-clove", base: "clove", factor: 1 },
   slice: { family: "count-slice", base: "slice", factor: 1 },
+  bunch: { family: "count-bunch", base: "bunch", factor: 1 },
+  sprig: { family: "count-sprig", base: "sprig", factor: 1 },
+  pinch: { family: "count-pinch", base: "pinch", factor: 1 },
+  handful: { family: "count-handful", base: "handful", factor: 1 },
+  head: { family: "count-head", base: "head", factor: 1 },
+  stalk: { family: "count-stalk", base: "stalk", factor: 1 },
+  sheet: { family: "count-sheet", base: "sheet", factor: 1 },
   item: { family: "count-item", base: "item", factor: 1 }
 };
 
 const ingredientCleanupWords =
-  /\b(chopped|diced|sliced|fresh|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|cooked|uncooked|raw|extra|virgin|dried|freshly|toasted|halved|quartered|thinly|thickly|boneless|skinless)\b/g;
+  /\b(sliced|fresh|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|cooked|uncooked|raw|extra|virgin|dried|freshly|toasted|halved|quartered|thinly|thickly|boneless|skinless)\b/g;
 
 const ingredientRejectPatterns = [
   /\b(subscribe|newsletter|sign up|login|log in|register|cookie|privacy|terms|advert|advertisement|sponsored|affiliate|copyright|all rights reserved)\b/i,
@@ -274,7 +354,9 @@ const ingredientAliasRules: Array<{
       warning: "Spring onions are kept separate from onions. Merge if you usually buy them together."
     }
   },
-  { canonicalName: "onion", patterns: [/\b(red onion|red onions|white onion|white onions|brown onion|brown onions|yellow onion|yellow onions|onion|onions)\b/] },
+  { canonicalName: "red onion", patterns: [/\b(red onion|red onions)\b/] },
+  { canonicalName: "white onion", patterns: [/\b(white onion|white onions)\b/] },
+  { canonicalName: "onion", patterns: [/\b(brown onion|brown onions|yellow onion|yellow onions|onion|onions)\b/] },
   { canonicalName: "garlic", patterns: [/\b(garlic clove|garlic cloves|garlic|garlic bulb|garlic bulbs)\b/] },
   { canonicalName: "chicken breast", patterns: [/\b(chicken breast|chicken breasts)\b/] },
   { canonicalName: "chicken thigh", patterns: [/\b(chicken thigh|chicken thighs)\b/] },
@@ -282,28 +364,60 @@ const ingredientAliasRules: Array<{
   { canonicalName: "beef mince", patterns: [/\b(beef mince|minced beef|ground beef)\b/] },
   { canonicalName: "pork mince", patterns: [/\b(pork mince|minced pork|ground pork)\b/] },
   { canonicalName: "sweet potato", patterns: [/\b(sweet potato|sweet potatoes)\b/] },
-  { canonicalName: "potato", patterns: [/\b(potato|potatoes|new potatoes|baby potatoes)\b/] },
-  { canonicalName: "chopped tomatoes", patterns: [/\b(chopped tomatoes|tinned tomatoes|canned tomatoes|tin of tomatoes|can of tomatoes)\b/] },
+  { canonicalName: "new potato", patterns: [/\b(new potato|new potatoes)\b/] },
+  { canonicalName: "baby potato", patterns: [/\b(baby potato|baby potatoes)\b/] },
+  { canonicalName: "potato", patterns: [/\b(potato|potatoes)\b/] },
+  { canonicalName: "chopped tomatoes", patterns: [/\b(chopped tomatoes|diced tomatoes|tinned tomatoes|canned tomatoes|tin of tomatoes|can of tomatoes)\b/] },
   { canonicalName: "cherry tomatoes", patterns: [/\b(cherry tomatoes)\b/] },
   { canonicalName: "tomato puree", patterns: [/\b(tomato puree|tomato purée|tomato paste)\b/] },
   { canonicalName: "tomato", patterns: [/\b(tomato|tomatoes|plum tomatoes)\b/] },
-  { canonicalName: "pepper", patterns: [/\b(red pepper|red peppers|yellow pepper|yellow peppers|green pepper|green peppers|bell pepper|bell peppers|pepper|peppers)\b/] },
+  { canonicalName: "red pepper", patterns: [/\b(red pepper|red peppers)\b/] },
+  { canonicalName: "yellow pepper", patterns: [/\b(yellow pepper|yellow peppers)\b/] },
+  { canonicalName: "green pepper", patterns: [/\b(green pepper|green peppers)\b/] },
+  { canonicalName: "pepper", patterns: [/\b(bell pepper|bell peppers|pepper|peppers)\b/] },
   { canonicalName: "carrot", patterns: [/\b(carrot|carrots)\b/] },
   { canonicalName: "mushroom", patterns: [/\b(mushroom|mushrooms)\b/] },
   { canonicalName: "lemon", patterns: [/\b(lemon|lemons)\b/] },
   { canonicalName: "lime", patterns: [/\b(lime|limes)\b/] },
   { canonicalName: "egg", patterns: [/\b(egg|eggs)\b/] },
-  { canonicalName: "milk", patterns: [/\b(milk|semi skimmed milk|semi-skimmed milk|whole milk|skimmed milk)\b/] },
-  { canonicalName: "butter", patterns: [/\b(butter|unsalted butter|salted butter)\b/] },
+  { canonicalName: "coconut milk", patterns: [/\b(coconut milk)\b/] },
+  { canonicalName: "oat milk", patterns: [/\b(oat milk)\b/] },
+  { canonicalName: "almond milk", patterns: [/\b(almond milk)\b/] },
+  { canonicalName: "semi skimmed milk", patterns: [/\b(semi skimmed milk|semi-skimmed milk)\b/] },
+  { canonicalName: "whole milk", patterns: [/\b(whole milk)\b/] },
+  { canonicalName: "skimmed milk", patterns: [/\b(skimmed milk)\b/] },
+  { canonicalName: "milk", patterns: [/\b(milk)\b/] },
+  { canonicalName: "unsalted butter", patterns: [/\b(unsalted butter)\b/] },
+  { canonicalName: "salted butter", patterns: [/\b(salted butter)\b/] },
+  { canonicalName: "butter", patterns: [/\b(butter)\b/] },
+  { canonicalName: "yoghurt", patterns: [/\b(yogurt|yoghurt)\b/] },
+  { canonicalName: "cheddar", patterns: [/\b(cheddar|cheddar cheese)\b/] },
+  { canonicalName: "parmesan", patterns: [/\b(parmesan|parmesan cheese)\b/] },
+  { canonicalName: "mozzarella", patterns: [/\b(mozzarella|mozzarella cheese)\b/] },
   { canonicalName: "olive oil", patterns: [/\b(olive oil|extra virgin olive oil)\b/] },
   { canonicalName: "vegetable oil", patterns: [/\b(vegetable oil|sunflower oil|rapeseed oil)\b/] },
   { canonicalName: "plain flour", patterns: [/\b(plain flour|all purpose flour|all-purpose flour)\b/] },
   { canonicalName: "self-raising flour", patterns: [/\b(self raising flour|self-raising flour)\b/] },
   { canonicalName: "caster sugar", patterns: [/\b(caster sugar|superfine sugar)\b/] },
-  { canonicalName: "rice", patterns: [/\b(rice|basmati rice|long grain rice|jasmine rice)\b/] },
-  { canonicalName: "pasta", patterns: [/\b(pasta|spaghetti|penne|fusilli|tagliatelle|linguine)\b/] },
-  { canonicalName: "soy sauce", patterns: [/\b(soy sauce|light soy sauce|dark soy sauce)\b/] },
-  { canonicalName: "stock", patterns: [/\b(stock cube|stock cubes|vegetable stock|chicken stock|beef stock|stock)\b/] }
+  { canonicalName: "puff pastry", patterns: [/\b(puff pastry|ready rolled puff pastry|ready-rolled puff pastry)\b/] },
+  { canonicalName: "basmati rice", patterns: [/\b(basmati rice)\b/] },
+  { canonicalName: "long grain rice", patterns: [/\b(long grain rice)\b/] },
+  { canonicalName: "jasmine rice", patterns: [/\b(jasmine rice)\b/] },
+  { canonicalName: "rice", patterns: [/\b(rice)\b/] },
+  { canonicalName: "tortelloni", patterns: [/\b(tortelloni|tortellini)\b/] },
+  { canonicalName: "spaghetti", patterns: [/\b(spaghetti)\b/] },
+  { canonicalName: "penne", patterns: [/\b(penne)\b/] },
+  { canonicalName: "fusilli", patterns: [/\b(fusilli)\b/] },
+  { canonicalName: "tagliatelle", patterns: [/\b(tagliatelle)\b/] },
+  { canonicalName: "linguine", patterns: [/\b(linguine)\b/] },
+  { canonicalName: "pasta", patterns: [/\b(pasta)\b/] },
+  { canonicalName: "light soy sauce", patterns: [/\b(light soy sauce)\b/] },
+  { canonicalName: "dark soy sauce", patterns: [/\b(dark soy sauce)\b/] },
+  { canonicalName: "soy sauce", patterns: [/\b(soy sauce)\b/] },
+  { canonicalName: "vegetable stock", patterns: [/\b(vegetable stock|vegetable stock cube|vegetable stock cubes)\b/] },
+  { canonicalName: "chicken stock", patterns: [/\b(chicken stock|chicken stock cube|chicken stock cubes)\b/] },
+  { canonicalName: "beef stock", patterns: [/\b(beef stock|beef stock cube|beef stock cubes)\b/] },
+  { canonicalName: "stock", patterns: [/\b(stock cube|stock cubes|stock)\b/] }
 ];
 
 export function createId(prefix = "id") {
@@ -458,6 +572,29 @@ export function normalizeUnit(unit?: string) {
   if (!unit) return "";
   const cleaned = unit.toLowerCase().replace(/[.]/g, "").trim();
   return unitAliases[cleaned] ?? cleaned;
+}
+
+export function standardizeIngredientQuantity(quantity?: number, unit?: string) {
+  const normalizedUnit = normalizeUnit(unit);
+  if (typeof quantity !== "number") return { quantity, unit: normalizedUnit };
+
+  const metricConversions: Record<string, { factor: number; unit: "g" | "ml" }> = {
+    oz: { factor: 28.3495, unit: "g" },
+    lb: { factor: 453.592, unit: "g" },
+    "fl oz": { factor: 28.4131, unit: "ml" },
+    pt: { factor: 568.261, unit: "ml" },
+    qt: { factor: 1136.52, unit: "ml" },
+    gal: { factor: 4546.09, unit: "ml" },
+    cup: { factor: 240, unit: "ml" }
+  };
+  const conversion = metricConversions[normalizedUnit];
+  if (!conversion) return { quantity, unit: normalizedUnit };
+
+  const convertedQuantity = quantity * conversion.factor;
+  return {
+    quantity: Math.round(convertedQuantity * 10) / 10,
+    unit: conversion.unit
+  };
 }
 
 function readLeadingQuantity(value: string) {
@@ -1121,6 +1258,8 @@ export function seedState(): AppState {
       stapleIngredients: ["salt", "black pepper", "olive oil", "plain flour", "sugar"],
       includeStaples: false,
       ingredientAliases: {},
+      shoppingNameVariants: {},
+      commonExtraItems: [...defaultCommonExtraItems],
       splitShoppingItems: {}
     }
   };

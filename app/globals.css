@@ -1081,7 +1081,7 @@ h3 {
 .ingredient-standard-row {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 1fr) auto;
   gap: 8px;
   align-items: end;
 }
@@ -1155,6 +1155,28 @@ h3 {
 .common-extra-list .text-button {
   min-height: 36px;
   min-width: 0;
+}
+
+.common-extra-editor {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.common-extra-editor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
+}
+
+.common-extra-add {
+  justify-self: start;
+}
+
+.compact-button {
+  min-height: 40px;
+  padding: 8px 12px;
 }
 
 .asda-shop-panel {

@@ -361,7 +361,7 @@
   async function importQueue(queue: AsdaHelperQueue, fallbackState?: AsdaHelperState): Promise<AsdaHelperRuntimeResponse> {
     const state = await getState(fallbackState);
     const productLinks = { ...state.productLinks };
-    const itemStatusMap = { ...state.itemStatus };
+    const itemStatusMap: Record<string, StoreShoppingStatus> = {};
 
     queue.items.forEach((item) => {
       if (item.savedProductUrl) productLinks[item.shoppingKey] = item.savedProductUrl;
@@ -386,6 +386,31 @@
       const rememberedUrl = productLinks[item.shoppingKey];
       if (rememberedUrl && rememberedUrl !== item.savedProductUrl) sendUpdateToApp(item, { productUrl: rememberedUrl });
     });
+    return { ok: true, state: nextState };
+  }
+
+  async function syncItemStatus(
+    itemId: string | undefined,
+    status: StoreShoppingStatus | undefined,
+    fallbackState?: AsdaHelperState
+  ): Promise<AsdaHelperRuntimeResponse> {
+    if (!itemId) return { ok: false, error: "No shopping item was supplied." };
+
+    const state = await getState(fallbackState);
+    if (!state.queue?.items.some((item) => item.itemId === itemId)) {
+      return { ok: false, state, error: "That item is not in the current Asda Helper list." };
+    }
+
+    const itemStatusMap = { ...state.itemStatus };
+    if (status) itemStatusMap[itemId] = status;
+    else delete itemStatusMap[itemId];
+
+    const queue = {
+      ...state.queue,
+      items: state.queue.items.map((item) => (item.itemId === itemId ? { ...item, status } : item))
+    };
+    const nextState = { ...state, queue, itemStatus: itemStatusMap };
+    await saveState(nextState);
     return { ok: true, state: nextState };
   }
 
@@ -679,6 +704,8 @@
         return importFromAppTab();
       case "GET_STATE":
         return { ok: true, state: await getState(message.fallbackState) };
+      case "SYNC_ITEM_STATUS":
+        return syncItemStatus(message.itemId, message.status, message.fallbackState);
       case "OPEN_ITEM":
         return openItem(message.itemId, message.fallbackState);
       case "OPEN_NEXT":

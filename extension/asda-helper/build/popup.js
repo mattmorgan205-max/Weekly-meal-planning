@@ -231,5 +231,9 @@
         await sendMessage({ type: "CLEAR_RUN" });
         await refresh();
     });
+    chrome.storage.onChanged.addListener((_changes, areaName) => {
+        if (areaName === "local")
+            void refresh();
+    });
     void refresh();
 })();

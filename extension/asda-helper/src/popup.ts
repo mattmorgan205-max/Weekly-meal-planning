@@ -253,5 +253,9 @@
     await refresh();
   });
 
+  chrome.storage.onChanged.addListener((_changes: unknown, areaName: string) => {
+    if (areaName === "local") void refresh();
+  });
+
   void refresh();
 })();

@@ -39,6 +39,7 @@ import {
   canonicalizeIngredientName,
   cleanOcrRecipeText,
   createId,
+  defaultCommonExtraItems,
   draftToRecipe,
   draftFromOcrText,
   formatDateKey,
@@ -61,6 +62,8 @@ import {
   recipeToDraft,
   seedState,
   startOfWeek,
+  standardIngredientUnits,
+  standardizeIngredientQuantity,
   totalRecipeMinutes,
   type AppState,
   type GroceryCategory,
@@ -121,24 +124,6 @@ type AsdaHelperWindow = Window & {
   __WEEKWISE_ASDA_QUEUE__?: AsdaHelperQueue;
 };
 
-const commonExtraItems = [
-  "Milk",
-  "Bread",
-  "Eggs",
-  "Bananas",
-  "Apples",
-  "Onions",
-  "Potatoes",
-  "Cheese",
-  "Yogurt",
-  "Cereal",
-  "Pasta",
-  "Rice",
-  "Coffee",
-  "Tea bags",
-  "Toilet roll"
-];
-
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
 const asdaHelperAppSource = "weekwise-meal-planner";
@@ -151,15 +136,31 @@ const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   month: "short"
 });
 
+const legacyBroadShoppingNames: Record<string, string[]> = {
+  onion: ["red onion", "white onion"],
+  pepper: ["red pepper", "yellow pepper", "green pepper"],
+  pasta: ["tortelloni", "spaghetti", "penne", "fusilli", "tagliatelle", "linguine"],
+  rice: ["basmati rice", "long grain rice", "jasmine rice"]
+};
+
 function hydrateRecipe(recipe: Recipe): Recipe {
   return {
     ...recipe,
     mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
-    ingredients: recipe.ingredients.map((ingredient) => ({
-      ...ingredient,
-      canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName,
-      needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
-    })),
+    ingredients: recipe.ingredients.map((ingredient) => {
+      const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
+      const suggestedShoppingName = canonicalizeIngredientName(ingredient.name).canonicalName;
+      const storedShoppingName = normalizeIngredientAliasKey(ingredient.canonicalName ?? "");
+      const shouldUpgradeBroadName = legacyBroadShoppingNames[storedShoppingName]?.includes(suggestedShoppingName) ?? false;
+
+      return {
+        ...ingredient,
+        quantity: standardized.quantity,
+        unit: standardized.unit,
+        canonicalName: shouldUpgradeBroadName ? suggestedShoppingName : storedShoppingName || suggestedShoppingName,
+        needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+      };
+    }),
     source: recipe.source ?? recipe.sourceUrl,
     suppressedAutoTags: normalizeSuppressedAutomaticTags(recipe.suppressedAutoTags)
   };
@@ -187,7 +188,13 @@ function hydrateState(value: unknown): AppState {
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople))
       .filter((meal) => meal.recipeId || meal.manualTitle),
     dayNotes: parsed.dayNotes ?? {},
-    settings: { ...seeded.settings, ...parsed.settings },
+    settings: {
+      ...seeded.settings,
+      ...parsed.settings,
+      ingredientAliases: parsed.settings?.ingredientAliases ?? {},
+      shoppingNameVariants: parsed.settings?.shoppingNameVariants ?? {},
+      commonExtraItems: Array.isArray(parsed.settings?.commonExtraItems) ? parsed.settings.commonExtraItems : [...defaultCommonExtraItems]
+    },
     shoppingChecks: parsed.shoppingChecks ?? {},
     hiddenShoppingItems: parsed.hiddenShoppingItems ?? {},
     manualShoppingItems: parsed.manualShoppingItems ?? [],
@@ -325,7 +332,7 @@ function shoppingPreferenceKey(item: Pick<ShoppingListItem, "canonicalName" | "n
 }
 
 function asdaSearchUrl(item: ShoppingListItem) {
-  return `https://groceries.asda.com/search/${encodeURIComponent(item.name)}`;
+  return `https://groceries.asda.com/search/${encodeURIComponent(item.canonicalName || item.name)}`;
 }
 
 function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) {
@@ -335,11 +342,17 @@ function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) 
     "chopped tomatoes": ["cherry tomato", "cherry tomatoes", "tomato puree", "tomato paste", "ketchup"],
     "cherry tomatoes": ["chopped tomato", "chopped tomatoes", "tomato puree", "tomato paste", "tinned tomato", "canned tomato"],
     onion: ["spring onion", "spring onions", "pickled onion", "onion rings"],
+    "red onion": ["spring onion", "white onion", "pickled onion", "onion rings"],
+    "white onion": ["spring onion", "red onion", "pickled onion", "onion rings"],
     "spring onion": ["red onion", "white onion", "brown onion", "yellow onion", "pickled onion"],
     potato: ["sweet potato", "sweet potatoes", "crisps", "chips", "waffles"],
     "sweet potato": ["white potato", "new potato", "baby potato", "crisps", "chips"],
     milk: ["milk chocolate", "milkshake"],
     pasta: ["pasta sauce", "ready meal"],
+    tortelloni: ["dried pasta", "pasta sauce", "ready meal"],
+    spaghetti: ["pasta sauce", "ready meal"],
+    penne: ["pasta sauce", "ready meal"],
+    fusilli: ["pasta sauce", "ready meal"],
     rice: ["rice pudding", "rice cakes"],
     stock: ["gravy", "soup"]
   };
@@ -347,28 +360,34 @@ function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) 
   return avoidTermsByName[canonicalName] ?? [];
 }
 
-function shoppingNameVariants(name: string, ingredientAliases: Record<string, string>) {
+const builtInShoppingNameVariantGroups: Record<string, string[]> = {
+  onion: ["onion", "red onion", "white onion", "spring onion"],
+  potato: ["potato", "new potato", "baby potato", "sweet potato"],
+  tomato: ["tomato", "cherry tomatoes", "chopped tomatoes", "tomato puree", "passata"],
+  pepper: ["pepper", "red pepper", "yellow pepper", "green pepper"],
+  chicken: ["chicken", "chicken breast", "chicken thigh"],
+  mince: ["beef mince", "pork mince", "turkey mince"],
+  milk: ["milk", "semi skimmed milk", "whole milk", "skimmed milk"],
+  pasta: ["pasta", "tortelloni", "spaghetti", "penne", "fusilli", "tagliatelle", "linguine"],
+  rice: ["rice", "basmati rice", "long grain rice", "jasmine rice"]
+};
+
+function shoppingNameVariantGroupKey(...names: string[]) {
+  const normalizedNames = names.map(normalizeIngredientAliasKey).filter(Boolean);
+  const matchingGroup = Object.entries(builtInShoppingNameVariantGroups).find(([, variants]) =>
+    normalizedNames.some((name) => variants.includes(name))
+  );
+  return matchingGroup?.[0] ?? normalizedNames[0] ?? "other";
+}
+
+function shoppingNameVariants(
+  name: string,
+  ingredientAliases: Record<string, string>,
+  savedVariantGroups: Record<string, string[]>
+) {
   const canonicalName = canonicalizeIngredientName(name, ingredientAliases).canonicalName;
-  const variantsByCanonicalName: Record<string, string[]> = {
-    onion: ["onion", "red onion", "white onion", "brown onion", "yellow onion", "spring onion"],
-    "spring onion": ["spring onion", "onion"],
-    potato: ["potato", "new potato", "baby potato", "sweet potato"],
-    "sweet potato": ["sweet potato", "potato"],
-    tomato: ["tomato", "cherry tomatoes", "chopped tomatoes", "tomato puree", "passata"],
-    "chopped tomatoes": ["chopped tomatoes", "tinned tomatoes", "canned tomatoes", "cherry tomatoes", "tomato puree"],
-    "cherry tomatoes": ["cherry tomatoes", "tomato", "chopped tomatoes", "tomato puree"],
-    "tomato puree": ["tomato puree", "tomato paste", "chopped tomatoes", "cherry tomatoes"],
-    pepper: ["pepper", "red pepper", "yellow pepper", "green pepper"],
-    "chicken breast": ["chicken breast", "chicken thigh", "chicken"],
-    "chicken thigh": ["chicken thigh", "chicken breast", "chicken"],
-    "beef mince": ["beef mince", "minced beef"],
-    "pork mince": ["pork mince", "minced pork"],
-    milk: ["milk", "semi skimmed milk", "whole milk", "skimmed milk"],
-    pasta: ["pasta", "spaghetti", "penne", "fusilli", "tagliatelle"],
-    rice: ["rice", "basmati rice", "long grain rice", "jasmine rice"]
-  };
-  const customCanonicalName = normalizeIngredientAliasKey(canonicalName);
-  const variants = [canonicalName, ...(variantsByCanonicalName[customCanonicalName] ?? [])]
+  const groupKey = shoppingNameVariantGroupKey(name, canonicalName);
+  const variants = [canonicalName, ...(builtInShoppingNameVariantGroups[groupKey] ?? []), ...(savedVariantGroups[groupKey] ?? [])]
     .map(normalizeIngredientAliasKey)
     .filter(Boolean);
 
@@ -402,6 +421,18 @@ function publishAsdaHelperQueue(queue: AsdaHelperQueue) {
   }
 
   queueElement.textContent = JSON.stringify(queue);
+}
+
+function syncAsdaHelperItemStatus(itemId: string, statusKey: string, status?: StoreShoppingStatus) {
+  if (typeof window === "undefined") return;
+  window.postMessage(
+    {
+      source: asdaHelperAppSource,
+      type: "ASDA_HELPER_SYNC_ITEM",
+      payload: { itemId, statusKey, status }
+    },
+    window.location.origin
+  );
 }
 
 function mergeManualShoppingItems(items: ShoppingListItem[]) {
@@ -894,7 +925,11 @@ export default function Home() {
           ...current,
           asdaProductLinks,
           asdaShoppingStatus,
-          shoppingChecks
+          shoppingChecks,
+          manualShoppingItems:
+            itemId && validStatus === "added"
+              ? current.manualShoppingItems.map((item) => (item.id === itemId ? { ...item, checked: true } : item))
+              : current.manualShoppingItems
         };
       });
     }
@@ -908,6 +943,17 @@ export default function Home() {
       ...nextDraft,
       mealTypes: normalizeMealTypes(nextDraft.mealTypes, inferRecipeMealTypes(nextDraft)[0]),
       source: nextDraft.source ?? nextDraft.sourceUrl ?? "",
+      ingredients: nextDraft.ingredients.map((ingredient) => {
+        const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
+        return {
+          ...ingredient,
+          quantity: standardized.quantity,
+          unit: standardized.unit,
+          canonicalName:
+            normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
+            canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName
+        };
+      }),
       suppressedAutoTags: normalizeSuppressedAutomaticTags(nextDraft.suppressedAutoTags)
     };
     setDraft(hydratedDraft);
@@ -1058,14 +1104,20 @@ export default function Home() {
       tags: parseTags(tagInput),
       ingredients: draft.ingredients
         .filter((ingredient) => ingredient.name.trim())
-        .map((ingredient) => ({
-          ...ingredient,
-          id: ingredient.id || createId("ing"),
-          unit: normalizeUnit(ingredient.unit),
-          category: ingredient.category || inferCategory(ingredient.name),
-          canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
-          needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
-        })),
+        .map((ingredient) => {
+          const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
+          return {
+            ...ingredient,
+            id: ingredient.id || createId("ing"),
+            quantity: standardized.quantity,
+            unit: standardized.unit,
+            category: ingredient.category || inferCategory(ingredient.name),
+            canonicalName:
+              normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
+              canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
+            needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+          };
+        }),
       instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
     };
     cleanedDraft.tags = mergeAutomaticRecipeTags(cleanedDraft.tags, cleanedDraft, cleanedDraft.suppressedAutoTags);
@@ -1173,6 +1225,7 @@ export default function Home() {
     if (!ingredientName.trim() || !cleanShoppingName) return;
 
     const aliasEntries = aliasKeysForIngredientName(ingredientName).map((aliasKey) => [aliasKey, cleanShoppingName] as const);
+    const variantGroupKey = shoppingNameVariantGroupKey(ingredientName, cleanShoppingName);
     updateState((current) => ({
       ...current,
       settings: {
@@ -1180,6 +1233,12 @@ export default function Home() {
         ingredientAliases: {
           ...current.settings.ingredientAliases,
           ...Object.fromEntries(aliasEntries)
+        },
+        shoppingNameVariants: {
+          ...current.settings.shoppingNameVariants,
+          [variantGroupKey]: Array.from(
+            new Set([...(current.settings.shoppingNameVariants[variantGroupKey] ?? []), cleanShoppingName])
+          )
         }
       }
     }));
@@ -1501,12 +1560,32 @@ export default function Home() {
     }));
   }
 
+  function updateCommonExtraItems(items: string[]) {
+    const normalizedItems = items
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .filter((item, index, allItems) => allItems.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index);
+    updateSettings({ commonExtraItems: normalizedItems });
+  }
+
   function toggleShoppingItem(id: string, checked: boolean) {
-    updateState((current) => ({
-      ...current,
-      shoppingChecks: { ...current.shoppingChecks, [id]: checked },
-      manualShoppingItems: current.manualShoppingItems.map((item) => (item.id === id ? { ...item, checked } : item))
-    }));
+    const statusKey = storeStatusItemKey(shoppingDateRange, id);
+    updateState((current) => {
+      const asdaShoppingStatus = { ...current.asdaShoppingStatus };
+      if (checked) {
+        asdaShoppingStatus[statusKey] = "added";
+      } else if (asdaShoppingStatus[statusKey] === "added") {
+        delete asdaShoppingStatus[statusKey];
+      }
+
+      return {
+        ...current,
+        shoppingChecks: { ...current.shoppingChecks, [id]: checked },
+        manualShoppingItems: current.manualShoppingItems.map((item) => (item.id === id ? { ...item, checked } : item)),
+        asdaShoppingStatus
+      };
+    });
+    syncAsdaHelperItemStatus(id, statusKey, checked ? "added" : undefined);
   }
 
   function updateManualShoppingItem(id: string, patch: Partial<ShoppingListItem>) {
@@ -1881,6 +1960,7 @@ export default function Home() {
             draft={draft}
             setDraft={setDraft}
             ingredientAliases={state.settings.ingredientAliases}
+            savedShoppingNameVariants={state.settings.shoppingNameVariants}
             tagInput={tagInput}
             setTagInput={setTagInput}
             editingRecipeId={editingRecipeId}
@@ -1938,6 +2018,7 @@ export default function Home() {
             onAddManualItem={addManualShoppingItem}
             onAddBulkManualItems={addBulkManualShoppingItems}
             onAddCommonManualItem={addCommonManualShoppingItem}
+            onUpdateCommonExtras={updateCommonExtraItems}
             onToggleItem={toggleShoppingItem}
             onUpdateManualItem={updateManualShoppingItem}
             onDeleteItem={deleteShoppingItem}
@@ -2555,6 +2636,7 @@ function AddRecipeView({
   draft,
   setDraft,
   ingredientAliases,
+  savedShoppingNameVariants,
   tagInput,
   setTagInput,
   editingRecipeId,
@@ -2594,6 +2676,7 @@ function AddRecipeView({
   draft: ImportDraft;
   setDraft: (draft: ImportDraft | ((current: ImportDraft) => ImportDraft)) => void;
   ingredientAliases: Record<string, string>;
+  savedShoppingNameVariants: Record<string, string[]>;
   tagInput: string;
   setTagInput: (value: string) => void;
   editingRecipeId: string | null;
@@ -2915,7 +2998,9 @@ function AddRecipeView({
 	            {draft.ingredients.map((ingredient) => {
                   const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName : "";
                   const shoppingName = ingredient.canonicalName ?? "";
-                  const variantOptions = ingredient.name.trim() ? shoppingNameVariants(ingredient.name, ingredientAliases) : [];
+                  const variantOptions = ingredient.name.trim()
+                    ? shoppingNameVariants(ingredient.name, ingredientAliases, savedShoppingNameVariants)
+                    : [];
                   const selectedVariant = variantOptions.includes(normalizeIngredientAliasKey(shoppingName)) ? normalizeIngredientAliasKey(shoppingName) : "";
 
                   return (
@@ -2932,13 +3017,19 @@ function AddRecipeView({
 	                  value={ingredient.quantity ?? ""}
 	                  onChange={(event) => onUpdateIngredient(ingredient.id, { quantity: parseNumberInput(event.target.value), needsReview: false })}
 	                />
-	                <input
+	                <select
 	                  aria-label="Unit"
 	                  className="unit-input"
-	                  value={ingredient.unit ?? ""}
+	                  value={normalizeUnit(ingredient.unit)}
 	                  onChange={(event) => onUpdateIngredient(ingredient.id, { unit: event.target.value, needsReview: false })}
-	                  placeholder="unit"
-	                />
+	                >
+                      <option value="">No unit</option>
+                      {standardIngredientUnits.map((unit) => (
+                        <option key={unit} value={unit}>
+                          {unit}
+                        </option>
+                      ))}
+	                </select>
 	                <input
 	                  aria-label="Ingredient"
 	                  value={ingredient.name}
@@ -2995,22 +3086,6 @@ function AddRecipeView({
                     <button
                       className="text-button"
                       type="button"
-                      disabled={!suggestedShoppingName}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        if (!suggestedShoppingName) return;
-                        onUpdateIngredient(ingredient.id, {
-                          canonicalName: suggestedShoppingName,
-                          needsReview: false
-                        });
-                      }}
-                    >
-                      {suggestedShoppingName ? `Use "${suggestedShoppingName}"` : "Use suggestion"}
-                    </button>
-                    <button
-                      className="text-button"
-                      type="button"
                       disabled={!ingredient.name.trim() || !shoppingName.trim()}
                       onClick={(event) => {
                         event.preventDefault();
@@ -3018,9 +3093,11 @@ function AddRecipeView({
                         onRememberShoppingName(ingredient.name, shoppingName);
                       }}
                     >
-                      Remember
+                      Save name & variant
                     </button>
-                    <small>Used to combine matching shopping-list items.</small>
+                    <small>
+                      Suggested for Asda: <strong>{suggestedShoppingName || "enter an ingredient"}</strong>. This name standardises matching items across recipes.
+                    </small>
                   </div>
 	                {(ingredient.needsReview || ingredient.originalLine) && (
 	                  <small className="ingredient-review-note">
@@ -3082,6 +3159,7 @@ function ShoppingView({
   onAddManualItem,
   onAddBulkManualItems,
   onAddCommonManualItem,
+  onUpdateCommonExtras,
   onToggleItem,
   onUpdateManualItem,
   onDeleteItem,
@@ -3116,6 +3194,7 @@ function ShoppingView({
   onAddManualItem: (event: FormEvent) => void;
   onAddBulkManualItems: (event: FormEvent) => void;
   onAddCommonManualItem: (itemName: string) => void;
+  onUpdateCommonExtras: (items: string[]) => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
@@ -3128,6 +3207,8 @@ function ShoppingView({
   onRestoreGenerated: () => void;
 }) {
   const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
+  const [editingCommonExtras, setEditingCommonExtras] = useState(false);
+  const [commonExtrasDraft, setCommonExtrasDraft] = useState<string[]>(settings.commonExtraItems);
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
@@ -3138,6 +3219,10 @@ function ShoppingView({
       items: items.filter((item) => item.category === category)
     }))
     .filter((group) => group.items.length > 0);
+
+  useEffect(() => {
+    if (!editingCommonExtras) setCommonExtrasDraft(settings.commonExtraItems);
+  }, [editingCommonExtras, settings.commonExtraItems]);
 
   function buildAsdaHelperQueue(): AsdaHelperQueue {
     return {
@@ -3266,15 +3351,81 @@ function ShoppingView({
       <section className="common-extra-panel">
         <div className="section-heading">
           <h3>Common extras</h3>
-        </div>
-        <div className="common-extra-list">
-          {commonExtraItems.map((itemName) => (
-            <button className="text-button" type="button" key={itemName} onClick={() => onAddCommonManualItem(itemName)}>
-              <Plus size={15} />
-              {itemName}
+          {editingCommonExtras ? (
+            <div className="button-row">
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => {
+                  setCommonExtrasDraft(settings.commonExtraItems);
+                  setEditingCommonExtras(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button compact-button"
+                type="button"
+                onClick={() => {
+                  onUpdateCommonExtras(commonExtrasDraft);
+                  setEditingCommonExtras(false);
+                }}
+              >
+                <Check size={16} />
+                Save
+              </button>
+            </div>
+          ) : (
+            <button
+              className="icon-text-button"
+              type="button"
+              onClick={() => {
+                setCommonExtrasDraft(settings.commonExtraItems);
+                setEditingCommonExtras(true);
+              }}
+            >
+              <Settings size={16} />
+              Manage
             </button>
-          ))}
+          )}
         </div>
+        {editingCommonExtras ? (
+          <div className="common-extra-editor">
+            {commonExtrasDraft.map((itemName, index) => (
+              <div className="common-extra-editor-row" key={index}>
+                <input
+                  aria-label={`Common extra ${index + 1}`}
+                  value={itemName}
+                  onChange={(event) =>
+                    setCommonExtrasDraft((current) => current.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))
+                  }
+                  placeholder="Extra item"
+                />
+                <button
+                  className="icon-button danger"
+                  type="button"
+                  title="Remove common extra"
+                  onClick={() => setCommonExtrasDraft((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
+            <button className="icon-text-button common-extra-add" type="button" onClick={() => setCommonExtrasDraft((current) => [...current, ""])}>
+              <Plus size={16} />
+              Add button
+            </button>
+          </div>
+        ) : (
+          <div className="common-extra-list">
+            {settings.commonExtraItems.map((itemName) => (
+              <button className="text-button" type="button" key={itemName} onClick={() => onAddCommonManualItem(itemName)}>
+                <Plus size={15} />
+                {itemName}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>

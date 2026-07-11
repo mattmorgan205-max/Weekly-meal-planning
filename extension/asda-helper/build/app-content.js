@@ -29,16 +29,30 @@
         if (event.source !== window || event.origin !== window.location.origin)
             return;
         const message = event.data;
-        if (!message || message.source !== appSource || message.type !== "ASDA_HELPER_IMPORT_QUEUE" || !message.payload)
+        if (!message || message.source !== appSource || !message.payload)
             return;
         if (!extensionContextReady()) {
             postImportResult({ error: invalidContextMessage });
             return;
         }
+        if (message.type === "ASDA_HELPER_SYNC_ITEM") {
+            try {
+                const payload = message.payload;
+                chrome.runtime.sendMessage({ type: "SYNC_ITEM_STATUS", ...payload }, () => {
+                    void chrome.runtime.lastError;
+                });
+            }
+            catch {
+            }
+            return;
+        }
+        if (message.type !== "ASDA_HELPER_IMPORT_QUEUE")
+            return;
+        const queue = message.payload;
         try {
-            chrome.runtime.sendMessage({ type: "IMPORT_QUEUE", queue: message.payload }, (response) => {
+            chrome.runtime.sendMessage({ type: "IMPORT_QUEUE", queue }, (response) => {
                 const runtimeError = chrome.runtime.lastError?.message;
-                const itemCount = response?.state?.queue?.items.length ?? message.payload?.items.length ?? 0;
+                const itemCount = response?.state?.queue?.items.length ?? queue.items.length ?? 0;
                 postImportResult(response?.ok
                     ? { itemCount }
                     : { error: runtimeError?.includes("Extension context invalidated") ? invalidContextMessage : response?.error ?? runtimeError ?? "Asda Helper could not import this list." });
