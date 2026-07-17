@@ -1119,6 +1119,13 @@ h3 {
   display: grid;
 }
 
+.manual-items-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .single-manual-add {
   grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.4fr) minmax(150px, 0.45fr) auto;
 }
@@ -1536,7 +1543,8 @@ h3 {
   }
 
   .topbar,
-  .toolbar-band {
+  .toolbar-band,
+  .manual-items-heading {
     align-items: stretch;
     flex-direction: column;
   }

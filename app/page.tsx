@@ -82,6 +82,7 @@ type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error"
 type MealPickerGroup = MealSlot | "all";
 type RecipeGroupFilter = MealSlot | "all";
 type PhotoCropMode = "whole" | "ingredients" | "method";
+type ManualItemCategory = GroceryCategory | "Auto";
 type AsdaHelperQueueItem = {
   itemId: string;
   shoppingKey: string;
@@ -179,6 +180,11 @@ function hydratePlannedMeal(meal: AppState["plannedMeals"][number], defaultPeopl
 function hydrateState(value: unknown): AppState {
   const parsed = (value ?? {}) as Partial<AppState>;
   const seeded = seedState();
+  const currentWeekStart = formatDateKey(startOfWeek(new Date()));
+  const legacyManualItemRangeKey = shoppingRangeKeyForRange({
+    startDate: currentWeekStart,
+    endDate: formatDateKey(addDays(new Date(`${currentWeekStart}T12:00:00`), 6))
+  });
 
   return {
     ...seeded,
@@ -197,7 +203,11 @@ function hydrateState(value: unknown): AppState {
     },
     shoppingChecks: parsed.shoppingChecks ?? {},
     hiddenShoppingItems: parsed.hiddenShoppingItems ?? {},
-    manualShoppingItems: parsed.manualShoppingItems ?? [],
+    manualShoppingItems: (parsed.manualShoppingItems ?? []).map((item) => ({
+      ...item,
+      shoppingRangeKey: item.shoppingRangeKey ?? legacyManualItemRangeKey,
+      category: item.category === "Other" ? inferCategory(item.name) : item.category
+    })),
     asdaProductLinks: parsed.asdaProductLinks ?? {},
     asdaShoppingStatus: parsed.asdaShoppingStatus ?? {}
   };
@@ -257,6 +267,10 @@ function shoppingHiddenPrefixForRange(range: ReturnType<typeof normalizeDateRang
   return `${range.startDate}__${range.endDate}__`;
 }
 
+function shoppingRangeKeyForRange(range: ReturnType<typeof normalizeDateRange>) {
+  return `${range.startDate}__${range.endDate}`;
+}
+
 function shoppingHiddenItemKey(range: ReturnType<typeof normalizeDateRange>, itemId: string) {
   return `${shoppingHiddenPrefixForRange(range)}${itemId}`;
 }
@@ -308,7 +322,7 @@ function formatManualQuantity(ingredient: Ingredient) {
   return [quantity, ingredient.unit].filter(Boolean).join(" ");
 }
 
-function createManualShoppingItemFromLine(line: string): ShoppingListItem | null {
+function createManualShoppingItemFromLine(line: string, shoppingRangeKey: string): ShoppingListItem | null {
   const cleanedLine = line.trim();
   if (!cleanedLine) return null;
 
@@ -317,6 +331,7 @@ function createManualShoppingItemFromLine(line: string): ShoppingListItem | null
 
   return {
     id: createId("manual"),
+    shoppingRangeKey,
     name,
     canonicalName: canonicalizeIngredientName(name).canonicalName,
     displayQuantity: formatManualQuantity(parsed),
@@ -440,7 +455,7 @@ function mergeManualShoppingItems(items: ShoppingListItem[]) {
 
   items.forEach((item) => {
     const canonicalName = canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
-    const key = [canonicalName, item.category, item.displayQuantity.trim().toLowerCase()].join("::");
+    const key = [item.shoppingRangeKey ?? "legacy", canonicalName, item.category, item.displayQuantity.trim().toLowerCase()].join("::");
     const existing = merged.get(key);
 
     if (existing) {
@@ -699,7 +714,7 @@ export default function Home() {
   const [importStatus, setImportStatus] = useState("");
   const [manualItemName, setManualItemName] = useState("");
   const [manualItemQuantity, setManualItemQuantity] = useState("");
-  const [manualItemCategory, setManualItemCategory] = useState<GroceryCategory>("Other");
+  const [manualItemCategory, setManualItemCategory] = useState<ManualItemCategory>("Auto");
   const [manualBulkItems, setManualBulkItems] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
   const [cloudUser, setCloudUser] = useState<string | null>(null);
@@ -726,6 +741,7 @@ export default function Home() {
   );
   const days = useMemo(() => dateRangeDates(weekStart, plannerDayCount), [plannerDayCount, weekStart]);
   const shoppingDateRange = useMemo(() => normalizeDateRange(shoppingStartDate, shoppingEndDate), [shoppingStartDate, shoppingEndDate]);
+  const shoppingRangeKey = useMemo(() => shoppingRangeKeyForRange(shoppingDateRange), [shoppingDateRange]);
   const shoppingHiddenPrefix = useMemo(
     () => shoppingHiddenPrefixForRange(shoppingDateRange),
     [shoppingDateRange.startDate, shoppingDateRange.endDate]
@@ -764,9 +780,9 @@ export default function Home() {
         state.settings,
         state.shoppingChecks,
         rangeHiddenShoppingItems,
-        state.manualShoppingItems
+        state.manualShoppingItems.filter((item) => item.shoppingRangeKey === shoppingRangeKey)
       ),
-    [rangeHiddenShoppingItems, shoppingDateRange, state]
+    [rangeHiddenShoppingItems, shoppingDateRange, shoppingRangeKey, state]
   );
   const filteredRecipes = useMemo(() => {
     const query = recipeSearch.toLowerCase().trim();
@@ -1517,10 +1533,11 @@ export default function Home() {
 
     const item: ShoppingListItem = {
       id: createId("manual"),
+      shoppingRangeKey,
       name: manualItemName.trim(),
       canonicalName: canonicalizeIngredientName(manualItemName).canonicalName,
       displayQuantity: manualItemQuantity.trim(),
-      category: manualItemCategory,
+      category: manualItemCategory === "Auto" ? inferCategory(manualItemName) : manualItemCategory,
       sourceMeals: ["Manual"],
       checked: false,
       manual: true
@@ -1532,13 +1549,13 @@ export default function Home() {
     }));
     setManualItemName("");
     setManualItemQuantity("");
-    setManualItemCategory("Other");
+    setManualItemCategory("Auto");
   }
 
   function addBulkManualShoppingItems(event: FormEvent) {
     event.preventDefault();
     const newItems = splitManualShoppingLines(manualBulkItems)
-      .map(createManualShoppingItemFromLine)
+      .map((line) => createManualShoppingItemFromLine(line, shoppingRangeKey))
       .filter((item): item is ShoppingListItem => Boolean(item));
 
     if (!newItems.length) return;
@@ -1551,7 +1568,7 @@ export default function Home() {
   }
 
   function addCommonManualShoppingItem(itemName: string) {
-    const item = createManualShoppingItemFromLine(itemName);
+    const item = createManualShoppingItemFromLine(itemName, shoppingRangeKey);
     if (!item) return;
 
     updateState((current) => ({
@@ -1566,6 +1583,25 @@ export default function Home() {
       .filter(Boolean)
       .filter((item, index, allItems) => allItems.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index);
     updateSettings({ commonExtraItems: normalizedItems });
+  }
+
+  function clearManualShoppingItemsForRange() {
+    updateState((current) => {
+      const removedIds = new Set(
+        current.manualShoppingItems.filter((item) => item.shoppingRangeKey === shoppingRangeKey).map((item) => item.id)
+      );
+      if (!removedIds.size) return current;
+      const removedStatusKeys = new Set(Array.from(removedIds, (itemId) => storeStatusItemKey(shoppingDateRange, itemId)));
+
+      return {
+        ...current,
+        manualShoppingItems: current.manualShoppingItems.filter((item) => item.shoppingRangeKey !== shoppingRangeKey),
+        shoppingChecks: Object.fromEntries(Object.entries(current.shoppingChecks).filter(([itemId]) => !removedIds.has(itemId))),
+        asdaShoppingStatus: Object.fromEntries(
+          Object.entries(current.asdaShoppingStatus).filter(([statusKey]) => !removedStatusKeys.has(statusKey))
+        )
+      };
+    });
   }
 
   function toggleShoppingItem(id: string, checked: boolean) {
@@ -2018,6 +2054,7 @@ export default function Home() {
             onAddManualItem={addManualShoppingItem}
             onAddBulkManualItems={addBulkManualShoppingItems}
             onAddCommonManualItem={addCommonManualShoppingItem}
+            onClearManualItems={clearManualShoppingItemsForRange}
             onUpdateCommonExtras={updateCommonExtraItems}
             onToggleItem={toggleShoppingItem}
             onUpdateManualItem={updateManualShoppingItem}
@@ -3159,6 +3196,7 @@ function ShoppingView({
   onAddManualItem,
   onAddBulkManualItems,
   onAddCommonManualItem,
+  onClearManualItems,
   onUpdateCommonExtras,
   onToggleItem,
   onUpdateManualItem,
@@ -3179,7 +3217,7 @@ function ShoppingView({
   rangeEndDate: string;
   manualItemName: string;
   manualItemQuantity: string;
-  manualItemCategory: GroceryCategory;
+  manualItemCategory: ManualItemCategory;
   manualBulkItems: string;
   asdaProductLinks: Record<string, string>;
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
@@ -3187,13 +3225,14 @@ function ShoppingView({
   setEndDate: (value: string) => void;
   setManualItemName: (value: string) => void;
   setManualItemQuantity: (value: string) => void;
-  setManualItemCategory: (value: GroceryCategory) => void;
+  setManualItemCategory: (value: ManualItemCategory) => void;
   setManualBulkItems: (value: string) => void;
   onResetDateRange: () => void;
   onToggleIncludeStaples: (value: boolean) => void;
   onAddManualItem: (event: FormEvent) => void;
   onAddBulkManualItems: (event: FormEvent) => void;
   onAddCommonManualItem: (itemName: string) => void;
+  onClearManualItems: () => void;
   onUpdateCommonExtras: (items: string[]) => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
@@ -3212,6 +3251,7 @@ function ShoppingView({
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
+  const manualItemCount = items.filter((item) => item.manual).length;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const grouped = groceryCategories
     .map((category) => ({
@@ -3335,6 +3375,17 @@ function ShoppingView({
         </div>
       </section>
 
+      <div className="manual-items-heading">
+        <div>
+          <p className="eyebrow">Extra items</p>
+          <h3>{manualItemCount} added for this shop</h3>
+        </div>
+        <button className="icon-text-button danger" type="button" disabled={!manualItemCount} onClick={onClearManualItems}>
+          <Trash2 size={16} />
+          Clear added items
+        </button>
+      </div>
+
       <form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
         <textarea
           value={manualBulkItems}
@@ -3431,7 +3482,8 @@ function ShoppingView({
       <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>
         <input value={manualItemName} onChange={(event) => setManualItemName(event.target.value)} placeholder="Add extra item" />
         <input value={manualItemQuantity} onChange={(event) => setManualItemQuantity(event.target.value)} placeholder="Quantity" />
-        <select value={manualItemCategory} onChange={(event) => setManualItemCategory(event.target.value as GroceryCategory)}>
+        <select value={manualItemCategory} onChange={(event) => setManualItemCategory(event.target.value as ManualItemCategory)}>
+          <option value="Auto">Auto category</option>
           {groceryCategories.map((category) => (
             <option key={category} value={category}>
               {category}

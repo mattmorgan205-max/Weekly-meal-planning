@@ -58,6 +58,7 @@ export type PlannedMeal = {
 
 export type ShoppingListItem = {
   id: string;
+  shoppingRangeKey?: string;
   mergeKey?: string;
   splitGroupKey?: string;
   name: string;
@@ -751,40 +752,46 @@ export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMin
 
 export function inferCategory(name: string): GroceryCategory {
   const normal = normalizeIngredientName(name);
+  const canonical = canonicalizeIngredientName(name).canonicalName;
+  const searchable = `${normal} ${canonical}`;
 
-  if (/(chicken|duck|beef|pork|fish|salmon|tuna|prawn|shrimp|turkey|bacon|sausage)/.test(normal)) {
+  if (/\b(chicken|duck|beef|pork|fish|salmon|tuna|prawn|shrimp|turkey|bacon|sausage|lamb|ham|steak|mince)\b/.test(searchable)) {
     return "Meat & Fish";
   }
 
-  if (/(milk|cheese|yogurt|butter|cream|egg|eggs|parmesan|cheddar|mozzarella)/.test(normal)) {
+  if (/\b(coconut milk|egg noodles?)\b/.test(searchable)) {
+    return "Pantry";
+  }
+
+  if (/\b(milk|cheese|yogurt|yoghurt|butter|cream|egg|parmesan|cheddar|mozzarella|custard)\b/.test(searchable)) {
     return "Dairy & Eggs";
   }
 
-  if (/(bread|bagel|wrap|tortilla|bun|roll|pitta|pita)/.test(normal)) {
+  if (/\b(bread|bagel|wrap|tortilla|bun|bread rolls?|pitta|pita|crumpet|croissant|muffin|cake|bap)\b/.test(searchable)) {
     return "Bakery";
   }
 
-  if (/(peas|spinach frozen|frozen|ice cream)/.test(normal)) {
+  if (/\b(peas|frozen spinach|frozen|ice cream)\b/.test(searchable)) {
     return "Frozen";
   }
 
-  if (/(salt|pepper|paprika|cumin|cinnamon|oregano|basil|thyme|chilli|chili|curry|spice)/.test(normal)) {
+  if (/\b(salt|black pepper|white pepper|peppercorn|paprika|cumin|cinnamon|oregano|basil|thyme|chilli|chili|curry|spice)\b/.test(searchable)) {
     return "Spices";
   }
 
-  if (/(chopped tomatoes|tinned tomatoes|canned tomatoes|tin of tomatoes|can of tomatoes|tomato puree|tomato purée|tomato paste|passata)/.test(normal)) {
+  if (/\b(chopped tomatoes|tinned tomatoes|canned tomatoes|tin of tomatoes|can of tomatoes|tomato puree|tomato purée|tomato paste|passata)\b/.test(searchable)) {
     return "Pantry";
   }
 
   if (
-    /(onion|garlic|tomato|pepper|carrot|potato|lettuce|lemon|lime|apple|banana|mushroom|broccoli|courgette|zucchini|avocado|herb|coriander|cilantro|parsley|ginger)/.test(
-      normal
+    /\b(onion|garlic|tomato|pepper|carrot|potato|lettuce|lemon|lime|apple|banana|mushroom|broccoli|courgette|zucchini|avocado|herb|coriander|cilantro|parsley|ginger|orange|pear|grape|berry|berries|cucumber|celery|leek|cabbage|cauliflower|sweetcorn|aubergine|eggplant|squash)\b/.test(
+      searchable
     )
   ) {
     return "Produce";
   }
 
-  if (/(rice|pasta|flour|sugar|oil|vinegar|beans|lentils|stock|broth|oats|cereal|noodle|soy sauce|honey)/.test(normal)) {
+  if (/\b(rice|pasta|flour|sugar|oil|vinegar|bean|lentil|stock|broth|oat|cereal|noodle|soy sauce|honey|coffee|tea bags?|biscuit|cracker|ketchup|mayonnaise|mustard|jam|peanut butter)\b/.test(searchable)) {
     return "Pantry";
   }
 
