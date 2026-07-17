@@ -380,6 +380,7 @@ const ingredientAliasRules: Array<{
   { canonicalName: "mushroom", patterns: [/\b(mushroom|mushrooms)\b/] },
   { canonicalName: "lemon", patterns: [/\b(lemon|lemons)\b/] },
   { canonicalName: "lime", patterns: [/\b(lime|limes)\b/] },
+  { canonicalName: "egg noodles", patterns: [/\b(egg noodle|egg noodles)\b/] },
   { canonicalName: "egg", patterns: [/\b(egg|eggs)\b/] },
   { canonicalName: "coconut milk", patterns: [/\b(coconut milk)\b/] },
   { canonicalName: "oat milk", patterns: [/\b(oat milk)\b/] },
@@ -401,6 +402,10 @@ const ingredientAliasRules: Array<{
   { canonicalName: "self-raising flour", patterns: [/\b(self raising flour|self-raising flour)\b/] },
   { canonicalName: "caster sugar", patterns: [/\b(caster sugar|superfine sugar)\b/] },
   { canonicalName: "puff pastry", patterns: [/\b(puff pastry|ready rolled puff pastry|ready-rolled puff pastry)\b/] },
+  { canonicalName: "flat rice noodles", patterns: [/\b(flat rice noodle|flat rice noodles)\b/] },
+  { canonicalName: "rice noodles", patterns: [/\b(rice noodle|rice noodles)\b/] },
+  { canonicalName: "udon noodles", patterns: [/\b(udon noodle|udon noodles)\b/] },
+  { canonicalName: "noodles", patterns: [/\b(noodle|noodles)\b/] },
   { canonicalName: "basmati rice", patterns: [/\b(basmati rice)\b/] },
   { canonicalName: "long grain rice", patterns: [/\b(long grain rice)\b/] },
   { canonicalName: "jasmine rice", patterns: [/\b(jasmine rice)\b/] },
@@ -522,7 +527,11 @@ function singularizeIngredientName(name: string) {
     "__chopped_tomatoes__": "chopped tomatoes",
     "__cherry_tomatoes__": "cherry tomatoes",
     "__tinned_tomatoes__": "tinned tomatoes",
-    "__canned_tomatoes__": "canned tomatoes"
+    "__canned_tomatoes__": "canned tomatoes",
+    "__flat_rice_noodles__": "flat rice noodles",
+    "__rice_noodles__": "rice noodles",
+    "__egg_noodles__": "egg noodles",
+    "__udon_noodles__": "udon noodles"
   };
 
   let normalized = name;

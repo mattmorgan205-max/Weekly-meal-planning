@@ -183,6 +183,84 @@
     });
   }
 
+  function verifyProductNameInTab(
+    tabId: number,
+    requiredName: string,
+    avoidTerms: string[] = []
+  ): Promise<{ ok: boolean; productName?: string; error?: string }> {
+    return new Promise((resolve) => {
+      chrome.scripting.executeScript(
+        {
+          target: { tabId },
+          args: [requiredName, avoidTerms],
+          func: (expectedName: string, blockedTerms: string[]) => {
+            function normalize(value: string) {
+              return value
+                .toLowerCase()
+                .replace(/&/g, " and ")
+                .replace(/[^a-z0-9]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+            }
+
+            function comparableToken(token: string) {
+              if (token.endsWith("ies") && token.length > 4) return `${token.slice(0, -3)}y`;
+              if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
+              return token;
+            }
+
+            function tokens(value: string) {
+              const stopWords = new Set(["and", "the", "with", "for", "asda", "fresh", "chosen", "by"]);
+              return normalize(value)
+                .split(" ")
+                .filter((token) => token.length > 2 && !stopWords.has(token))
+                .map(comparableToken);
+            }
+
+            const headingSelectors = ["h1", "[data-testid*='product-name' i]", "[data-auto-id*='product-name' i]"];
+            const heading = headingSelectors
+              .map((selector) => document.querySelector<HTMLElement>(selector))
+              .find((element) => element && (element.innerText || element.textContent || "").trim());
+            const productName = (heading?.innerText || heading?.textContent || document.title || "").replace(/\s+/g, " ").trim();
+            const requiredTokens = tokens(expectedName);
+            const productTokens = new Set(tokens(productName));
+            const missingTokens = requiredTokens.filter((token) => !productTokens.has(token));
+            const normalizedProductName = normalize(productName);
+            const blockedMatch = blockedTerms.find((term) => {
+              const normalizedTerm = normalize(term);
+              return normalizedTerm && normalizedProductName.includes(normalizedTerm);
+            });
+
+            if (!productName || !requiredTokens.length) {
+              return { ok: false, productName, error: "The Asda product name could not be verified." };
+            }
+            if (blockedMatch) {
+              return { ok: false, productName, error: `Saved product looks like ${blockedMatch}, not ${expectedName}.` };
+            }
+            if (missingTokens.length) {
+              return {
+                ok: false,
+                productName,
+                error: `Saved product does not exactly match ${expectedName}; missing ${missingTokens.join(", ")}.`
+              };
+            }
+
+            return { ok: true, productName };
+          }
+        },
+        (results: Array<{ result?: { ok?: boolean; productName?: string; error?: string } }> | undefined) => {
+          const error = chrome.runtime.lastError?.message;
+          const result = results?.[0]?.result;
+          resolve({
+            ok: Boolean(result?.ok),
+            productName: result?.productName,
+            error: result?.error ?? error ?? "The saved Asda product name could not be verified."
+          });
+        }
+      );
+    });
+  }
+
   function clickAddButtonInTab(tabId: number): Promise<{ ok: boolean; error?: string }> {
     return new Promise((resolve) => {
       chrome.scripting.executeScript(
@@ -548,6 +626,18 @@
         tabId = await openShoppingTab(productUrl, false);
         await waitForTabComplete(tabId);
         await wait(2200);
+
+        const verification = await verifyProductNameInTab(tabId, item.name, item.avoidTerms);
+        if (!verification.ok) {
+          reviewItems.push({
+            itemId: item.itemId,
+            name: item.name,
+            displayQuantity: item.displayQuantity,
+            openUrl: productUrl,
+            reason: verification.error ?? "The saved product did not exactly match the shopping-list item."
+          });
+          continue;
+        }
 
         const clickResult = await clickAddButtonInTab(tabId);
         if (!clickResult.ok) {

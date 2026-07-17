@@ -141,7 +141,7 @@ const legacyBroadShoppingNames: Record<string, string[]> = {
   onion: ["red onion", "white onion"],
   pepper: ["red pepper", "yellow pepper", "green pepper"],
   pasta: ["tortelloni", "spaghetti", "penne", "fusilli", "tagliatelle", "linguine"],
-  rice: ["basmati rice", "long grain rice", "jasmine rice"]
+  rice: ["basmati rice", "long grain rice", "jasmine rice", "flat rice noodles", "rice noodles"]
 };
 
 function hydrateRecipe(recipe: Recipe): Recipe {
@@ -342,12 +342,18 @@ function createManualShoppingItemFromLine(line: string, shoppingRangeKey: string
   };
 }
 
-function shoppingPreferenceKey(item: Pick<ShoppingListItem, "canonicalName" | "name">) {
-  return canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
+function shoppingPreferenceKey(item: Pick<ShoppingListItem, "name">) {
+  return item.name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function asdaSearchUrl(item: ShoppingListItem) {
-  return `https://groceries.asda.com/search/${encodeURIComponent(item.canonicalName || item.name)}`;
+  return `https://groceries.asda.com/search/${encodeURIComponent(item.name.trim())}`;
 }
 
 function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) {
@@ -384,6 +390,7 @@ const builtInShoppingNameVariantGroups: Record<string, string[]> = {
   mince: ["beef mince", "pork mince", "turkey mince"],
   milk: ["milk", "semi skimmed milk", "whole milk", "skimmed milk"],
   pasta: ["pasta", "tortelloni", "spaghetti", "penne", "fusilli", "tagliatelle", "linguine"],
+  noodles: ["noodles", "flat rice noodles", "rice noodles", "egg noodles", "udon noodles"],
   rice: ["rice", "basmati rice", "long grain rice", "jasmine rice"]
 };
 

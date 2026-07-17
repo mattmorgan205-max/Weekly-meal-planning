@@ -67,6 +67,18 @@
             .split(" ")
             .filter((token) => token.length > 2 && !stopWords.has(token));
     }
+    function comparableToken(token) {
+        if (token.endsWith("ies") && token.length > 4)
+            return `${token.slice(0, -3)}y`;
+        if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3)
+            return token.slice(0, -1);
+        return token;
+    }
+    function exactItemNameMatch(requiredName, productName) {
+        const requiredTokens = tokenize(requiredName).map(comparableToken);
+        const productTokens = new Set(tokenize(productName).map(comparableToken));
+        return requiredTokens.length > 0 && requiredTokens.every((token) => productTokens.has(token));
+    }
     function absoluteUrl(value) {
         try {
             return new URL(value, window.location.origin).toString();
@@ -424,13 +436,13 @@
     function lineMatchScore(item, state, line) {
         let score = 0;
         const productText = normalizeText(`${line.name} ${line.rawText ?? ""}`);
-        const targetName = normalizeText(item.canonicalName || item.name);
+        const targetName = normalizeText(item.name);
         const savedUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl;
         if (savedUrl && line.url && absoluteUrl(savedUrl) === line.url)
             score += 100;
         if (targetName && productText.includes(targetName))
             score += 40;
-        tokenize(item.canonicalName || item.name).forEach((token) => {
+        tokenize(item.name).forEach((token) => {
             if (productText.includes(token))
                 score += 12;
             else
@@ -631,10 +643,15 @@
         const warnings = [];
         const productName = normalizeText(product.name);
         const productText = normalizeText(`${product.name} ${product.rawText ?? ""}`);
-        const targetName = normalizeText(item.canonicalName || item.name);
-        const targetTokens = tokenize(item.canonicalName || item.name);
+        const targetName = normalizeText(item.name);
+        const targetTokens = tokenize(item.name);
         const savedUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl;
-        if (savedUrl && absoluteUrl(savedUrl) === product.url) {
+        const exactNameMatch = exactItemNameMatch(item.name, product.name);
+        if (!exactNameMatch) {
+            score -= 200;
+            warnings.push("not an exact item-name match");
+        }
+        if (exactNameMatch && savedUrl && absoluteUrl(savedUrl) === product.url) {
             score += 55;
             reasons.push("saved preference");
         }
