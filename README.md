@@ -16,6 +16,7 @@ Then open `http://localhost:3000`.
 - Weekly planner with breakfast, lunch, dinner, and snack slots.
 - Per-meal people counts for quantity scaling.
 - Recipe library with search, tags, favorites, duplicate, edit, and delete.
+- Private meal-picture storage with recipe-card and planner-detail previews.
 - Add recipe by manual entry, pasted text, public recipe URL, or recipe-book photo OCR review.
 - URL imports use structured recipe metadata first, then only likely recipe sections instead of broad webpage text.
 - Required import review screen before saving recipes.
@@ -31,7 +32,8 @@ Then open `http://localhost:3000`.
 
 1. Create a Supabase project.
 2. Run `supabase/schema.sql` in the Supabase SQL editor.
-3. Add these values to `.env.local`:
+3. Run `supabase/recipe-images.sql` in the Supabase SQL editor.
+4. Add these values to `.env.local`:
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=your-project-url
@@ -40,6 +42,8 @@ OCR_SPACE_API_KEY=optional-free-ocr-fallback-key
 ```
 
 The MVP saves the app state to `household_snapshots` for quick cross-device sync. After sign-in, the app loads the latest cloud snapshot and automatically saves changes after a short pause. Before a cloud snapshot overwrites local data, the previous local state is backed up in browser storage.
+
+Uploaded meal pictures are kept in the private `recipe-images` Supabase Storage bucket rather than embedded in the snapshot. This prevents browser storage limits as the recipe library grows. Existing embedded recipe photos are moved into the bucket automatically after the user signs in. Recipe URLs can continue to use the source page's image URL without uploading a copy.
 
 ## Deploy To Vercel Hobby
 

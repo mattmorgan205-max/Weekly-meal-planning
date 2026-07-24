@@ -149,6 +149,8 @@ const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
 const asdaHelperAppSource = "weekwise-meal-planner";
 const asdaHelperExtensionSource = "weekwise-asda-helper-extension";
 const asdaHelperQueueElementId = "weekwise-asda-helper-queue";
+const recipeImageBucket = "recipe-images";
+const recipeImageSignedUrlSeconds = 60 * 60 * 24 * 7;
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   weekday: "short",
@@ -241,6 +243,15 @@ function loadState(): AppState {
     return hydrateState(JSON.parse(stored));
   } catch {
     return seedState();
+  }
+}
+
+function writeLocalStorage(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -812,6 +823,12 @@ async function prepareMealImage(file: File) {
   }
 }
 
+async function dataUrlToBlob(dataUrl: string) {
+  const response = await fetch(dataUrl);
+  if (!response.ok) throw new Error("The saved meal picture could not be prepared for upload.");
+  return response.blob();
+}
+
 async function recognizeRecipePhoto(
   prepared: { file: File; dataUrl: string },
   originalFile: File,
@@ -902,15 +919,18 @@ export default function Home() {
   const [manualBulkItems, setManualBulkItems] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
   const [cloudUser, setCloudUser] = useState<string | null>(null);
+  const [cloudLoaded, setCloudLoaded] = useState(false);
   const [cloudMessage, setCloudMessage] = useState("");
   const [cloudBusy, setCloudBusy] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
+  const [recipeImageUrls, setRecipeImageUrls] = useState<Record<string, string>>({});
   const stateRef = useRef(state);
   const cloudUserIdRef = useRef<string | null>(null);
   const cloudLoadedRef = useRef(false);
   const suppressNextCloudSaveRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedJsonRef = useRef("");
+  const migratingRecipeImagesRef = useRef(false);
 
   useEffect(() => {
     const hydratedState = loadState();
@@ -1015,7 +1035,10 @@ export default function Home() {
   useEffect(() => {
     stateRef.current = state;
     if (!hasHydratedLocalState) return;
-    window.localStorage.setItem(storageKey, JSON.stringify(state));
+    const saved = writeLocalStorage(storageKey, JSON.stringify(state));
+    if (!saved) {
+      setCloudMessage("The browser backup is full. Recipe data will continue syncing to Supabase, but embedded photos need cloud image storage.");
+    }
   }, [hasHydratedLocalState, state]);
 
   useEffect(() => {
@@ -1082,8 +1105,116 @@ export default function Home() {
     };
   }, [hasHydratedLocalState, state, supabaseConfigured]);
 
+  useEffect(() => {
+    if (!hasHydratedLocalState || !cloudUser || !cloudLoaded) return;
+
+    const recipesWithStoredImages = state.recipes.filter((recipe) => recipe.mealImagePath);
+    if (recipesWithStoredImages.length > 0) {
+      void refreshRecipeImageUrls(recipesWithStoredImages);
+    }
+
+    const recipesWithEmbeddedImages = state.recipes.filter(
+      (recipe) => !recipe.mealImagePath && recipe.mealImageUrl?.startsWith("data:image/")
+    );
+    if (recipesWithEmbeddedImages.length > 0 && !migratingRecipeImagesRef.current) {
+      void migrateEmbeddedRecipeImages(recipesWithEmbeddedImages);
+    }
+  }, [cloudLoaded, cloudUser, hasHydratedLocalState, state.recipes]);
+
   function updateState(updater: (current: AppState) => AppState) {
     setState((current) => updater(current));
+  }
+
+  async function createRecipeImageSignedUrl(path: string) {
+    const client = getSupabaseClient();
+    if (!client) throw new Error("Cloud image storage is not configured.");
+
+    const { data, error } = await client.storage.from(recipeImageBucket).createSignedUrl(path, recipeImageSignedUrlSeconds);
+    if (error || !data?.signedUrl) throw new Error(error?.message || "The meal picture could not be opened.");
+    return data.signedUrl;
+  }
+
+  async function refreshRecipeImageUrls(recipes: Recipe[]) {
+    const client = getSupabaseClient();
+    const recipesWithPaths = recipes.filter((recipe): recipe is Recipe & { mealImagePath: string } => Boolean(recipe.mealImagePath));
+    if (!client || recipesWithPaths.length === 0) return;
+
+    const paths = Array.from(new Set(recipesWithPaths.map((recipe) => recipe.mealImagePath)));
+    const { data, error } = await client.storage.from(recipeImageBucket).createSignedUrls(paths, recipeImageSignedUrlSeconds);
+    if (error || !data) return;
+
+    const signedUrlByPath = Object.fromEntries(
+      data.filter((item) => item.signedUrl).map((item) => [item.path, item.signedUrl as string])
+    );
+    const nextUrls = Object.fromEntries(
+      recipesWithPaths
+        .map((recipe) => [recipe.id, signedUrlByPath[recipe.mealImagePath]] as const)
+        .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
+    );
+
+    setRecipeImageUrls((current) => ({ ...current, ...nextUrls }));
+  }
+
+  async function uploadRecipeImage(recipeId: string, dataUrl: string) {
+    const client = getSupabaseClient();
+    const snapshotOwnerId = cloudUserIdRef.current;
+    if (!client || !snapshotOwnerId) {
+      throw new Error("Sign in to Cloud Sync before saving an uploaded meal picture.");
+    }
+
+    let blob = await dataUrlToBlob(dataUrl);
+    if (blob.size > 900_000) {
+      const compressedDataUrl = await prepareMealImage(
+        new File([blob], `${recipeId}-meal-image`, { type: blob.type || "image/jpeg" })
+      );
+      blob = await dataUrlToBlob(compressedDataUrl);
+    }
+
+    const path = `${snapshotOwnerId}/${recipeId}.jpg`;
+    const { error } = await client.storage.from(recipeImageBucket).upload(path, blob, {
+      cacheControl: "3600",
+      contentType: blob.type || "image/jpeg",
+      upsert: true
+    });
+
+    if (error) {
+      const setupHint = /bucket|not found|row-level|policy|permission/i.test(error.message)
+        ? " Run supabase/recipe-images.sql in the Supabase SQL editor."
+        : "";
+      throw new Error(`The meal picture could not be saved: ${error.message}.${setupHint}`);
+    }
+
+    const signedUrl = await createRecipeImageSignedUrl(path);
+    setRecipeImageUrls((current) => ({ ...current, [recipeId]: signedUrl }));
+    return path;
+  }
+
+  async function migrateEmbeddedRecipeImages(recipes: Recipe[]) {
+    migratingRecipeImagesRef.current = true;
+    const migratedPaths = new Map<string, string>();
+
+    try {
+      for (const recipe of recipes) {
+        if (!recipe.mealImageUrl?.startsWith("data:image/")) continue;
+        const path = await uploadRecipeImage(recipe.id, recipe.mealImageUrl);
+        migratedPaths.set(recipe.id, path);
+      }
+
+      if (migratedPaths.size > 0) {
+        updateState((current) => ({
+          ...current,
+          recipes: current.recipes.map((recipe) => {
+            const mealImagePath = migratedPaths.get(recipe.id);
+            return mealImagePath ? { ...recipe, mealImagePath, mealImageUrl: undefined } : recipe;
+          })
+        }));
+        setCloudMessage(`Moved ${migratedPaths.size} saved recipe photo${migratedPaths.size === 1 ? "" : "s"} into private cloud image storage.`);
+      }
+    } catch (error) {
+      setCloudMessage(error instanceof Error ? error.message : "Existing recipe photos could not be moved into cloud image storage.");
+    } finally {
+      migratingRecipeImagesRef.current = false;
+    }
   }
 
   useEffect(() => {
@@ -1341,65 +1472,84 @@ export default function Home() {
     }));
   }
 
-  function saveDraft() {
-    const cleanedDraft: ImportDraft = {
-      ...draft,
-      title: draft.title.trim() || "Untitled recipe",
-      servings: Math.max(1, Number(draft.servings) || 4),
-      mealTypes: normalizeMealTypes(draft.mealTypes),
-      source: draft.source?.trim(),
-      suppressedAutoTags: normalizeSuppressedAutomaticTags(draft.suppressedAutoTags),
-      tags: parseTags(tagInput),
-      ingredients: draft.ingredients
-        .filter((ingredient) => ingredient.name.trim())
-        .map((ingredient) => {
-          const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
-          return {
-            ...ingredient,
-            id: ingredient.id || createId("ing"),
-            quantity: standardized.quantity,
-            unit: standardized.unit,
-            category: ingredient.category || inferCategory(ingredient.name),
-            canonicalName:
-              normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
-              canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
-            needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
-          };
-        }),
-      instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
-    };
-    cleanedDraft.tags = mergeAutomaticRecipeTags(cleanedDraft.tags, cleanedDraft, cleanedDraft.suppressedAutoTags);
-    const recipe = draftToRecipe(cleanedDraft);
+  async function saveDraft() {
+    setImportStatus("Saving recipe...");
 
-    updateState((current) => {
-      if (editingRecipeId) {
-        const existing = current.recipes.find((item) => item.id === editingRecipeId);
-        return {
-          ...current,
-          recipes: current.recipes.map((item) =>
-            item.id === editingRecipeId
-              ? {
-                  ...recipe,
-                  id: editingRecipeId,
-                  favorite: existing?.favorite ?? false,
-                  createdAt: existing?.createdAt ?? recipe.createdAt,
-                  updatedAt: new Date().toISOString()
-                }
-              : item
-          )
-        };
+    try {
+      const recipeId = editingRecipeId ?? createId("recipe");
+      let mealImagePath = draft.mealImagePath;
+      let mealImageUrl = draft.mealImageUrl;
+
+      if (mealImageUrl?.startsWith("data:image/")) {
+        mealImagePath = await uploadRecipeImage(recipeId, mealImageUrl);
+        mealImageUrl = undefined;
       }
 
-      return {
-        ...current,
-        recipes: [{ ...recipe, favorite: cleanedDraft.tags.includes("favorite") }, ...current.recipes]
+      const cleanedDraft: ImportDraft = {
+        ...draft,
+        mealImagePath,
+        mealImageUrl,
+        title: draft.title.trim() || "Untitled recipe",
+        servings: Math.max(1, Number(draft.servings) || 4),
+        mealTypes: normalizeMealTypes(draft.mealTypes),
+        source: draft.source?.trim(),
+        suppressedAutoTags: normalizeSuppressedAutomaticTags(draft.suppressedAutoTags),
+        tags: parseTags(tagInput),
+        ingredients: draft.ingredients
+          .filter((ingredient) => ingredient.name.trim())
+          .map((ingredient) => {
+            const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
+            return {
+              ...ingredient,
+              id: ingredient.id || createId("ing"),
+              quantity: standardized.quantity,
+              unit: standardized.unit,
+              category: ingredient.category || inferCategory(ingredient.name),
+              canonicalName:
+                normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
+                canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
+              needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+            };
+          }),
+        instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
       };
-    });
+      cleanedDraft.tags = mergeAutomaticRecipeTags(cleanedDraft.tags, cleanedDraft, cleanedDraft.suppressedAutoTags);
+      const recipe = { ...draftToRecipe(cleanedDraft), id: recipeId };
 
-    applyDraft(emptyDraft());
-    setEditingRecipeId(null);
-    setImportMode("manual");
-    setActiveView("recipes");
+      updateState((current) => {
+        if (editingRecipeId) {
+          const existing = current.recipes.find((item) => item.id === editingRecipeId);
+          return {
+            ...current,
+            recipes: current.recipes.map((item) =>
+              item.id === editingRecipeId
+                ? {
+                    ...recipe,
+                    favorite: existing?.favorite ?? false,
+                    createdAt: existing?.createdAt ?? recipe.createdAt,
+                    updatedAt: new Date().toISOString()
+                  }
+                : item
+            )
+          };
+        }
+
+        return {
+          ...current,
+          recipes: [{ ...recipe, favorite: cleanedDraft.tags.includes("favorite") }, ...current.recipes]
+        };
+      });
+
+      applyDraft(emptyDraft());
+      setEditingRecipeId(null);
+      setImportMode("manual");
+      setActiveView("recipes");
+    } catch (error) {
+      const warning = error instanceof Error ? error.message : "The recipe could not be saved.";
+      setDraft((current) => ({ ...current, warnings: Array.from(new Set([...current.warnings, warning])) }));
+    } finally {
+      setImportStatus("");
+    }
   }
 
   function editRecipe(recipe: Recipe) {
@@ -1999,10 +2149,12 @@ export default function Home() {
     if (!user) {
       cloudUserIdRef.current = null;
       cloudLoadedRef.current = false;
+      setCloudLoaded(false);
       setSyncStatus("local");
       return;
     }
 
+    setCloudLoaded(false);
     setSyncStatus("loading");
     const snapshotOwnerId = await resolveSnapshotOwnerForUser(user.id, user.email);
     cloudUserIdRef.current = snapshotOwnerId;
@@ -2078,13 +2230,14 @@ export default function Home() {
 
     if (!data?.app_state) {
       cloudLoadedRef.current = true;
+      setCloudLoaded(true);
       setCloudMessage("No cloud snapshot yet. This device will create one automatically.");
       await saveCloudSnapshotForUser(userId, stateRef.current, "Created your cloud snapshot.");
       return;
     }
 
     const hydratedState = hydrateState(data.app_state);
-    window.localStorage.setItem(
+    writeLocalStorage(
       backupStorageKey,
       JSON.stringify({
         backedUpAt: new Date().toISOString(),
@@ -2094,6 +2247,7 @@ export default function Home() {
     );
     suppressNextCloudSaveRef.current = true;
     cloudLoadedRef.current = true;
+    setCloudLoaded(true);
     lastSavedJsonRef.current = JSON.stringify(hydratedState);
     setState(hydratedState);
     setSyncStatus("saved");
@@ -2196,6 +2350,7 @@ export default function Home() {
         {activeView === "recipes" && (
           <RecipeLibrary
             recipes={filteredRecipes}
+            recipeImageUrls={recipeImageUrls}
             recipeSearch={recipeSearch}
             setRecipeSearch={setRecipeSearch}
             recipeGroupFilter={recipeGroupFilter}
@@ -2234,6 +2389,7 @@ export default function Home() {
 	            onPhotoChange={handlePhotoChange}
             draft={draft}
             setDraft={setDraft}
+            storedMealImageUrl={editingRecipeId ? recipeImageUrls[editingRecipeId] : undefined}
             ingredientAliases={state.settings.ingredientAliases}
             savedShoppingNameVariants={state.settings.shoppingNameVariants}
             tagInput={tagInput}
@@ -2342,6 +2498,7 @@ export default function Home() {
         {selectedRecipe && (
           <RecipeDetailModal
             recipe={selectedRecipe}
+            imageUrl={recipeImageUrls[selectedRecipe.id] ?? selectedRecipe.mealImageUrl}
             onClose={() => setSelectedRecipeId(null)}
             onEditRecipe={(recipe) => {
               setSelectedRecipeId(null);
@@ -2698,6 +2855,7 @@ function PlannerView({
 
 function RecipeLibrary({
   recipes,
+  recipeImageUrls,
   recipeSearch,
   setRecipeSearch,
   recipeGroupFilter,
@@ -2711,6 +2869,7 @@ function RecipeLibrary({
   onOpenRecipe
 }: {
   recipes: Recipe[];
+  recipeImageUrls: Record<string, string>;
   recipeSearch: string;
   setRecipeSearch: (value: string) => void;
   recipeGroupFilter: RecipeGroupFilter;
@@ -2761,7 +2920,9 @@ function RecipeLibrary({
               title={`View ${recipe.title}`}
               onClick={() => onOpenRecipe(recipe.id)}
             >
-              {recipe.mealImageUrl ? <img src={recipe.mealImageUrl} alt="" /> : null}
+              {recipeImageUrls[recipe.id] || recipe.mealImageUrl ? (
+                <img src={recipeImageUrls[recipe.id] ?? recipe.mealImageUrl} alt="" />
+              ) : null}
               {recipe.favorite && <Star size={20} fill="currentColor" />}
             </button>
             <div className="recipe-body">
@@ -2928,10 +3089,12 @@ function RecipePickerButton({
 
 function RecipeDetailModal({
   recipe,
+  imageUrl,
   onClose,
   onEditRecipe
 }: {
   recipe: Recipe;
+  imageUrl?: string;
   onClose: () => void;
   onEditRecipe: (recipe: Recipe) => void;
 }) {
@@ -2957,7 +3120,7 @@ function RecipeDetailModal({
           </div>
         </div>
 
-        {recipe.mealImageUrl ? <img className="recipe-detail-image" src={recipe.mealImageUrl} alt={recipe.title} /> : null}
+        {imageUrl ? <img className="recipe-detail-image" src={imageUrl} alt={recipe.title} /> : null}
 
         <div className="recipe-meta-row">
           <span>
@@ -3035,6 +3198,7 @@ function AddRecipeView({
   onPhotoChange,
   draft,
   setDraft,
+  storedMealImageUrl,
   ingredientAliases,
   savedShoppingNameVariants,
   tagInput,
@@ -3075,6 +3239,7 @@ function AddRecipeView({
   onPhotoChange: (file: File | null) => void;
   draft: ImportDraft;
   setDraft: (draft: ImportDraft | ((current: ImportDraft) => ImportDraft)) => void;
+  storedMealImageUrl?: string;
   ingredientAliases: Record<string, string>;
   savedShoppingNameVariants: Record<string, string[]>;
   tagInput: string;
@@ -3089,7 +3254,7 @@ function AddRecipeView({
   onMoveOcrLineToIngredients: (line: string) => void;
   onMoveOcrLineToMethod: (line: string) => void;
   onNewManual: () => void;
-  onSaveDraft: () => void;
+  onSaveDraft: () => void | Promise<void>;
   onUpdateIngredient: (id: string, patch: Partial<Ingredient>) => void;
   onRememberShoppingName: (ingredientName: string, shoppingName: string) => void;
   onAddIngredient: () => void;
@@ -3099,6 +3264,7 @@ function AddRecipeView({
   onRemoveInstruction: (index: number) => void;
 }) {
   const [mealImageStatus, setMealImageStatus] = useState("");
+  const mealImagePreview = draft.mealImageUrl ?? (draft.mealImagePath ? storedMealImageUrl : undefined);
   const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
   const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
   const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
@@ -3112,7 +3278,7 @@ function AddRecipeView({
     setMealImageStatus("Preparing picture...");
     try {
       const mealImageUrl = await prepareMealImage(file);
-      setDraft((current) => ({ ...current, mealImageUrl }));
+      setDraft((current) => ({ ...current, mealImageUrl, mealImagePath: undefined }));
       setMealImageStatus("Picture ready");
     } catch (error) {
       setMealImageStatus(error instanceof Error ? error.message : "The picture could not be added.");
@@ -3283,9 +3449,13 @@ function AddRecipeView({
             <p className="eyebrow">Review before save</p>
             <h2>{draft.title || "Untitled recipe"}</h2>
           </div>
-          <button className="primary-button" onClick={onSaveDraft} disabled={!draft.title.trim() || draft.ingredients.every((ingredient) => !ingredient.name.trim())}>
-            <Check size={18} />
-            {editingRecipeId ? "Update recipe" : "Save recipe"}
+          <button
+            className="primary-button"
+            onClick={() => void onSaveDraft()}
+            disabled={Boolean(importStatus) || !draft.title.trim() || draft.ingredients.every((ingredient) => !ingredient.name.trim())}
+          >
+            {importStatus === "Saving recipe..." ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
+            {importStatus === "Saving recipe..." ? "Saving..." : editingRecipeId ? "Update recipe" : "Save recipe"}
           </button>
         </div>
 
@@ -3343,12 +3513,12 @@ function AddRecipeView({
         <div className="editor-section">
           <div className="section-heading">
             <h3>Meal picture</h3>
-            {draft.mealImageUrl ? (
+            {mealImagePreview ? (
               <button
                 className="icon-text-button danger"
                 type="button"
                 onClick={() => {
-                  setDraft((current) => ({ ...current, mealImageUrl: undefined }));
+                  setDraft((current) => ({ ...current, mealImageUrl: undefined, mealImagePath: undefined }));
                   setMealImageStatus("");
                 }}
               >
@@ -3358,8 +3528,8 @@ function AddRecipeView({
             ) : null}
           </div>
           <div className="meal-image-editor" tabIndex={0} onPaste={handleMealImagePaste}>
-            {draft.mealImageUrl ? (
-              <img src={draft.mealImageUrl} alt="Meal preview" />
+            {mealImagePreview ? (
+              <img src={mealImagePreview} alt="Meal preview" />
             ) : (
               <div className="meal-image-empty">
                 <ImagePlus size={30} />
