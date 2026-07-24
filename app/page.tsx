@@ -19,6 +19,7 @@ import {
   ListChecks,
   Loader2,
   Minus,
+  Pencil,
   Plus,
   Printer,
   RefreshCw,
@@ -2007,14 +2008,30 @@ export default function Home() {
   }
 
   function updateManualShoppingItem(id: string, patch: Partial<ShoppingListItem>) {
-    updateState((current) => ({
-      ...current,
-      manualShoppingItems: mergeManualShoppingItems(
-        current.manualShoppingItems.map((item) =>
-          item.id === id ? { ...item, ...patch, manual: true } : item
+    updateState((current) => {
+      const existingItem = current.manualShoppingItems.find((item) => item.id === id);
+      const asdaProductLinks = { ...current.asdaProductLinks };
+
+      if (existingItem && patch.name?.trim()) {
+        const previousKey = shoppingPreferenceKey(existingItem);
+        const nextKey = shoppingPreferenceKey({ name: patch.name.trim() });
+        const rememberedProductUrl = asdaProductLinks[previousKey];
+
+        if (nextKey && previousKey !== nextKey && rememberedProductUrl && !asdaProductLinks[nextKey]) {
+          asdaProductLinks[nextKey] = rememberedProductUrl;
+        }
+      }
+
+      return {
+        ...current,
+        asdaProductLinks,
+        manualShoppingItems: mergeManualShoppingItems(
+          current.manualShoppingItems.map((item) =>
+            item.id === id ? { ...item, ...patch, manual: true } : item
+          )
         )
-      )
-    }));
+      };
+    });
   }
 
   function deleteShoppingItem(item: ShoppingListItem) {
@@ -3872,7 +3889,14 @@ function ShoppingView({
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
-  const manualItemCount = items.filter((item) => item.manual).length;
+  const manualItems = items
+    .filter((item) => item.manual)
+    .sort((first, second) => {
+      const categoryDifference = groceryCategories.indexOf(first.category) - groceryCategories.indexOf(second.category);
+      return categoryDifference || first.name.localeCompare(second.name);
+    });
+  const manualItemKeys = new Set(manualItems.map((item) => shoppingPreferenceKey(item)));
+  const manualItemCount = manualItems.length;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const grouped = groceryCategories
     .map((category) => ({
@@ -4007,115 +4031,169 @@ function ShoppingView({
         </button>
       </div>
 
-      <form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
-        <textarea
-          value={manualBulkItems}
-          onChange={(event) => setManualBulkItems(event.target.value)}
-          placeholder={"Milk\n2 onions\nBread"}
-          rows={3}
-        />
-        <button className="primary-button" type="submit">
-          <Plus size={18} />
-          Add list
-        </button>
-      </form>
-
-      <section className="common-extra-panel">
-        <div className="section-heading">
-          <h3>Common extras</h3>
-          {editingCommonExtras ? (
-            <div className="button-row">
-              <button
-                className="text-button"
-                type="button"
-                onClick={() => {
-                  setCommonExtrasDraft(settings.commonExtraItems);
-                  setEditingCommonExtras(false);
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                className="primary-button compact-button"
-                type="button"
-                onClick={() => {
-                  onUpdateCommonExtras(commonExtrasDraft);
-                  setEditingCommonExtras(false);
-                }}
-              >
-                <Check size={16} />
-                Save
-              </button>
-            </div>
-          ) : (
-            <button
-              className="icon-text-button"
-              type="button"
-              onClick={() => {
-                setCommonExtrasDraft(settings.commonExtraItems);
-                setEditingCommonExtras(true);
-              }}
-            >
-              <Settings size={16} />
-              Manage
+      <div className="extra-items-layout">
+        <div className="extra-items-entry">
+          <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>
+            <input value={manualItemName} onChange={(event) => setManualItemName(event.target.value)} placeholder="Add extra item" />
+            <input value={manualItemQuantity} onChange={(event) => setManualItemQuantity(event.target.value)} placeholder="Quantity" />
+            <select value={manualItemCategory} onChange={(event) => setManualItemCategory(event.target.value as ManualItemCategory)}>
+              <option value="Auto">Auto category</option>
+              {groceryCategories.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+            <button className="primary-button" type="submit">
+              <Plus size={18} />
+              Add
             </button>
-          )}
-        </div>
-        {editingCommonExtras ? (
-          <div className="common-extra-editor">
-            {commonExtrasDraft.map((itemName, index) => (
-              <div className="common-extra-editor-row" key={index}>
-                <input
-                  aria-label={`Common extra ${index + 1}`}
-                  value={itemName}
-                  onChange={(event) =>
-                    setCommonExtrasDraft((current) => current.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))
-                  }
-                  placeholder="Extra item"
-                />
+          </form>
+
+          <form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
+            <textarea
+              value={manualBulkItems}
+              onChange={(event) => setManualBulkItems(event.target.value)}
+              placeholder={"Milk\n2 onions\nBread"}
+              rows={3}
+            />
+            <button className="primary-button" type="submit">
+              <Plus size={18} />
+              Add list
+            </button>
+          </form>
+
+          <section className="common-extra-panel">
+            <div className="section-heading">
+              <h3>Common extras</h3>
+              {editingCommonExtras ? (
+                <div className="button-row">
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => {
+                      setCommonExtrasDraft(settings.commonExtraItems);
+                      setEditingCommonExtras(false);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="primary-button compact-button"
+                    type="button"
+                    onClick={() => {
+                      onUpdateCommonExtras(commonExtrasDraft);
+                      setEditingCommonExtras(false);
+                    }}
+                  >
+                    <Check size={16} />
+                    Save
+                  </button>
+                </div>
+              ) : (
                 <button
-                  className="icon-button danger"
+                  className="icon-text-button"
                   type="button"
-                  title="Remove common extra"
-                  onClick={() => setCommonExtrasDraft((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                  onClick={() => {
+                    setCommonExtrasDraft(settings.commonExtraItems);
+                    setEditingCommonExtras(true);
+                  }}
                 >
-                  <Trash2 size={16} />
+                  <Settings size={16} />
+                  Manage
+                </button>
+              )}
+            </div>
+            {editingCommonExtras ? (
+              <div className="common-extra-editor">
+                {commonExtrasDraft.map((itemName, index) => (
+                  <div className="common-extra-editor-row" key={index}>
+                    <input
+                      aria-label={`Common extra ${index + 1}`}
+                      value={itemName}
+                      onChange={(event) =>
+                        setCommonExtrasDraft((current) => current.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))
+                      }
+                      placeholder="Extra item"
+                    />
+                    <button
+                      className="icon-button danger"
+                      type="button"
+                      title="Remove common extra"
+                      onClick={() => setCommonExtrasDraft((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+                <button className="icon-text-button common-extra-add" type="button" onClick={() => setCommonExtrasDraft((current) => [...current, ""])}>
+                  <Plus size={16} />
+                  Add button
                 </button>
               </div>
-            ))}
-            <button className="icon-text-button common-extra-add" type="button" onClick={() => setCommonExtrasDraft((current) => [...current, ""])}>
-              <Plus size={16} />
-              Add button
-            </button>
-          </div>
-        ) : (
-          <div className="common-extra-list">
-            {settings.commonExtraItems.map((itemName) => (
-              <button className="text-button" type="button" key={itemName} onClick={() => onAddCommonManualItem(itemName)}>
-                <Plus size={15} />
-                {itemName}
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
+            ) : (
+              <div className="common-extra-list">
+                {settings.commonExtraItems.map((itemName) => {
+                  const alreadyAdded = manualItemKeys.has(shoppingPreferenceKey({ name: itemName }));
 
-      <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>
-        <input value={manualItemName} onChange={(event) => setManualItemName(event.target.value)} placeholder="Add extra item" />
-        <input value={manualItemQuantity} onChange={(event) => setManualItemQuantity(event.target.value)} placeholder="Quantity" />
-        <select value={manualItemCategory} onChange={(event) => setManualItemCategory(event.target.value as ManualItemCategory)}>
-          <option value="Auto">Auto category</option>
-          {groceryCategories.map((category) => (
-            <option key={category} value={category}>
-              {category}
-            </option>
-          ))}
-        </select>
-        <button className="primary-button" type="submit">
-          <Plus size={18} />
-          Add
-        </button>
-      </form>
+                  return (
+                    <button
+                      className={classNames("text-button", alreadyAdded && "active")}
+                      type="button"
+                      key={itemName}
+                      onClick={() => onAddCommonManualItem(itemName)}
+                    >
+                      {alreadyAdded ? <Check size={15} /> : <Plus size={15} />}
+                      {itemName}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <section className="added-extra-panel" aria-live="polite">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Already added</p>
+              <h3>{manualItemCount} extras</h3>
+            </div>
+          </div>
+          {manualItems.length ? (
+            <div className="added-extra-list">
+              {manualItems.map((item) => {
+                const hasSavedProduct = Boolean(asdaProductLinks[shoppingPreferenceKey(item)]);
+
+                return (
+                  <div className={classNames("added-extra-row", item.checked && "checked")} key={item.id}>
+                    <div className="added-extra-copy">
+                      <strong>{[item.displayQuantity, item.name].filter(Boolean).join(" ")}</strong>
+                      <div className="added-extra-meta">
+                        <span>{item.category}</span>
+                        {hasSavedProduct ? (
+                          <span className="saved-product-indicator">
+                            <Link size={13} />
+                            Asda product saved
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <button className="icon-button" type="button" title={`Edit ${item.name}`} onClick={() => setEditingManualItemId(item.id)}>
+                      <Pencil size={16} />
+                    </button>
+                    <button className="icon-button danger" type="button" title={`Delete ${item.name}`} onClick={() => onDeleteItem(item)}>
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted added-extra-empty">Items added individually, as a list, or with the common buttons will appear here.</p>
+          )}
+        </section>
+      </div>
 
       <section className="asda-shop-panel">
         <div className="section-heading">

@@ -1369,6 +1369,18 @@ h3 {
   gap: 12px;
 }
 
+.extra-items-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.extra-items-entry {
+  display: grid;
+  gap: 12px;
+}
+
 .single-manual-add {
   grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.4fr) minmax(150px, 0.45fr) auto;
 }
@@ -1405,6 +1417,75 @@ h3 {
 .common-extra-list .text-button {
   min-height: 36px;
   min-width: 0;
+}
+
+.common-extra-list .text-button.active {
+  border-color: var(--green);
+  background: var(--mint);
+  color: var(--green-dark);
+}
+
+.added-extra-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.94);
+  box-shadow: var(--shadow);
+}
+
+.added-extra-list {
+  display: grid;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.added-extra-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px 38px;
+  gap: 6px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.added-extra-row:first-child {
+  border-top: 0;
+}
+
+.added-extra-row.checked .added-extra-copy {
+  opacity: 0.62;
+}
+
+.added-extra-copy {
+  min-width: 0;
+}
+
+.added-extra-copy strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.added-extra-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.saved-product-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--green);
+  font-weight: 800;
+}
+
+.added-extra-empty {
+  margin: 0;
 }
 
 .common-extra-editor {
@@ -1846,6 +1927,7 @@ h3 {
   }
 
   .manual-add,
+  .extra-items-layout,
   .cloud-form,
   .manual-meal-form,
   .date-range-controls,
