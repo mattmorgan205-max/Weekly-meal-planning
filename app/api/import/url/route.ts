@@ -9,6 +9,10 @@ import {
 type JsonLdRecipe = {
   "@type"?: string | string[];
   name?: string;
+  image?:
+    | string
+    | { url?: string; contentUrl?: string; "@id"?: string }
+    | Array<string | { url?: string; contentUrl?: string; "@id"?: string }>;
   recipeYield?: string | string[];
   recipeIngredient?: string[];
   recipeInstructions?: Array<string | { text?: string; name?: string; itemListElement?: unknown }> | string;
@@ -32,6 +36,60 @@ function decodeHtml(value: string) {
     .replace(/&ldquo;/g, "\"")
     .replace(/&ndash;/g, "-")
     .replace(/&mdash;/g, "-");
+}
+
+function resolveImageUrl(value: string | undefined, sourceUrl: string) {
+  if (!value) return undefined;
+
+  try {
+    const resolved = new URL(decodeHtml(value.trim()), sourceUrl);
+    return ["http:", "https:"].includes(resolved.protocol) ? resolved.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function imageUrlFromJsonLd(image: JsonLdRecipe["image"], sourceUrl: string): string | undefined {
+  if (Array.isArray(image)) {
+    for (const candidate of image) {
+      const resolved = imageUrlFromJsonLd(candidate, sourceUrl);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
+
+  if (typeof image === "string") return resolveImageUrl(image, sourceUrl);
+  if (!image) return undefined;
+  return resolveImageUrl(image.url ?? image.contentUrl ?? image["@id"], sourceUrl);
+}
+
+function readHtmlAttribute(tag: string, attribute: string) {
+  const quoted = tag.match(new RegExp(`\\b${attribute}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"));
+  if (quoted) return decodeHtml(quoted[2].trim());
+  return decodeHtml(tag.match(new RegExp(`\\b${attribute}\\s*=\\s*([^\\s>]+)`, "i"))?.[1]?.trim() ?? "");
+}
+
+function imageUrlFromPageMetadata(html: string, sourceUrl: string) {
+  const preferredKeys = ["og:image", "og:image:url", "twitter:image", "twitter:image:src"];
+  const metaTags = Array.from(html.matchAll(/<meta\b[^>]*>/gi), (match) => match[0]);
+
+  for (const preferredKey of preferredKeys) {
+    for (const tag of metaTags) {
+      const key = (readHtmlAttribute(tag, "property") || readHtmlAttribute(tag, "name")).toLowerCase();
+      if (key !== preferredKey) continue;
+      const resolved = resolveImageUrl(readHtmlAttribute(tag, "content"), sourceUrl);
+      if (resolved) return resolved;
+    }
+  }
+
+  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = match[0];
+    if (readHtmlAttribute(tag, "rel").toLowerCase() !== "image_src") continue;
+    const resolved = resolveImageUrl(readHtmlAttribute(tag, "href"), sourceUrl);
+    if (resolved) return resolved;
+  }
+
+  return undefined;
 }
 
 function stripHtml(html: string) {
@@ -105,7 +163,7 @@ function normalizeInstruction(step: JsonLdInstruction): string[] {
   return [step.text || step.name || ""].map((line) => line.trim()).filter(Boolean);
 }
 
-function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string): ImportDraft {
+function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string): ImportDraft {
   const yieldText = Array.isArray(recipe.recipeYield) ? recipe.recipeYield[0] : recipe.recipeYield;
   const servings = Number(yieldText?.match(/\d+/)?.[0]) || 4;
   const ingredients = (recipe.recipeIngredient ?? [])
@@ -129,6 +187,7 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string): ImportDraft {
     instructions,
     source: sourceUrl,
     sourceUrl,
+    mealImageUrl: imageUrlFromJsonLd(recipe.image, sourceUrl) ?? imageUrlFromPageMetadata(html, sourceUrl),
     warnings: recipe.recipeIngredient?.length
       ? ["Review the imported recipe before saving it to your library."]
       : ["No structured ingredients were found. Review and add ingredients before saving."],
@@ -222,6 +281,7 @@ function extractDomFallbackDraft(html: string, sourceUrl: string): ImportDraft {
     instructions: methodLines.length > 0 ? methodLines : ["Add cooking instructions."],
     source: sourceUrl,
     sourceUrl,
+    mealImageUrl: imageUrlFromPageMetadata(html, sourceUrl),
     warnings: Array.from(new Set(warnings)),
     importedFrom: "url"
   };
@@ -264,7 +324,7 @@ export async function POST(request: Request) {
     try {
       const parsed = JSON.parse(block[1]);
       const recipe = findRecipeJsonLd(parsed);
-      if (recipe) return Response.json(draftFromJsonLd(recipe, sourceUrl));
+      if (recipe) return Response.json(draftFromJsonLd(recipe, sourceUrl, html));
     } catch {
       continue;
     }

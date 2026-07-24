@@ -33,7 +33,15 @@ import {
   Wand2,
   X
 } from "lucide-react";
-import { type DragEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent,
+  type FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import {
   addDays,
   canonicalizeIngredientName,
@@ -630,6 +638,54 @@ async function prepareRecipePhoto(file: File, cropMode: PhotoCropMode = "whole",
       cropMode,
       rotation: normalizedRotation
     };
+  } finally {
+    loaded.close?.();
+  }
+}
+
+async function prepareMealImage(file: File) {
+  if (!file.type.startsWith("image/") && !likelyHeicPhoto(file)) {
+    throw new Error("Choose an image file.");
+  }
+
+  const loaded = await loadImageSource(file);
+
+  try {
+    const sizeSteps = [1200, 1000, 800];
+    const qualitySteps = [0.82, 0.72, 0.62, 0.52];
+    const targetBytes = 190_000;
+    let smallestBlob: Blob | null = null;
+
+    for (const maxSide of sizeSteps) {
+      const scale = Math.min(1, maxSide / Math.max(loaded.width, loaded.height));
+      const width = Math.max(1, Math.round(loaded.width * scale));
+      const height = Math.max(1, Math.round(loaded.height * scale));
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+
+      if (!context) throw new Error("Image processing is not available in this browser.");
+
+      canvas.width = width;
+      canvas.height = height;
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(loaded.source, 0, 0, loaded.width, loaded.height, 0, 0, width, height);
+
+      for (const quality of qualitySteps) {
+        const blob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(
+            (nextBlob) => (nextBlob ? resolve(nextBlob) : reject(new Error("Meal picture compression failed."))),
+            "image/jpeg",
+            quality
+          );
+        });
+        if (!smallestBlob || blob.size < smallestBlob.size) smallestBlob = blob;
+        if (blob.size <= targetBytes) return fileToDataUrl(blob);
+      }
+    }
+
+    if (!smallestBlob) throw new Error("Meal picture compression failed.");
+    return fileToDataUrl(smallestBlob);
   } finally {
     loaded.close?.();
   }
@@ -1980,6 +2036,7 @@ export default function Home() {
             onDuplicateRecipe={duplicateRecipe}
             onDeleteRecipe={deleteRecipe}
             onToggleFavorite={toggleFavorite}
+            onOpenRecipe={setSelectedRecipeId}
           />
         )}
 
@@ -2367,7 +2424,8 @@ function RecipeLibrary({
   onEditRecipe,
   onDuplicateRecipe,
   onDeleteRecipe,
-  onToggleFavorite
+  onToggleFavorite,
+  onOpenRecipe
 }: {
   recipes: Recipe[];
   recipeSearch: string;
@@ -2380,6 +2438,7 @@ function RecipeLibrary({
   onDuplicateRecipe: (recipe: Recipe) => void;
   onDeleteRecipe: (recipeId: string) => void;
   onToggleFavorite: (recipeId: string) => void;
+  onOpenRecipe: (recipeId: string) => void;
 }) {
   return (
     <div className="view-stack">
@@ -2413,10 +2472,22 @@ function RecipeLibrary({
       <section className="recipe-grid">
         {recipes.map((recipe, index) => (
           <article className="recipe-card" key={recipe.id}>
-            <div className={`recipe-visual visual-${index % 6}`}>{recipe.favorite && <Star size={20} fill="currentColor" />}</div>
+            <button
+              className={`recipe-visual visual-${index % 6}`}
+              type="button"
+              title={`View ${recipe.title}`}
+              onClick={() => onOpenRecipe(recipe.id)}
+            >
+              {recipe.mealImageUrl ? <img src={recipe.mealImageUrl} alt="" /> : null}
+              {recipe.favorite && <Star size={20} fill="currentColor" />}
+            </button>
             <div className="recipe-body">
               <div className="recipe-title-row">
-                <h2>{recipe.title}</h2>
+                <h2>
+                  <button className="recipe-title-button" type="button" onClick={() => onOpenRecipe(recipe.id)}>
+                    {recipe.title}
+                  </button>
+                </h2>
                 <button className="icon-button" title={recipe.favorite ? "Remove favorite" : "Favorite"} onClick={() => onToggleFavorite(recipe.id)}>
                   <Heart size={18} fill={recipe.favorite ? "currentColor" : "none"} />
                 </button>
@@ -2603,6 +2674,8 @@ function RecipeDetailModal({
           </div>
         </div>
 
+        {recipe.mealImageUrl ? <img className="recipe-detail-image" src={recipe.mealImageUrl} alt={recipe.title} /> : null}
+
         <div className="recipe-meta-row">
           <span>
             <Users size={16} />
@@ -2742,14 +2815,53 @@ function AddRecipeView({
   onAddInstruction: () => void;
   onRemoveInstruction: (index: number) => void;
 }) {
-	  const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
-	  const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
-	  const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
-	  const ocrLines = photoRawText
-	    .split(/\r?\n/)
-	    .map((line) => line.trim())
-	    .filter(Boolean)
-	    .slice(0, 40);
+  const [mealImageStatus, setMealImageStatus] = useState("");
+  const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
+  const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
+  const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
+  const ocrLines = photoRawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 40);
+
+  async function useMealImage(file: File) {
+    setMealImageStatus("Preparing picture...");
+    try {
+      const mealImageUrl = await prepareMealImage(file);
+      setDraft((current) => ({ ...current, mealImageUrl }));
+      setMealImageStatus("Picture ready");
+    } catch (error) {
+      setMealImageStatus(error instanceof Error ? error.message : "The picture could not be added.");
+    }
+  }
+
+  async function pasteMealImage() {
+    setMealImageStatus("Reading clipboard...");
+    try {
+      if (!navigator.clipboard?.read) throw new Error("Clipboard images are not available here. Choose the screenshot instead.");
+      const clipboardItems = await navigator.clipboard.read();
+      for (const clipboardItem of clipboardItems) {
+        const imageType = clipboardItem.types.find((type) => type.startsWith("image/"));
+        if (!imageType) continue;
+        const blob = await clipboardItem.getType(imageType);
+        await useMealImage(new File([blob], "meal-screenshot", { type: imageType }));
+        return;
+      }
+      setMealImageStatus("No picture was found on the clipboard.");
+    } catch (error) {
+      setMealImageStatus(error instanceof Error ? error.message : "The clipboard picture could not be added.");
+    }
+  }
+
+  async function handleMealImagePaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    const imageFile = Array.from(event.clipboardData.items)
+      .find((item) => item.type.startsWith("image/"))
+      ?.getAsFile();
+    if (!imageFile) return;
+    event.preventDefault();
+    await useMealImage(imageFile);
+  }
 
   return (
     <div className="split-view">
@@ -2944,6 +3056,55 @@ function AddRecipeView({
             placeholder="URL, cookbook page, magazine, family recipe"
           />
         </label>
+
+        <div className="editor-section">
+          <div className="section-heading">
+            <h3>Meal picture</h3>
+            {draft.mealImageUrl ? (
+              <button
+                className="icon-text-button danger"
+                type="button"
+                onClick={() => {
+                  setDraft((current) => ({ ...current, mealImageUrl: undefined }));
+                  setMealImageStatus("");
+                }}
+              >
+                <Trash2 size={17} />
+                Remove
+              </button>
+            ) : null}
+          </div>
+          <div className="meal-image-editor" tabIndex={0} onPaste={handleMealImagePaste}>
+            {draft.mealImageUrl ? (
+              <img src={draft.mealImageUrl} alt="Meal preview" />
+            ) : (
+              <div className="meal-image-empty">
+                <ImagePlus size={30} />
+                <span>No meal picture</span>
+              </div>
+            )}
+            <div className="meal-image-actions">
+              <label className="icon-text-button">
+                <ImagePlus size={17} />
+                Choose image
+                <input
+                  type="file"
+                  accept="image/*,.heic,.heif"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void useMealImage(file);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+              <button className="icon-text-button" type="button" onClick={() => void pasteMealImage()}>
+                <Clipboard size={17} />
+                Paste screenshot
+              </button>
+            </div>
+            {mealImageStatus ? <span className="meal-image-status">{mealImageStatus}</span> : null}
+          </div>
+        </div>
 
         <div className="editor-section">
           <div className="section-heading">

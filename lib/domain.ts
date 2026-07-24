@@ -37,6 +37,7 @@ export type Recipe = {
   source?: string;
   sourceUrl?: string;
   photoDataUrl?: string;
+  mealImageUrl?: string;
   notes?: string;
   suppressedAutoTags?: string[];
   importedFrom?: "manual" | "paste" | "url" | "photo";
@@ -113,6 +114,7 @@ export type ImportDraft = {
   source?: string;
   sourceUrl?: string;
   photoDataUrl?: string;
+  mealImageUrl?: string;
   rawText?: string;
   suppressedAutoTags?: string[];
   warnings: string[];
@@ -940,6 +942,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     source: draft.source?.trim() || draft.sourceUrl,
     sourceUrl: draft.sourceUrl,
     photoDataUrl: draft.photoDataUrl,
+    mealImageUrl: draft.mealImageUrl,
     suppressedAutoTags: normalizeSuppressedAutomaticTags(draft.suppressedAutoTags),
     importedFrom: draft.importedFrom,
     createdAt: now,
@@ -961,6 +964,7 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     source: recipe.source ?? recipe.sourceUrl,
     sourceUrl: recipe.sourceUrl,
     photoDataUrl: recipe.photoDataUrl,
+    mealImageUrl: recipe.mealImageUrl,
     suppressedAutoTags: normalizeSuppressedAutomaticTags(recipe.suppressedAutoTags),
     warnings: [],
     importedFrom: recipe.importedFrom ?? "manual"
