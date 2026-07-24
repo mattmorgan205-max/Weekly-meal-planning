@@ -132,6 +132,17 @@ type AsdaHelperExtensionMessage = {
 type AsdaHelperWindow = Window & {
   __WEEKWISE_ASDA_QUEUE__?: AsdaHelperQueue;
 };
+type UseUpTarget = {
+  name: string;
+  canonicalName: string;
+};
+type UseUpSuggestion = {
+  recipeIds: string[];
+  coveredIngredients: string[];
+  missingIngredients: string[];
+  extraIngredientCount: number;
+  favoriteCount: number;
+};
 
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
@@ -202,6 +213,7 @@ function hydrateState(value: unknown): AppState {
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople))
       .filter((meal) => meal.recipeId || meal.manualTitle),
     dayNotes: parsed.dayNotes ?? {},
+    useUpIngredients: Array.isArray(parsed.useUpIngredients) ? parsed.useUpIngredients.filter((item): item is string => typeof item === "string") : [],
     settings: {
       ...seeded.settings,
       ...parsed.settings,
@@ -428,6 +440,115 @@ function aliasKeysForIngredientName(name: string) {
   const normalizedName = normalizeIngredientAliasKey(name);
   const simpleSingular = normalizedName.replace(/\b([a-z]{4,})s\b/g, "$1");
   return Array.from(new Set([normalizedName, simpleSingular].filter(Boolean)));
+}
+
+function useUpTargets(values: string[], ingredientAliases: Record<string, string>): UseUpTarget[] {
+  const targets = values
+    .flatMap((value) => value.split(/[,;\n]+/))
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => ({
+      name,
+      canonicalName: canonicalizeIngredientName(name, ingredientAliases).canonicalName
+    }))
+    .filter((target) => target.canonicalName && target.canonicalName !== "other");
+
+  return targets.filter(
+    (target, index) => targets.findIndex((candidate) => candidate.canonicalName === target.canonicalName) === index
+  );
+}
+
+function useUpNamesMatch(targetName: string, recipeIngredientName: string) {
+  if (targetName === recipeIngredientName) return true;
+
+  const interchangeableGroups = [
+    new Set(["onion", "red onion", "white onion"]),
+    new Set(["pepper", "red pepper", "yellow pepper", "green pepper"])
+  ];
+
+  return interchangeableGroups.some((group) => group.has(targetName) && group.has(recipeIngredientName));
+}
+
+function suggestUseUpRecipes(
+  recipes: Recipe[],
+  values: string[],
+  ingredientAliases: Record<string, string>
+): { targets: UseUpTarget[]; suggestions: UseUpSuggestion[] } {
+  const targets = useUpTargets(values, ingredientAliases);
+  if (targets.length === 0) return { targets, suggestions: [] };
+
+  const recipeMatches = recipes
+    .map((recipe) => {
+      const ingredientNames = recipe.ingredients.map((ingredient) =>
+        canonicalizeIngredientName(ingredient.canonicalName || ingredient.name, ingredientAliases).canonicalName
+      );
+      const coveredIngredients = targets
+        .filter((target) => ingredientNames.some((ingredientName) => useUpNamesMatch(target.canonicalName, ingredientName)))
+        .map((target) => target.canonicalName);
+
+      return {
+        recipe,
+        coveredIngredients,
+        extraIngredientCount: Math.max(0, recipe.ingredients.length - coveredIngredients.length)
+      };
+    })
+    .filter((match) => match.coveredIngredients.length > 0)
+    .sort(
+      (a, b) =>
+        b.coveredIngredients.length - a.coveredIngredients.length ||
+        a.extraIngredientCount - b.extraIngredientCount ||
+        Number(b.recipe.favorite) - Number(a.recipe.favorite)
+    )
+    .slice(0, 80);
+
+  const plans: UseUpSuggestion[] = recipeMatches.map((match) => ({
+    recipeIds: [match.recipe.id],
+    coveredIngredients: match.coveredIngredients,
+    missingIngredients: targets
+      .filter((target) => !match.coveredIngredients.includes(target.canonicalName))
+      .map((target) => target.canonicalName),
+    extraIngredientCount: match.extraIngredientCount,
+    favoriteCount: Number(match.recipe.favorite)
+  }));
+
+  for (let firstIndex = 0; firstIndex < recipeMatches.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < recipeMatches.length; secondIndex += 1) {
+      const first = recipeMatches[firstIndex];
+      const second = recipeMatches[secondIndex];
+      const coveredIngredients = Array.from(new Set([...first.coveredIngredients, ...second.coveredIngredients]));
+
+      if (coveredIngredients.length <= Math.max(first.coveredIngredients.length, second.coveredIngredients.length)) continue;
+
+      plans.push({
+        recipeIds: [first.recipe.id, second.recipe.id],
+        coveredIngredients,
+        missingIngredients: targets
+          .filter((target) => !coveredIngredients.includes(target.canonicalName))
+          .map((target) => target.canonicalName),
+        extraIngredientCount: first.extraIngredientCount + second.extraIngredientCount,
+        favoriteCount: Number(first.recipe.favorite) + Number(second.recipe.favorite)
+      });
+    }
+  }
+
+  plans.sort((a, b) => {
+    const aComplete = Number(a.missingIngredients.length === 0);
+    const bComplete = Number(b.missingIngredients.length === 0);
+    return (
+      bComplete - aComplete ||
+      b.coveredIngredients.length - a.coveredIngredients.length ||
+      a.recipeIds.length - b.recipeIds.length ||
+      a.extraIngredientCount - b.extraIngredientCount ||
+      b.favoriteCount - a.favoriteCount
+    );
+  });
+
+  const uniquePlans = plans.filter((plan, index) => {
+    const key = plan.recipeIds.slice().sort().join("|");
+    return plans.findIndex((candidate) => candidate.recipeIds.slice().sort().join("|") === key) === index;
+  });
+
+  return { targets, suggestions: uniquePlans.slice(0, 3) };
 }
 
 function normalizeStoreUrl(value: string) {
@@ -1057,6 +1178,54 @@ export default function Home() {
     }));
     setMealPicker(null);
     setMealPickerQuery("");
+  }
+
+  function planSuggestedRecipes(recipeIds: string[]) {
+    const displayedDates = days.map(formatDateKey);
+    const displayedDateSet = new Set(displayedDates);
+
+    updateState((current) => {
+      const plannedMeals = [...current.plannedMeals];
+      const occupiedSlots = new Set(plannedMeals.map((meal) => `${meal.date}:${meal.slot}`));
+      const alreadyPlannedRecipeIds = new Set(
+        plannedMeals
+          .filter((meal) => displayedDateSet.has(meal.date) && meal.recipeId)
+          .map((meal) => meal.recipeId as string)
+      );
+
+      recipeIds.forEach((recipeId) => {
+        if (alreadyPlannedRecipeIds.has(recipeId)) return;
+        const recipe = current.recipes.find((item) => item.id === recipeId);
+        if (!recipe) return;
+
+        const recipeSlots = normalizeMealTypes(recipe.mealTypes).filter((slot) => !current.settings.hiddenSlots.includes(slot));
+        const candidateSlots = recipeSlots.length > 0 ? recipeSlots : visibleSlots.length > 0 ? visibleSlots : ["dinner" as MealSlot];
+        let target: { date: string; slot: MealSlot } | null = null;
+
+        for (const date of displayedDates) {
+          const availableSlot = candidateSlots.find((slot) => !occupiedSlots.has(`${date}:${slot}`));
+          if (availableSlot) {
+            target = { date, slot: availableSlot };
+            break;
+          }
+        }
+
+        const fallbackDate = displayedDates[plannedMeals.length % Math.max(1, displayedDates.length)] ?? formatDateKey(new Date());
+        const selectedTarget = target ?? { date: fallbackDate, slot: candidateSlots[0] };
+        plannedMeals.push({
+          id: createId("meal"),
+          date: selectedTarget.date,
+          slot: selectedTarget.slot,
+          recipeId,
+          peopleCount: current.settings.defaultPeople,
+          notes: "Uses food already at home"
+        });
+        occupiedSlots.add(`${selectedTarget.date}:${selectedTarget.slot}`);
+        alreadyPlannedRecipeIds.add(recipeId);
+      });
+
+      return { ...current, plannedMeals };
+    });
   }
 
   function addManualPlannedMeal(date: string, slot: MealSlot, title: string) {
@@ -1998,7 +2167,10 @@ export default function Home() {
             plannedMeals={state.plannedMeals}
             visibleSlots={visibleSlots}
             recipeFrequencies={recipeFrequencies}
+            useUpIngredients={state.useUpIngredients}
+            ingredientAliases={state.settings.ingredientAliases}
             onAddMeal={addPlannedMeal}
+            onPlanSuggestedRecipes={planSuggestedRecipes}
             onMoveMeal={movePlannedMeal}
             onRemoveMeal={removePlannedMeal}
             onUpdateMeal={updatePlannedMeal}
@@ -2012,6 +2184,9 @@ export default function Home() {
             onSetPlannerStart={setWeekStart}
             onSetPlannerDayCount={setPlannerDayCount}
             onUpdateDayNote={updateDayNote}
+            onUpdateUseUpIngredients={(value) =>
+              updateState((current) => ({ ...current, useUpIngredients: value.split(/\r?\n/) }))
+            }
             onThisWeek={() => setWeekStart(formatDateKey(startOfWeek(new Date())))}
             onDuplicateWeek={duplicateWeekToNext}
             onClearWeek={clearWeek}
@@ -2209,7 +2384,10 @@ function PlannerView({
   plannedMeals,
   visibleSlots,
   recipeFrequencies,
+  useUpIngredients,
+  ingredientAliases,
   onAddMeal,
+  onPlanSuggestedRecipes,
   onMoveMeal,
   onRemoveMeal,
   onUpdateMeal,
@@ -2220,6 +2398,7 @@ function PlannerView({
   onSetPlannerStart,
   onSetPlannerDayCount,
   onUpdateDayNote,
+  onUpdateUseUpIngredients,
   onThisWeek,
   onDuplicateWeek,
   onClearWeek
@@ -2232,7 +2411,10 @@ function PlannerView({
   plannedMeals: AppState["plannedMeals"];
   visibleSlots: MealSlot[];
   recipeFrequencies: Record<string, number>;
+  useUpIngredients: string[];
+  ingredientAliases: Record<string, string>;
   onAddMeal: (date: string, slot: MealSlot, recipeId: string) => void;
+  onPlanSuggestedRecipes: (recipeIds: string[]) => void;
   onMoveMeal: (id: string, date: string, slot: MealSlot) => void;
   onRemoveMeal: (id: string) => void;
   onUpdateMeal: (id: string, patch: Partial<AppState["plannedMeals"][number]>) => void;
@@ -2243,12 +2425,19 @@ function PlannerView({
   onSetPlannerStart: (date: string) => void;
   onSetPlannerDayCount: (dayCount: 7 | 14) => void;
   onUpdateDayNote: (date: string, note: string) => void;
+  onUpdateUseUpIngredients: (value: string) => void;
   onThisWeek: () => void;
   onDuplicateWeek: () => void;
   onClearWeek: () => void;
 }) {
   const [dragOverSlot, setDragOverSlot] = useState<string | null>(null);
   const endDate = formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount - 1));
+  const useUpText = useUpIngredients.join("\n");
+  const useUpRecommendations = useMemo(
+    () => suggestUseUpRecipes(recipes, useUpIngredients, ingredientAliases),
+    [ingredientAliases, recipes, useUpIngredients]
+  );
+  const displayedDateKeys = new Set(days.map(formatDateKey));
 
   function handleDrop(event: DragEvent<HTMLDivElement>, date: string, slot: MealSlot) {
     event.preventDefault();
@@ -2294,6 +2483,100 @@ function PlannerView({
             <CircleOff size={18} />
             Clear
           </button>
+        </div>
+      </section>
+
+      <section className="use-up-planner">
+        <div className="use-up-heading">
+          <div>
+            <p className="eyebrow">Use what is already at home</p>
+            <h2>Plan meals around food to use up</h2>
+          </div>
+          {useUpText.trim() ? (
+            <button className="ghost-danger" type="button" onClick={() => onUpdateUseUpIngredients("")}>
+              <Trash2 size={17} />
+              Clear list
+            </button>
+          ) : null}
+        </div>
+
+        <div className="use-up-layout">
+          <label className="use-up-input">
+            Food to use up
+            <textarea
+              value={useUpText}
+              onChange={(event) => onUpdateUseUpIngredients(event.target.value)}
+              placeholder={"Spinach\n2 carrots\nHalf a bunch of coriander"}
+              rows={5}
+            />
+          </label>
+
+          <div className="use-up-results">
+            {!useUpText.trim() ? (
+              <div className="use-up-empty">
+                <Sparkles size={22} />
+                <span>Add ingredients to see the best one- or two-meal match.</span>
+              </div>
+            ) : useUpRecommendations.suggestions.length === 0 ? (
+              <div className="use-up-empty">
+                <Search size={22} />
+                <span>No saved recipe currently matches these ingredients.</span>
+              </div>
+            ) : (
+              useUpRecommendations.suggestions.map((suggestion, index) => {
+                const suggestionRecipes = suggestion.recipeIds
+                  .map((recipeId) => recipes.find((recipe) => recipe.id === recipeId))
+                  .filter((recipe): recipe is Recipe => Boolean(recipe));
+                const plannedRecipeIds = new Set(
+                  plannedMeals
+                    .filter((meal) => meal.recipeId && displayedDateKeys.has(meal.date))
+                    .map((meal) => meal.recipeId as string)
+                );
+                const allPlanned = suggestion.recipeIds.every((recipeId) => plannedRecipeIds.has(recipeId));
+                const somePlanned = suggestion.recipeIds.some((recipeId) => plannedRecipeIds.has(recipeId));
+
+                return (
+                  <article className={classNames("use-up-suggestion", index === 0 && "best-match")} key={suggestion.recipeIds.join("|")}>
+                    <div className="use-up-suggestion-heading">
+                      <span>{index === 0 ? "Best match" : "Alternative"}</span>
+                      <strong>
+                        {suggestion.missingIngredients.length === 0
+                          ? `Uses all ${suggestion.coveredIngredients.length}`
+                          : `Uses ${suggestion.coveredIngredients.length} of ${useUpRecommendations.targets.length}`}
+                      </strong>
+                    </div>
+                    <div className="use-up-recipe-links">
+                      {suggestionRecipes.map((recipe) => (
+                        <button type="button" key={recipe.id} onClick={() => onOpenRecipe(recipe.id)}>
+                          {recipe.title}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="use-up-coverage">
+                      {suggestion.coveredIngredients.map((ingredient) => (
+                        <span key={ingredient}>
+                          <Check size={13} />
+                          {ingredient}
+                        </span>
+                      ))}
+                    </div>
+                    {suggestion.missingIngredients.length > 0 ? (
+                      <small>Still to use: {suggestion.missingIngredients.join(", ")}</small>
+                    ) : null}
+                    <button
+                      className="primary-button"
+                      type="button"
+                      disabled={allPlanned}
+                      onClick={() => onPlanSuggestedRecipes(suggestion.recipeIds)}
+                    >
+                      <CalendarDays size={17} />
+                      {allPlanned ? "Added to planner" : somePlanned ? "Add remaining meal" : `Add ${suggestion.recipeIds.length === 1 ? "meal" : "both meals"}`}
+                    </button>
+                  </article>
+                );
+              })
+            )}
+          </div>
         </div>
       </section>
 

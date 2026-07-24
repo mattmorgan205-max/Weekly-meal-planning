@@ -125,6 +125,7 @@ export type AppState = {
   recipes: Recipe[];
   plannedMeals: PlannedMeal[];
   dayNotes: Record<string, string>;
+  useUpIngredients: string[];
   shoppingChecks: Record<string, boolean>;
   hiddenShoppingItems: Record<string, boolean>;
   manualShoppingItems: ShoppingListItem[];
@@ -323,7 +324,21 @@ const unitConversions: Record<string, { family: string; base: string; factor: nu
 };
 
 const ingredientCleanupWords =
-  /\b(sliced|fresh|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|cooked|uncooked|raw|extra|virgin|dried|freshly|toasted|halved|quartered|thinly|thickly|boneless|skinless)\b/g;
+  /\b(sliced|chopped|diced|minced|cubed|shredded|fresh|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|cooked|uncooked|raw|extra|virgin|dried|freshly|toasted|halved|quartered|thinly|thickly|boneless|skinless|washed|trimmed|deseeded|seeded|softened|melted|divided)\b/g;
+const ingredientContainerWords =
+  /\b(?:bunch(?:es)?|pack(?:s|ets)?|packet(?:s)?|can(?:s)?|tin(?:s)?|jar(?:s)?|bottle(?:s)?|bag(?:s)?|box(?:es)?|head(?:s)?|stalk(?:s)?|sprig(?:s)?|handful(?:s)?|clove(?:s)?|slice(?:s)?|fillet(?:s)?|bulb(?:s)?|sheet(?:s)?|pinch(?:es)?|piece(?:s)?|item(?:s)?)\b(?:\s+of\b)?/g;
+const ingredientAmountWords = /\b(?:a|an|one|some|half|quarter|third|dozen|remaining|leftover|approximately|approx|about)\b/g;
+const ingredientMeasureWords =
+  /\b(?:kg|kilograms?|g|grams?|ml|millilit(?:re|er)s?|l|lit(?:re|er)s?|oz|ounces?|lb|lbs|pounds?|tsp|teaspoons?|tbsp|tablespoons?|cups?)\b/g;
+const preservedCoreIngredientPhrases: Array<{ pattern: RegExp; token: string; value: string }> = [
+  {
+    pattern: /\b(?:chopped|diced|tinned|canned) tomatoes\b|\b(?:tin|can) of tomatoes\b/g,
+    token: "__chopped_tomatoes__",
+    value: "chopped tomatoes"
+  },
+  { pattern: /\b(?:minced beef|ground beef)\b/g, token: "__beef_mince__", value: "beef mince" },
+  { pattern: /\b(?:minced pork|ground pork)\b/g, token: "__pork_mince__", value: "pork mince" }
+];
 
 const ingredientRejectPatterns = [
   /\b(subscribe|newsletter|sign up|login|log in|register|cookie|privacy|terms|advert|advertisement|sponsored|affiliate|copyright|all rights reserved)\b/i,
@@ -471,13 +486,32 @@ export function weekDates(weekStart: string) {
 }
 
 export function normalizeIngredientName(name: string) {
-  return name
+  let normalized = name
     .toLowerCase()
     .replace(/\([^)]*\)/g, "")
-    .replace(/[,.;:]/g, "")
+    .replace(/[,.;:]/g, " ");
+
+  preservedCoreIngredientPhrases.forEach(({ pattern, token }) => {
+    normalized = normalized.replace(pattern, token);
+  });
+
+  normalized = normalized
+    .replace(/\b\d+(?:\.\d+)?\s*(?:kg|g|ml|l|oz|lb|lbs|tsp|tbsp)\b/g, " ")
+    .replace(/\b\d+(?:\.\d+)?(?:\s+\d+\/\d+)?\b/g, " ")
+    .replace(/[¼½¾⅓⅔⅛⅜⅝⅞]/g, " ")
+    .replace(/\bx\b/g, " ")
+    .replace(ingredientContainerWords, " ")
+    .replace(ingredientAmountWords, " ")
+    .replace(ingredientMeasureWords, " ")
     .replace(ingredientCleanupWords, "")
     .replace(/\s+/g, " ")
     .trim();
+
+  preservedCoreIngredientPhrases.forEach(({ token, value }) => {
+    normalized = normalized.replace(token, value);
+  });
+
+  return normalized.replace(/\s+/g, " ").trim();
 }
 
 export function normalizeIngredientAliasKey(name: string) {
@@ -1266,6 +1300,7 @@ export function seedState(): AppState {
       }
     ],
     dayNotes: {},
+    useUpIngredients: [],
     shoppingChecks: {},
     hiddenShoppingItems: {},
     manualShoppingItems: [],
