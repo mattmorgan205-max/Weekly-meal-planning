@@ -1194,7 +1194,9 @@ export function generateShoppingList(
     plannedRecipe.ingredients
       .filter((ingredient) => (ingredient.role ?? "required") === "required" || selectedIngredientIds.has(ingredient.id))
       .forEach((ingredient) => addIngredientToBuckets(ingredient, factor));
-    (meal.extraSideIngredients ?? []).forEach((ingredient) => addIngredientToBuckets(ingredient, 1));
+    (meal.extraSideIngredients ?? [])
+      .filter((ingredient) => ingredient.name.trim())
+      .forEach((ingredient) => addIngredientToBuckets(ingredient, 1));
   });
 
   const generated = Array.from(buckets.values()).map<ShoppingListItem>((bucket) => {

@@ -200,32 +200,60 @@ function hydrateRecipe(recipe: Recipe): Recipe {
   };
 }
 
-function hydratePlannedMeal(meal: AppState["plannedMeals"][number], defaultPeople: number): AppState["plannedMeals"][number] {
+function hydratePlannedMeal(
+  meal: AppState["plannedMeals"][number],
+  defaultPeople: number,
+  recipes: Recipe[]
+): AppState["plannedMeals"][number] {
   const parsedPeopleCount = Number(meal.peopleCount);
+  const peopleCount = Number.isFinite(parsedPeopleCount) ? Math.max(0, parsedPeopleCount) : defaultPeople;
+  const recipe = meal.recipeId ? recipes.find((item) => item.id === meal.recipeId) : undefined;
+  const selectedIngredientIds = Array.isArray(meal.selectedIngredientIds)
+    ? meal.selectedIngredientIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const selectedIdSet = new Set(selectedIngredientIds);
+  const selectedOptionalId = recipe?.ingredients.find(
+    (ingredient) => ingredient.role === "optional" && selectedIdSet.has(ingredient.id)
+  )?.id;
+  const migratedRecipeSides = (recipe?.ingredients ?? [])
+    .filter((ingredient) => ingredient.role === "side" && selectedIdSet.has(ingredient.id))
+    .map((ingredient) => ({
+      ...ingredient,
+      id: `planned_side_${meal.id}_${ingredient.id}`,
+      quantity:
+        typeof ingredient.quantity === "number"
+          ? ingredient.quantity * (peopleCount / Math.max(1, recipe?.servings ?? 1))
+          : undefined,
+      role: "side" as const
+    }));
+  const storedSides = Array.isArray(meal.extraSideIngredients)
+    ? meal.extraSideIngredients
+        .filter((ingredient) => ingredient && typeof ingredient.name === "string" && ingredient.name.trim())
+        .map((ingredient) => ({
+          ...ingredient,
+          role: "side" as const,
+          category: ingredient.category || inferCategory(ingredient.name),
+          canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName
+        }))
+    : [];
+  const storedSideIds = new Set(storedSides.map((ingredient) => ingredient.id));
 
   return {
     ...meal,
-    peopleCount: Number.isFinite(parsedPeopleCount) ? Math.max(0, parsedPeopleCount) : defaultPeople,
+    peopleCount,
     manualTitle: meal.manualTitle?.trim() || undefined,
-    selectedIngredientIds: Array.isArray(meal.selectedIngredientIds)
-      ? meal.selectedIngredientIds.filter((id): id is string => typeof id === "string")
-      : [],
-    extraSideIngredients: Array.isArray(meal.extraSideIngredients)
-      ? meal.extraSideIngredients
-          .filter((ingredient) => ingredient && typeof ingredient.name === "string" && ingredient.name.trim())
-          .map((ingredient) => ({
-            ...ingredient,
-            role: "side",
-            category: ingredient.category || inferCategory(ingredient.name),
-            canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName
-          }))
-      : []
+    selectedIngredientIds: recipe ? (selectedOptionalId ? [selectedOptionalId] : []) : selectedIngredientIds,
+    extraSideIngredients: [
+      ...storedSides,
+      ...migratedRecipeSides.filter((ingredient) => !storedSideIds.has(ingredient.id))
+    ]
   };
 }
 
 function hydrateState(value: unknown): AppState {
   const parsed = (value ?? {}) as Partial<AppState>;
   const seeded = seedState();
+  const recipes = (parsed.recipes ?? seeded.recipes).map(hydrateRecipe);
   const currentWeekStart = formatDateKey(startOfWeek(new Date()));
   const legacyManualItemRangeKey = shoppingRangeKeyForRange({
     startDate: currentWeekStart,
@@ -235,9 +263,9 @@ function hydrateState(value: unknown): AppState {
   return {
     ...seeded,
     ...parsed,
-    recipes: (parsed.recipes ?? seeded.recipes).map(hydrateRecipe),
+    recipes,
     plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
-      .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople))
+      .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople, recipes))
       .filter((meal) => meal.recipeId || meal.manualTitle),
     dayNotes: parsed.dayNotes ?? {},
     useUpIngredients: Array.isArray(parsed.useUpIngredients) ? parsed.useUpIngredients.filter((item): item is string => typeof item === "string") : [],
@@ -1400,30 +1428,10 @@ export default function Home() {
     setTagInput(hydratedDraft.tags.filter((tag) => !isAutomaticRecipeTag(tag)).join(", "));
   }
 
-  function addPlannedMeal(
-    date: string,
-    slot: MealSlot,
-    recipeId: string,
-    selectedIngredientIds: string[] = [],
-    extraSideText = ""
-  ) {
+  function addPlannedMeal(date: string, slot: MealSlot, recipeId: string) {
     if (!recipeId) return;
 
     updateState((current) => {
-      const extraSideIngredients = splitManualShoppingLines(extraSideText).map((line) => {
-        const parsed = parseIngredientLine(line, { strict: false });
-        return {
-          ...parsed,
-          unit: parsed.unit || (typeof parsed.quantity === "number" ? "item" : undefined),
-          role: "side" as const,
-          category: parsed.category || inferCategory(parsed.name),
-          canonicalName:
-            normalizeIngredientAliasKey(parsed.canonicalName ?? "") ||
-            canonicalizeIngredientName(parsed.name, current.settings.ingredientAliases).canonicalName,
-          needsReview: false
-        };
-      });
-
       return {
         ...current,
         plannedMeals: [
@@ -1434,8 +1442,8 @@ export default function Home() {
             slot,
             recipeId,
             peopleCount: current.settings.defaultPeople,
-            selectedIngredientIds: Array.from(new Set(selectedIngredientIds)),
-            extraSideIngredients
+            selectedIngredientIds: [],
+            extraSideIngredients: []
           }
         ]
       };
@@ -1520,7 +1528,7 @@ export default function Home() {
     }));
   }
 
-  function updatePlannedMeal(id: string, patch: Partial<Pick<(typeof state.plannedMeals)[number], "peopleCount" | "notes" | "producesLeftovers" | "leftoverTargetDate">>) {
+  function updatePlannedMeal(id: string, patch: Partial<AppState["plannedMeals"][number]>) {
     const normalizedPatch =
       typeof patch.peopleCount === "number" ? { ...patch, peopleCount: Math.max(0, patch.peopleCount) } : patch;
 
@@ -2487,7 +2495,6 @@ export default function Home() {
             recipeFrequencies={recipeFrequencies}
             useUpIngredients={state.useUpIngredients}
             ingredientAliases={state.settings.ingredientAliases}
-            onAddMeal={addPlannedMeal}
             onPlanSuggestedRecipes={planSuggestedRecipes}
             onMoveMeal={movePlannedMeal}
             onRemoveMeal={removePlannedMeal}
@@ -2654,9 +2661,7 @@ export default function Home() {
             recipeFrequencies={recipeFrequencies}
             query={mealPickerQuery}
             setQuery={setMealPickerQuery}
-            onAdd={(recipeId, selectedIngredientIds, extraSideText) =>
-              addPlannedMeal(mealPicker.date, mealPicker.slot, recipeId, selectedIngredientIds, extraSideText)
-            }
+            onAdd={(recipeId) => addPlannedMeal(mealPicker.date, mealPicker.slot, recipeId)}
             onAddManual={(title) => addManualPlannedMeal(mealPicker.date, mealPicker.slot, title)}
             onClose={() => setMealPicker(null)}
           />
@@ -2710,7 +2715,6 @@ function PlannerView({
   recipeFrequencies,
   useUpIngredients,
   ingredientAliases,
-  onAddMeal,
   onPlanSuggestedRecipes,
   onMoveMeal,
   onRemoveMeal,
@@ -2737,7 +2741,6 @@ function PlannerView({
   recipeFrequencies: Record<string, number>;
   useUpIngredients: string[];
   ingredientAliases: Record<string, string>;
-  onAddMeal: (date: string, slot: MealSlot, recipeId: string) => void;
   onPlanSuggestedRecipes: (recipeIds: string[]) => void;
   onMoveMeal: (id: string, date: string, slot: MealSlot) => void;
   onRemoveMeal: (id: string) => void;
@@ -2947,12 +2950,24 @@ function PlannerView({
                         const recipe = meal.recipeId ? recipes.find((item) => item.id === meal.recipeId) : null;
                         const title = recipe?.title ?? meal.manualTitle;
                         if (!title) return null;
+                        const optionalIngredients = recipe?.ingredients.filter((ingredient) => ingredient.role === "optional") ?? [];
+                        const recipeSideSuggestions = recipe?.ingredients.filter((ingredient) => ingredient.role === "side") ?? [];
+                        const selectedOptionalId = optionalIngredients.find((ingredient) =>
+                          meal.selectedIngredientIds?.includes(ingredient.id)
+                        )?.id ?? "";
+                        const plannedSides = meal.extraSideIngredients ?? [];
+                        const plannedSideNames = new Set(
+                          plannedSides.map((ingredient) => canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName)
+                        );
+                        const availableRecipeSideSuggestions = recipeSideSuggestions.filter(
+                          (ingredient) => !plannedSideNames.has(canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName)
+                        );
                         const selectedOptionNames = recipe
                           ? recipe.ingredients
-                              .filter((ingredient) => meal.selectedIngredientIds?.includes(ingredient.id))
+                              .filter((ingredient) => ingredient.role === "optional" && meal.selectedIngredientIds?.includes(ingredient.id))
                               .map((ingredient) => ingredient.name)
                           : [];
-                        const extraSideNames = (meal.extraSideIngredients ?? []).map((ingredient) => ingredient.name);
+                        const extraSideNames = plannedSides.map((ingredient) => ingredient.name).filter(Boolean);
                         const mealAdditions = [...selectedOptionNames, ...extraSideNames];
                         const mealMeta = recipe
                           ? `${recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}${
@@ -2960,12 +2975,50 @@ function PlannerView({
                             }${mealAdditions.length ? ` · with ${mealAdditions.join(", ")}` : ""}`
                           : meal.notes || "Manual plan";
 
+                        function updatePlannedSide(sideId: string, patch: Partial<Ingredient>) {
+                          const extraSideIngredients = plannedSides.map((ingredient) => {
+                            if (ingredient.id !== sideId) return ingredient;
+                            const nextIngredient = { ...ingredient, ...patch };
+                            if (typeof patch.name === "string") {
+                              nextIngredient.category = inferCategory(patch.name);
+                              nextIngredient.canonicalName = canonicalizeIngredientName(patch.name, ingredientAliases).canonicalName;
+                            }
+                            return nextIngredient;
+                          });
+                          onUpdateMeal(meal.id, { extraSideIngredients });
+                        }
+
+                        function addPlannedSide(source?: Ingredient) {
+                          const factor = recipe ? meal.peopleCount / Math.max(1, recipe.servings) : 1;
+                          const name = source?.name ?? "";
+                          const extraSideIngredients: Ingredient[] = [
+                            ...plannedSides,
+                            {
+                              ...(source ?? {}),
+                              id: createId("planned_side"),
+                              name,
+                              quantity:
+                                typeof source?.quantity === "number" ? source.quantity * factor : 1,
+                              unit: source?.unit || "item",
+                              role: "side",
+                              category: source?.category ?? inferCategory(name),
+                              canonicalName: canonicalizeIngredientName(name, ingredientAliases).canonicalName,
+                              needsReview: false
+                            }
+                          ];
+                          onUpdateMeal(meal.id, { extraSideIngredients });
+                        }
+
                         return (
                           <article
                             className="meal-card"
                             key={meal.id}
                             draggable
                             onDragStart={(event) => {
+                              if ((event.target as HTMLElement).closest("button, input, select, textarea")) {
+                                event.preventDefault();
+                                return;
+                              }
                               event.dataTransfer.effectAllowed = "move";
                               event.dataTransfer.setData("text/plain", meal.id);
                             }}
@@ -2981,6 +3034,112 @@ function PlannerView({
                                 <span>{mealMeta}</span>
                               </div>
                             )}
+                            {recipe ? (
+                              <div className="meal-card-controls">
+                                {optionalIngredients.length > 0 ? (
+                                  <label className="meal-choice-control">
+                                    <span>Meal choice</span>
+                                    <select
+                                      aria-label={`Ingredient choice for ${title}`}
+                                      value={selectedOptionalId}
+                                      onChange={(event) =>
+                                        onUpdateMeal(meal.id, {
+                                          selectedIngredientIds: event.target.value ? [event.target.value] : []
+                                        })
+                                      }
+                                    >
+                                      <option value="">Choose when cooking</option>
+                                      {optionalIngredients.map((ingredient) => (
+                                        <option value={ingredient.id} key={ingredient.id}>
+                                          {ingredient.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                ) : null}
+
+                                <div className="meal-side-editor">
+                                  <div className="meal-side-heading">
+                                    <span>Sides</span>
+                                    <button className="icon-button" type="button" title="Add custom side" onClick={() => addPlannedSide()}>
+                                      <Plus size={15} />
+                                    </button>
+                                  </div>
+
+                                  {availableRecipeSideSuggestions.length > 0 ? (
+                                    <select
+                                      aria-label={`Add a saved side to ${title}`}
+                                      value=""
+                                      onChange={(event) => {
+                                        const suggestion = availableRecipeSideSuggestions.find((ingredient) => ingredient.id === event.target.value);
+                                        if (suggestion) addPlannedSide(suggestion);
+                                      }}
+                                    >
+                                      <option value="">Add saved side...</option>
+                                      {availableRecipeSideSuggestions.map((ingredient) => (
+                                        <option value={ingredient.id} key={ingredient.id}>
+                                          {ingredient.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : null}
+
+                                  {plannedSides.map((ingredient) => (
+                                    <div className="meal-side-row" key={ingredient.id}>
+                                      <label>
+                                        <span>Quantity</span>
+                                        <input
+                                          aria-label={`Quantity for ${ingredient.name || "side"}`}
+                                          type="number"
+                                          min={0}
+                                          step="any"
+                                          value={ingredient.quantity ?? ""}
+                                          onChange={(event) =>
+                                            updatePlannedSide(ingredient.id, {
+                                              quantity: event.target.value === "" ? undefined : Math.max(0, Number(event.target.value))
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                      <label>
+                                        <span>Unit</span>
+                                        <select
+                                          aria-label={`Unit for ${ingredient.name || "side"}`}
+                                          value={ingredient.unit ?? ""}
+                                          onChange={(event) => updatePlannedSide(ingredient.id, { unit: event.target.value || undefined })}
+                                        >
+                                          <option value="">No unit</option>
+                                          {standardIngredientUnits.map((unit) => (
+                                            <option value={unit} key={unit}>{unit}</option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                      <label className="meal-side-name">
+                                        <span>Side</span>
+                                        <input
+                                          aria-label="Side name"
+                                          value={ingredient.name}
+                                          onChange={(event) => updatePlannedSide(ingredient.id, { name: event.target.value })}
+                                          placeholder="e.g. broccoli"
+                                        />
+                                      </label>
+                                      <button
+                                        className="icon-button danger meal-side-remove"
+                                        type="button"
+                                        title="Remove side"
+                                        onClick={() =>
+                                          onUpdateMeal(meal.id, {
+                                            extraSideIngredients: plannedSides.filter((side) => side.id !== ingredient.id)
+                                          })
+                                        }
+                                      >
+                                        <Trash2 size={15} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
                             <div className="meal-actions">
                               <label className="mini-input">
                                 <Users size={15} />
@@ -3149,15 +3308,12 @@ function MealPickerModal({
   recipeFrequencies: Record<string, number>;
   query: string;
   setQuery: (value: string) => void;
-  onAdd: (recipeId: string, selectedIngredientIds: string[], extraSideText: string) => void;
+  onAdd: (recipeId: string) => void;
   onAddManual: (title: string) => void;
   onClose: () => void;
 }) {
   const [selectedGroup, setSelectedGroup] = useState<MealPickerGroup>(target.slot);
   const [manualMealTitle, setManualMealTitle] = useState("");
-  const [selectedRecipeId, setSelectedRecipeId] = useState("");
-  const [selectedIngredientIds, setSelectedIngredientIds] = useState<string[]>([]);
-  const [extraSideText, setExtraSideText] = useState("");
   const groupedRecipes = recipes.filter((recipe) => selectedGroup === "all" || recipe.mealTypes.includes(selectedGroup));
   const frequentRecipes = groupedRecipes.filter((recipe) => (recipeFrequencies[recipe.id] ?? 0) > 0).slice(0, 5);
   const mainRecipes = query.trim()
@@ -3166,20 +3322,6 @@ function MealPickerModal({
       ? groupedRecipes.filter((recipe) => !frequentRecipes.some((frequent) => frequent.id === recipe.id)).slice(0, 10)
       : groupedRecipes.slice(0, 10);
   const selectedGroupLabel = selectedGroup === "all" ? "All meals" : labelMealSlot(selectedGroup);
-  const selectedRecipe = recipes.find((recipe) => recipe.id === selectedRecipeId);
-  const flexibleIngredients = selectedRecipe?.ingredients.filter((ingredient) => (ingredient.role ?? "required") !== "required") ?? [];
-
-  function selectRecipe(recipeId: string) {
-    setSelectedRecipeId(recipeId);
-    setSelectedIngredientIds([]);
-    setExtraSideText("");
-  }
-
-  function toggleSelectedIngredient(ingredientId: string) {
-    setSelectedIngredientIds((current) =>
-      current.includes(ingredientId) ? current.filter((id) => id !== ingredientId) : [...current, ingredientId]
-    );
-  }
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -3231,60 +3373,6 @@ function MealPickerModal({
           </button>
         </form>
 
-        {selectedRecipe ? (
-          <section className="meal-picker-options" aria-live="polite">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Selected recipe</p>
-                <h3>{selectedRecipe.title}</h3>
-              </div>
-              <button className="icon-button" type="button" title="Clear selected recipe" onClick={() => setSelectedRecipeId("")}>
-                <X size={16} />
-              </button>
-            </div>
-
-            {flexibleIngredients.length ? (
-              <div className="meal-option-list">
-                {flexibleIngredients.map((ingredient) => (
-                  <label className="meal-option-row" key={ingredient.id}>
-                    <input
-                      type="checkbox"
-                      checked={selectedIngredientIds.includes(ingredient.id)}
-                      onChange={() => toggleSelectedIngredient(ingredient.id)}
-                    />
-                    <span>
-                      <strong>{ingredient.name}</strong>
-                      <small>
-                        {(ingredient.role ?? "optional") === "side" ? "Side" : "Choice"}
-                        {typeof ingredient.quantity === "number" ? ` · ${ingredient.quantity}${ingredient.unit ? ` ${ingredient.unit}` : ""}` : ""}
-                      </small>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            ) : null}
-
-            <label>
-              Add another side
-              <textarea
-                value={extraSideText}
-                onChange={(event) => setExtraSideText(event.target.value)}
-                placeholder={"1 broccoli\n500 g sweet potato"}
-                rows={2}
-              />
-            </label>
-
-            <button
-              className="primary-button meal-picker-confirm"
-              type="button"
-              onClick={() => onAdd(selectedRecipe.id, selectedIngredientIds, extraSideText)}
-            >
-              <Plus size={18} />
-              Add meal
-            </button>
-          </section>
-        ) : null}
-
         <div className="picker-list">
           {!query.trim() && frequentRecipes.length > 0 && (
             <>
@@ -3294,8 +3382,7 @@ function MealPickerModal({
                   key={recipe.id}
                   recipe={recipe}
                   recipeFrequencies={recipeFrequencies}
-                  selected={selectedRecipeId === recipe.id}
-                  onSelect={selectRecipe}
+                  onSelect={onAdd}
                 />
               ))}
             </>
@@ -3309,8 +3396,7 @@ function MealPickerModal({
               key={recipe.id}
               recipe={recipe}
               recipeFrequencies={recipeFrequencies}
-              selected={selectedRecipeId === recipe.id}
-              onSelect={selectRecipe}
+              onSelect={onAdd}
             />
           ))}
           {groupedRecipes.length === 0 && <p className="muted">No matching meals in this group yet.</p>}
@@ -3323,16 +3409,14 @@ function MealPickerModal({
 function RecipePickerButton({
   recipe,
   recipeFrequencies,
-  selected,
   onSelect
 }: {
   recipe: Recipe;
   recipeFrequencies: Record<string, number>;
-  selected: boolean;
   onSelect: (recipeId: string) => void;
 }) {
   return (
-    <button className={classNames("picker-recipe", selected && "selected")} type="button" onClick={() => onSelect(recipe.id)}>
+    <button className="picker-recipe" type="button" onClick={() => onSelect(recipe.id)}>
       <span>
         <strong>{recipe.title}</strong>
         <small>
@@ -3341,7 +3425,7 @@ function RecipePickerButton({
           {(recipeFrequencies[recipe.id] ?? 0) > 0 ? ` · chosen ${recipeFrequencies[recipe.id]}x` : ""}
         </small>
       </span>
-      {selected ? <Check size={18} /> : <Plus size={18} />}
+      <Plus size={18} />
     </button>
   );
 }

@@ -609,6 +609,69 @@ h3 {
   font-size: 0.83rem;
 }
 
+.meal-card-controls {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(99, 88, 64, 0.18);
+}
+
+.meal-choice-control,
+.meal-side-row label {
+  gap: 4px;
+}
+
+.meal-card-controls label > span,
+.meal-side-heading > span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.meal-card-controls input,
+.meal-card-controls select {
+  min-height: 36px;
+  padding: 7px 8px;
+  font-size: 0.8rem;
+}
+
+.meal-side-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.meal-side-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meal-side-heading .icon-button {
+  width: 34px;
+  min-height: 34px;
+}
+
+.meal-side-row {
+  display: grid;
+  grid-template-columns: minmax(58px, 0.75fr) minmax(70px, 1fr) 34px;
+  gap: 6px;
+  align-items: end;
+  padding-top: 8px;
+  border-top: 1px solid rgba(99, 88, 64, 0.14);
+}
+
+.meal-side-name {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.meal-side-remove {
+  grid-column: 3;
+  grid-row: 1;
+}
+
 .meal-actions,
 .quick-add {
   display: grid;
@@ -944,12 +1007,6 @@ h3 {
   background: var(--mint);
 }
 
-.picker-recipe.selected {
-  border-color: var(--green);
-  background: var(--mint);
-  box-shadow: inset 3px 0 0 var(--green);
-}
-
 .picker-recipe span {
   display: grid;
   gap: 4px;
@@ -957,49 +1014,6 @@ h3 {
 
 .picker-recipe small {
   color: var(--muted);
-}
-
-.meal-picker-options {
-  display: grid;
-  gap: 12px;
-  margin-inline: -18px;
-  padding: 14px 18px;
-  border-block: 1px solid #b9d5c4;
-  background: #eef8f1;
-}
-
-.meal-option-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 16px;
-}
-
-.meal-option-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  padding: 7px 0;
-}
-
-.meal-option-row input {
-  width: 18px;
-  height: 18px;
-  margin-top: 2px;
-  accent-color: var(--green);
-}
-
-.meal-option-row span {
-  display: grid;
-  gap: 2px;
-}
-
-.meal-option-row small {
-  color: var(--muted);
-}
-
-.meal-picker-confirm {
-  justify-self: end;
 }
 
 .recipe-detail-modal {
@@ -2027,9 +2041,6 @@ h3 {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .meal-option-list {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media print {
