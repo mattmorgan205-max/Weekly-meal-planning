@@ -74,10 +74,12 @@ import {
   standardIngredientUnits,
   standardizeIngredientQuantity,
   totalRecipeMinutes,
+  type AsdaProductSelection,
   type AppState,
   type GroceryCategory,
   type ImportDraft,
   type Ingredient,
+  type IngredientRole,
   type MealSlot,
   type Recipe,
   type ShoppingListItem,
@@ -108,6 +110,10 @@ type AsdaHelperQueueItem = {
   sourceIngredients?: string[];
   avoidTerms?: string[];
   savedProductUrl: string;
+  savedProductName?: string;
+  savedPackSizeText?: string;
+  savedPackQuantity?: number;
+  savedPackUnit?: string;
   searchUrl: string;
   status?: StoreShoppingStatus;
 };
@@ -127,6 +133,10 @@ type AsdaHelperExtensionMessage = {
     shoppingKey?: string;
     statusKey?: string;
     productUrl?: string;
+    productName?: string;
+    packSizeText?: string;
+    packQuantity?: number;
+    packUnit?: string;
     status?: StoreShoppingStatus;
   };
 };
@@ -181,7 +191,8 @@ function hydrateRecipe(recipe: Recipe): Recipe {
         quantity: standardized.quantity,
         unit: standardized.unit,
         canonicalName: shouldUpgradeBroadName ? suggestedShoppingName : storedShoppingName || suggestedShoppingName,
-        needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+        needsReview: ingredient.needsReview ?? ingredient.confidence === "low",
+        role: ingredient.role === "optional" || ingredient.role === "side" ? ingredient.role : "required"
       };
     }),
     source: recipe.source ?? recipe.sourceUrl,
@@ -195,7 +206,20 @@ function hydratePlannedMeal(meal: AppState["plannedMeals"][number], defaultPeopl
   return {
     ...meal,
     peopleCount: Number.isFinite(parsedPeopleCount) ? Math.max(0, parsedPeopleCount) : defaultPeople,
-    manualTitle: meal.manualTitle?.trim() || undefined
+    manualTitle: meal.manualTitle?.trim() || undefined,
+    selectedIngredientIds: Array.isArray(meal.selectedIngredientIds)
+      ? meal.selectedIngredientIds.filter((id): id is string => typeof id === "string")
+      : [],
+    extraSideIngredients: Array.isArray(meal.extraSideIngredients)
+      ? meal.extraSideIngredients
+          .filter((ingredient) => ingredient && typeof ingredient.name === "string" && ingredient.name.trim())
+          .map((ingredient) => ({
+            ...ingredient,
+            role: "side",
+            category: ingredient.category || inferCategory(ingredient.name),
+            canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName
+          }))
+      : []
   };
 }
 
@@ -232,6 +256,7 @@ function hydrateState(value: unknown): AppState {
       category: item.category === "Other" ? inferCategory(item.name) : item.category
     })),
     asdaProductLinks: parsed.asdaProductLinks ?? {},
+    asdaProductSelections: parsed.asdaProductSelections ?? {},
     asdaShoppingStatus: parsed.asdaShoppingStatus ?? {}
   };
 }
@@ -271,7 +296,8 @@ function emptyDraft(): ImportDraft {
         unit: "",
         category: "Other",
         canonicalName: "",
-        confidence: "medium"
+        confidence: "medium",
+        role: "required"
       }
     ],
     instructions: [""],
@@ -411,6 +437,71 @@ function asdaAvoidTerms(item: Pick<ShoppingListItem, "canonicalName" | "name">) 
   };
 
   return avoidTermsByName[canonicalName] ?? [];
+}
+
+const approximateProduceWeightGrams: Record<string, number> = {
+  apple: 150,
+  banana: 120,
+  broccoli: 350,
+  carrot: 80,
+  courgette: 200,
+  cucumber: 300,
+  lemon: 100,
+  lime: 70,
+  onion: 150,
+  "red onion": 150,
+  "white onion": 150,
+  pepper: 160,
+  potato: 175,
+  "sweet potato": 250
+};
+
+type PurchaseQuantity = { quantity: number; family: "mass" | "volume" | "count"; unit: "g" | "ml" | "item" };
+
+function comparablePurchaseQuantity(quantity?: number, unit?: string): PurchaseQuantity | null {
+  if (typeof quantity !== "number" || !Number.isFinite(quantity) || quantity <= 0) return null;
+  const normalizedUnit = normalizeUnit(unit);
+
+  if (normalizedUnit === "kg") return { quantity: quantity * 1000, family: "mass", unit: "g" };
+  if (normalizedUnit === "g") return { quantity, family: "mass", unit: "g" };
+  if (normalizedUnit === "l") return { quantity: quantity * 1000, family: "volume", unit: "ml" };
+  if (normalizedUnit === "ml") return { quantity, family: "volume", unit: "ml" };
+  if (!normalizedUnit || ["item", "pack", "can", "jar", "bottle", "bunch", "head"].includes(normalizedUnit)) {
+    return { quantity, family: "count", unit: "item" };
+  }
+
+  return null;
+}
+
+function formatPackQuantity(quantity: number, unit: string) {
+  if (unit === "g" && quantity >= 1000) return `${Number((quantity / 1000).toFixed(2))} kg`;
+  if (unit === "ml" && quantity >= 1000) return `${Number((quantity / 1000).toFixed(2))} l`;
+  return `${Number(quantity.toFixed(2))} ${unit}`;
+}
+
+function asdaPurchaseSummary(item: ShoppingListItem, selection?: AsdaProductSelection) {
+  if (!selection) return null;
+  const required = comparablePurchaseQuantity(item.quantity, item.unit);
+  const offered = comparablePurchaseQuantity(selection.packQuantity, selection.packUnit);
+  if (!required || !offered) return null;
+
+  let comparableRequired = required;
+  let estimated = false;
+  if (required.family !== offered.family) {
+    const canonicalName = canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
+    const approximateWeight = approximateProduceWeightGrams[canonicalName];
+    if (required.family !== "count" || offered.family !== "mass" || !approximateWeight) return null;
+    comparableRequired = { quantity: required.quantity * approximateWeight, family: "mass", unit: "g" };
+    estimated = true;
+  }
+
+  const packCount = Math.max(1, Math.ceil(comparableRequired.quantity / offered.quantity));
+  const packSize = selection.packSizeText?.trim() || formatPackQuantity(offered.quantity, offered.unit);
+  return {
+    packCount,
+    display: `${packCount} x ${packSize}`,
+    estimated
+  };
 }
 
 const builtInShoppingNameVariantGroups: Record<string, string[]> = {
@@ -1233,16 +1324,31 @@ export default function Home() {
       const shoppingKey = typeof payload.shoppingKey === "string" ? payload.shoppingKey : "";
       const statusKey = typeof payload.statusKey === "string" ? payload.statusKey : "";
       const itemId = typeof payload.itemId === "string" ? payload.itemId : "";
+      const productName = typeof payload.productName === "string" ? payload.productName.trim() : "";
+      const packSizeText = typeof payload.packSizeText === "string" ? payload.packSizeText.trim() : "";
+      const packQuantity = typeof payload.packQuantity === "number" && Number.isFinite(payload.packQuantity) ? payload.packQuantity : undefined;
+      const packUnit = typeof payload.packUnit === "string" ? normalizeUnit(payload.packUnit) : "";
 
       if (!shoppingKey && !statusKey && !itemId) return;
 
       updateState((current) => {
         const asdaProductLinks = { ...current.asdaProductLinks };
+        const asdaProductSelections = { ...current.asdaProductSelections };
         const asdaShoppingStatus = { ...current.asdaShoppingStatus };
         const shoppingChecks = { ...current.shoppingChecks };
 
         if (shoppingKey && normalizedUrl) {
           asdaProductLinks[shoppingKey] = normalizedUrl;
+          if (productName) {
+            asdaProductSelections[shoppingKey] = {
+              productUrl: normalizedUrl,
+              productName,
+              packSizeText: packSizeText || undefined,
+              packQuantity,
+              packUnit: packUnit || undefined,
+              lastSeenAt: new Date().toISOString()
+            };
+          }
         }
 
         if (statusKey && validStatus) {
@@ -1256,6 +1362,7 @@ export default function Home() {
         return {
           ...current,
           asdaProductLinks,
+          asdaProductSelections,
           asdaShoppingStatus,
           shoppingChecks,
           manualShoppingItems:
@@ -1283,7 +1390,8 @@ export default function Home() {
           unit: standardized.unit,
           canonicalName:
             normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
-            canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName
+            canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
+          role: ingredient.role ?? "required"
         };
       }),
       suppressedAutoTags: normalizeSuppressedAutomaticTags(nextDraft.suppressedAutoTags)
@@ -1292,22 +1400,46 @@ export default function Home() {
     setTagInput(hydratedDraft.tags.filter((tag) => !isAutomaticRecipeTag(tag)).join(", "));
   }
 
-  function addPlannedMeal(date: string, slot: MealSlot, recipeId: string) {
+  function addPlannedMeal(
+    date: string,
+    slot: MealSlot,
+    recipeId: string,
+    selectedIngredientIds: string[] = [],
+    extraSideText = ""
+  ) {
     if (!recipeId) return;
 
-    updateState((current) => ({
-      ...current,
-      plannedMeals: [
-        ...current.plannedMeals,
-        {
-          id: createId("meal"),
-          date,
-          slot,
-          recipeId,
-          peopleCount: current.settings.defaultPeople
-        }
-      ]
-    }));
+    updateState((current) => {
+      const extraSideIngredients = splitManualShoppingLines(extraSideText).map((line) => {
+        const parsed = parseIngredientLine(line, { strict: false });
+        return {
+          ...parsed,
+          unit: parsed.unit || (typeof parsed.quantity === "number" ? "item" : undefined),
+          role: "side" as const,
+          category: parsed.category || inferCategory(parsed.name),
+          canonicalName:
+            normalizeIngredientAliasKey(parsed.canonicalName ?? "") ||
+            canonicalizeIngredientName(parsed.name, current.settings.ingredientAliases).canonicalName,
+          needsReview: false
+        };
+      });
+
+      return {
+        ...current,
+        plannedMeals: [
+          ...current.plannedMeals,
+          {
+            id: createId("meal"),
+            date,
+            slot,
+            recipeId,
+            peopleCount: current.settings.defaultPeople,
+            selectedIngredientIds: Array.from(new Set(selectedIngredientIds)),
+            extraSideIngredients
+          }
+        ]
+      };
+    });
     setMealPicker(null);
     setMealPickerQuery("");
   }
@@ -1418,7 +1550,9 @@ export default function Home() {
           recipeId: meal.recipeId,
           manualTitle: meal.recipeId ? undefined : meal.manualTitle,
           peopleCount: 0,
-          notes: "Leftovers"
+          notes: "Leftovers",
+          selectedIngredientIds: meal.selectedIngredientIds,
+          extraSideIngredients: meal.extraSideIngredients?.map((ingredient) => ({ ...ingredient }))
         }
       ]
     }));
@@ -1509,7 +1643,8 @@ export default function Home() {
               canonicalName:
                 normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
                 canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
-              needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+              needsReview: ingredient.needsReview ?? ingredient.confidence === "low",
+              role: ingredient.role ?? "required"
             };
           }),
         instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
@@ -1564,6 +1699,7 @@ export default function Home() {
     const copy = draftToRecipe({
       ...recipeToDraft(recipe),
       title: `${recipe.title} copy`,
+      ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, id: createId("ing") })),
       importedFrom: "manual"
     });
     updateState((current) => ({ ...current, recipes: [{ ...copy, favorite: false }, ...current.recipes] }));
@@ -1614,7 +1750,7 @@ export default function Home() {
       ...current,
       ingredients: [
         ...current.ingredients,
-        { id: createId("ing"), name: "", unit: "", category: "Other", canonicalName: "", confidence: "medium" }
+        { id: createId("ing"), name: "", unit: "", category: "Other", canonicalName: "", confidence: "medium", role: "required" }
       ]
     }));
   }
@@ -2011,6 +2147,7 @@ export default function Home() {
     updateState((current) => {
       const existingItem = current.manualShoppingItems.find((item) => item.id === id);
       const asdaProductLinks = { ...current.asdaProductLinks };
+      const asdaProductSelections = { ...current.asdaProductSelections };
 
       if (existingItem && patch.name?.trim()) {
         const previousKey = shoppingPreferenceKey(existingItem);
@@ -2020,11 +2157,15 @@ export default function Home() {
         if (nextKey && previousKey !== nextKey && rememberedProductUrl && !asdaProductLinks[nextKey]) {
           asdaProductLinks[nextKey] = rememberedProductUrl;
         }
+        if (nextKey && previousKey !== nextKey && asdaProductSelections[previousKey] && !asdaProductSelections[nextKey]) {
+          asdaProductSelections[nextKey] = asdaProductSelections[previousKey];
+        }
       }
 
       return {
         ...current,
         asdaProductLinks,
+        asdaProductSelections,
         manualShoppingItems: mergeManualShoppingItems(
           current.manualShoppingItems.map((item) =>
             item.id === id ? { ...item, ...patch, manual: true } : item
@@ -2080,14 +2221,20 @@ export default function Home() {
 
     updateState((current) => {
       const asdaProductLinks = { ...current.asdaProductLinks };
+      const asdaProductSelections = { ...current.asdaProductSelections };
+      const previousSelection = asdaProductSelections[itemKey];
 
       if (normalizedUrl) {
         asdaProductLinks[itemKey] = normalizedUrl;
+        if (previousSelection && normalizeStoreUrl(previousSelection.productUrl) !== normalizedUrl) {
+          delete asdaProductSelections[itemKey];
+        }
       } else {
         delete asdaProductLinks[itemKey];
+        delete asdaProductSelections[itemKey];
       }
 
-      return { ...current, asdaProductLinks };
+      return { ...current, asdaProductLinks, asdaProductSelections };
     });
   }
 
@@ -2449,6 +2596,7 @@ export default function Home() {
             manualItemCategory={manualItemCategory}
             manualBulkItems={manualBulkItems}
             asdaProductLinks={state.asdaProductLinks}
+            asdaProductSelections={state.asdaProductSelections}
             asdaShoppingStatus={rangeAsdaShoppingStatus}
             setStartDate={updateShoppingStartDate}
             setEndDate={updateShoppingEndDate}
@@ -2506,7 +2654,9 @@ export default function Home() {
             recipeFrequencies={recipeFrequencies}
             query={mealPickerQuery}
             setQuery={setMealPickerQuery}
-            onAdd={(recipeId) => addPlannedMeal(mealPicker.date, mealPicker.slot, recipeId)}
+            onAdd={(recipeId, selectedIngredientIds, extraSideText) =>
+              addPlannedMeal(mealPicker.date, mealPicker.slot, recipeId, selectedIngredientIds, extraSideText)
+            }
             onAddManual={(title) => addManualPlannedMeal(mealPicker.date, mealPicker.slot, title)}
             onClose={() => setMealPicker(null)}
           />
@@ -2797,10 +2947,17 @@ function PlannerView({
                         const recipe = meal.recipeId ? recipes.find((item) => item.id === meal.recipeId) : null;
                         const title = recipe?.title ?? meal.manualTitle;
                         if (!title) return null;
+                        const selectedOptionNames = recipe
+                          ? recipe.ingredients
+                              .filter((ingredient) => meal.selectedIngredientIds?.includes(ingredient.id))
+                              .map((ingredient) => ingredient.name)
+                          : [];
+                        const extraSideNames = (meal.extraSideIngredients ?? []).map((ingredient) => ingredient.name);
+                        const mealAdditions = [...selectedOptionNames, ...extraSideNames];
                         const mealMeta = recipe
                           ? `${recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}${
                               (recipeFrequencies[recipe.id] ?? 0) > 1 ? ` · planned ${recipeFrequencies[recipe.id]}x` : ""
-                            }`
+                            }${mealAdditions.length ? ` · with ${mealAdditions.join(", ")}` : ""}`
                           : meal.notes || "Manual plan";
 
                         return (
@@ -2992,12 +3149,15 @@ function MealPickerModal({
   recipeFrequencies: Record<string, number>;
   query: string;
   setQuery: (value: string) => void;
-  onAdd: (recipeId: string) => void;
+  onAdd: (recipeId: string, selectedIngredientIds: string[], extraSideText: string) => void;
   onAddManual: (title: string) => void;
   onClose: () => void;
 }) {
   const [selectedGroup, setSelectedGroup] = useState<MealPickerGroup>(target.slot);
   const [manualMealTitle, setManualMealTitle] = useState("");
+  const [selectedRecipeId, setSelectedRecipeId] = useState("");
+  const [selectedIngredientIds, setSelectedIngredientIds] = useState<string[]>([]);
+  const [extraSideText, setExtraSideText] = useState("");
   const groupedRecipes = recipes.filter((recipe) => selectedGroup === "all" || recipe.mealTypes.includes(selectedGroup));
   const frequentRecipes = groupedRecipes.filter((recipe) => (recipeFrequencies[recipe.id] ?? 0) > 0).slice(0, 5);
   const mainRecipes = query.trim()
@@ -3006,6 +3166,20 @@ function MealPickerModal({
       ? groupedRecipes.filter((recipe) => !frequentRecipes.some((frequent) => frequent.id === recipe.id)).slice(0, 10)
       : groupedRecipes.slice(0, 10);
   const selectedGroupLabel = selectedGroup === "all" ? "All meals" : labelMealSlot(selectedGroup);
+  const selectedRecipe = recipes.find((recipe) => recipe.id === selectedRecipeId);
+  const flexibleIngredients = selectedRecipe?.ingredients.filter((ingredient) => (ingredient.role ?? "required") !== "required") ?? [];
+
+  function selectRecipe(recipeId: string) {
+    setSelectedRecipeId(recipeId);
+    setSelectedIngredientIds([]);
+    setExtraSideText("");
+  }
+
+  function toggleSelectedIngredient(ingredientId: string) {
+    setSelectedIngredientIds((current) =>
+      current.includes(ingredientId) ? current.filter((id) => id !== ingredientId) : [...current, ingredientId]
+    );
+  }
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -3057,12 +3231,72 @@ function MealPickerModal({
           </button>
         </form>
 
+        {selectedRecipe ? (
+          <section className="meal-picker-options" aria-live="polite">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Selected recipe</p>
+                <h3>{selectedRecipe.title}</h3>
+              </div>
+              <button className="icon-button" type="button" title="Clear selected recipe" onClick={() => setSelectedRecipeId("")}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {flexibleIngredients.length ? (
+              <div className="meal-option-list">
+                {flexibleIngredients.map((ingredient) => (
+                  <label className="meal-option-row" key={ingredient.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIngredientIds.includes(ingredient.id)}
+                      onChange={() => toggleSelectedIngredient(ingredient.id)}
+                    />
+                    <span>
+                      <strong>{ingredient.name}</strong>
+                      <small>
+                        {(ingredient.role ?? "optional") === "side" ? "Side" : "Choice"}
+                        {typeof ingredient.quantity === "number" ? ` · ${ingredient.quantity}${ingredient.unit ? ` ${ingredient.unit}` : ""}` : ""}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            ) : null}
+
+            <label>
+              Add another side
+              <textarea
+                value={extraSideText}
+                onChange={(event) => setExtraSideText(event.target.value)}
+                placeholder={"1 broccoli\n500 g sweet potato"}
+                rows={2}
+              />
+            </label>
+
+            <button
+              className="primary-button meal-picker-confirm"
+              type="button"
+              onClick={() => onAdd(selectedRecipe.id, selectedIngredientIds, extraSideText)}
+            >
+              <Plus size={18} />
+              Add meal
+            </button>
+          </section>
+        ) : null}
+
         <div className="picker-list">
           {!query.trim() && frequentRecipes.length > 0 && (
             <>
               <span className="picker-section-label">Most chosen {selectedGroupLabel.toLowerCase()}</span>
               {frequentRecipes.map((recipe) => (
-                <RecipePickerButton key={recipe.id} recipe={recipe} recipeFrequencies={recipeFrequencies} onAdd={onAdd} />
+                <RecipePickerButton
+                  key={recipe.id}
+                  recipe={recipe}
+                  recipeFrequencies={recipeFrequencies}
+                  selected={selectedRecipeId === recipe.id}
+                  onSelect={selectRecipe}
+                />
               ))}
             </>
           )}
@@ -3071,7 +3305,13 @@ function MealPickerModal({
             <span className="picker-section-label">{query.trim() ? `Matching ${selectedGroupLabel.toLowerCase()}` : `${selectedGroupLabel} recipes`}</span>
           )}
           {mainRecipes.map((recipe) => (
-            <RecipePickerButton key={recipe.id} recipe={recipe} recipeFrequencies={recipeFrequencies} onAdd={onAdd} />
+            <RecipePickerButton
+              key={recipe.id}
+              recipe={recipe}
+              recipeFrequencies={recipeFrequencies}
+              selected={selectedRecipeId === recipe.id}
+              onSelect={selectRecipe}
+            />
           ))}
           {groupedRecipes.length === 0 && <p className="muted">No matching meals in this group yet.</p>}
         </div>
@@ -3083,14 +3323,16 @@ function MealPickerModal({
 function RecipePickerButton({
   recipe,
   recipeFrequencies,
-  onAdd
+  selected,
+  onSelect
 }: {
   recipe: Recipe;
   recipeFrequencies: Record<string, number>;
-  onAdd: (recipeId: string) => void;
+  selected: boolean;
+  onSelect: (recipeId: string) => void;
 }) {
   return (
-    <button className="picker-recipe" onClick={() => onAdd(recipe.id)}>
+    <button className={classNames("picker-recipe", selected && "selected")} type="button" onClick={() => onSelect(recipe.id)}>
       <span>
         <strong>{recipe.title}</strong>
         <small>
@@ -3099,7 +3341,7 @@ function RecipePickerButton({
           {(recipeFrequencies[recipe.id] ?? 0) > 0 ? ` · chosen ${recipeFrequencies[recipe.id]}x` : ""}
         </small>
       </span>
-      <Plus size={18} />
+      {selected ? <Check size={18} /> : <Plus size={18} />}
     </button>
   );
 }
@@ -3179,6 +3421,9 @@ function RecipeDetailModal({
                 <li key={ingredient.id}>
                   <span>{ingredient.quantity ? `${ingredient.quantity} ` : ""}{ingredient.unit ? `${ingredient.unit} ` : ""}</span>
                   {ingredient.name}
+                  {(ingredient.role ?? "required") !== "required" ? (
+                    <small className="ingredient-role-badge">{ingredient.role === "side" ? "side" : "choose in planner"}</small>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -3727,11 +3972,23 @@ function AddRecipeView({
 	                      {category}
 	                    </option>
 	                  ))}
-	                </select>
+                  </select>
 	                <button className="icon-button danger" type="button" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
 	                  <Trash2 size={16} />
 	                </button>
                   <div className="ingredient-standard-row">
+                    <label className="ingredient-role-control">
+                      Planner use
+                      <select
+                        aria-label="Planner use"
+                        value={ingredient.role ?? "required"}
+                        onChange={(event) => onUpdateIngredient(ingredient.id, { role: event.target.value as IngredientRole })}
+                      >
+                        <option value="required">Always include</option>
+                        <option value="optional">Choose in planner</option>
+                        <option value="side">Optional side</option>
+                      </select>
+                    </label>
                     <label>
                       Shopping name
                       <div className="shopping-name-controls">
@@ -3822,6 +4079,7 @@ function ShoppingView({
   manualItemCategory,
   manualBulkItems,
   asdaProductLinks,
+  asdaProductSelections,
   asdaShoppingStatus,
   setStartDate,
   setEndDate,
@@ -3858,6 +4116,7 @@ function ShoppingView({
   manualItemCategory: ManualItemCategory;
   manualBulkItems: string;
   asdaProductLinks: Record<string, string>;
+  asdaProductSelections: Record<string, AsdaProductSelection>;
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
   setStartDate: (value: string) => void;
   setEndDate: (value: string) => void;
@@ -3919,6 +4178,7 @@ function ShoppingView({
       items: items.map((item) => {
         const shoppingKey = shoppingPreferenceKey(item);
         const canonicalName = item.canonicalName || shoppingKey;
+        const savedProductSelection = asdaProductSelections[shoppingKey];
 
         return {
           itemId: item.id,
@@ -3936,6 +4196,10 @@ function ShoppingView({
           sourceIngredients: item.sourceIngredients,
           avoidTerms: asdaAvoidTerms(item),
           savedProductUrl: asdaProductLinks[shoppingKey] ?? "",
+          savedProductName: savedProductSelection?.productName,
+          savedPackSizeText: savedProductSelection?.packSizeText,
+          savedPackQuantity: savedProductSelection?.packQuantity,
+          savedPackUnit: savedProductSelection?.packUnit,
           searchUrl: asdaSearchUrl(item),
           status: asdaShoppingStatus[item.id]
         };
@@ -4219,6 +4483,8 @@ function ShoppingView({
           {items.map((item) => {
             const itemKey = shoppingPreferenceKey(item);
             const savedProductUrl = asdaProductLinks[itemKey] ?? "";
+            const savedProductSelection = asdaProductSelections[itemKey];
+            const purchaseSummary = asdaPurchaseSummary(item, savedProductSelection);
             const openUrl = savedProductUrl || asdaSearchUrl(item);
             const status = asdaShoppingStatus[item.id];
 
@@ -4226,9 +4492,12 @@ function ShoppingView({
               <div className={classNames("asda-shop-row", status && `status-${status}`)} key={item.id}>
                 <div className="asda-shop-item">
                   <strong>
-                    {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
+                    {purchaseSummary ? <span>{purchaseSummary.display}</span> : item.displayQuantity ? <span>{item.displayQuantity}</span> : null} {item.name}
                   </strong>
-                  <small>{savedProductUrl ? "Saved product" : "Search Asda"}</small>
+                  <small>
+                    {savedProductSelection?.productName ?? (savedProductUrl ? "Saved product" : "Search Asda")}
+                    {purchaseSummary ? ` · recipe needs ${item.displayQuantity ? `${item.displayQuantity} ${item.name}` : item.name}${purchaseSummary.estimated ? " (estimated pack conversion)" : ""}` : ""}
+                  </small>
                 </div>
 
                 <input
@@ -4288,6 +4557,8 @@ function ShoppingView({
               {group.items.map((item) => {
                 const sourceRecipeId = item.sourceRecipeIds?.[0];
                 const itemIsClickable = item.manual || Boolean(sourceRecipeId);
+                const productSelection = asdaProductSelections[shoppingPreferenceKey(item)];
+                const purchaseSummary = asdaPurchaseSummary(item, productSelection);
                 const openItem = () => {
                   if (item.manual) {
                     setEditingManualItemId(item.id);
@@ -4315,13 +4586,19 @@ function ShoppingView({
                       }}
                     >
                       <strong>
-                        {item.displayQuantity && <span>{item.displayQuantity}</span>} {item.name}
+                        {purchaseSummary ? <span>{purchaseSummary.display}</span> : item.displayQuantity ? <span>{item.displayQuantity}</span> : null} {item.name}
                       </strong>
                       <small>
                         {item.manual ? "Added item" : item.sourceMeals.join(", ")}
                         {item.incompatible ? " · check unit" : ""}
                         {item.staple ? " · staple" : ""}
                       </small>
+                      {purchaseSummary ? (
+                        <small className="shopping-required-amount">
+                          Recipe need: {item.displayQuantity ? `${item.displayQuantity} ${item.name}` : `${item.name} (quantity not specified)`}
+                          {purchaseSummary.estimated ? " · pack count estimated from typical item weight" : ""}
+                        </small>
+                      ) : null}
                       {item.conversionNotes?.length ? <small className="shopping-note">Metric conversion: {item.conversionNotes.join("; ")}</small> : null}
                       {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
                     </div>

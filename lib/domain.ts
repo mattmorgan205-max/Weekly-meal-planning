@@ -10,6 +10,8 @@ export type GroceryCategory =
   | "Spices"
   | "Other";
 
+export type IngredientRole = "required" | "optional" | "side";
+
 export type Ingredient = {
   id: string;
   name: string;
@@ -21,6 +23,7 @@ export type Ingredient = {
   originalLine?: string;
   confidence?: "high" | "medium" | "low";
   needsReview?: boolean;
+  role?: IngredientRole;
 };
 
 export type Recipe = {
@@ -56,6 +59,17 @@ export type PlannedMeal = {
   notes?: string;
   producesLeftovers?: boolean;
   leftoverTargetDate?: string;
+  selectedIngredientIds?: string[];
+  extraSideIngredients?: Ingredient[];
+};
+
+export type AsdaProductSelection = {
+  productUrl: string;
+  productName: string;
+  packSizeText?: string;
+  packQuantity?: number;
+  packUnit?: string;
+  lastSeenAt: string;
 };
 
 export type ShoppingListItem = {
@@ -132,6 +146,7 @@ export type AppState = {
   hiddenShoppingItems: Record<string, boolean>;
   manualShoppingItems: ShoppingListItem[];
   asdaProductLinks: Record<string, string>;
+  asdaProductSelections: Record<string, AsdaProductSelection>;
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
   settings: AppSettings;
 };
@@ -902,7 +917,8 @@ export function parseIngredientLine(line: string, options: { strict?: boolean } 
     canonicalName: canonical.canonicalName,
     originalLine: cleaned,
     confidence,
-    needsReview: confidence !== "high" || !validation.valid
+    needsReview: confidence !== "high" || !validation.valid,
+    role: /\boptional\b/i.test(cleaned) ? "optional" : "required"
   };
 }
 
@@ -972,7 +988,8 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
       id: ingredient.id || createId("ing"),
       category: ingredient.category || inferCategory(ingredient.name),
       canonicalName: ingredient.canonicalName || canonicalizeIngredientName(ingredient.name).canonicalName,
-      needsReview: ingredient.needsReview ?? ingredient.confidence === "low"
+      needsReview: ingredient.needsReview ?? ingredient.confidence === "low",
+      role: ingredient.role ?? "required"
     })),
     instructions: draft.instructions.filter(Boolean),
     source: draft.source?.trim() || draft.sourceUrl,
@@ -996,7 +1013,7 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
     tags: recipe.tags,
-    ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, id: createId("ing") })),
+    ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, role: ingredient.role ?? "required" })),
     instructions: [...recipe.instructions],
     source: recipe.source ?? recipe.sourceUrl,
     sourceUrl: recipe.sourceUrl,
@@ -1097,8 +1114,10 @@ export function generateShoppingList(
     const plannedRecipe = recipe;
 
     const factor = meal.peopleCount / Math.max(1, plannedRecipe.servings);
-    plannedRecipe.ingredients.forEach((ingredient) => {
-      const scaled = scaleIngredient(ingredient, factor);
+    const selectedIngredientIds = new Set(meal.selectedIngredientIds ?? []);
+
+    function addIngredientToBuckets(ingredient: Ingredient, ingredientFactor: number) {
+      const scaled = scaleIngredient(ingredient, ingredientFactor);
       const savedShoppingName = scaled.canonicalName ? singularizeIngredientName(normalizeIngredientAliasKey(scaled.canonicalName)) : "";
       const canonical = savedShoppingName
         ? { canonicalName: savedShoppingName, normalizedName: savedShoppingName }
@@ -1150,7 +1169,7 @@ export function generateShoppingList(
           staple
         });
       } else {
-        const separateKey = `${key}::${meal.id}`;
+        const separateKey = `${key}::${meal.id}::${ingredient.id}`;
         buckets.set(separateKey, {
           key: separateKey,
           mergeKey,
@@ -1170,7 +1189,12 @@ export function generateShoppingList(
           staple
         });
       }
-    });
+    }
+
+    plannedRecipe.ingredients
+      .filter((ingredient) => (ingredient.role ?? "required") === "required" || selectedIngredientIds.has(ingredient.id))
+      .forEach((ingredient) => addIngredientToBuckets(ingredient, factor));
+    (meal.extraSideIngredients ?? []).forEach((ingredient) => addIngredientToBuckets(ingredient, 1));
   });
 
   const generated = Array.from(buckets.values()).map<ShoppingListItem>((bucket) => {
@@ -1309,6 +1333,7 @@ export function seedState(): AppState {
     hiddenShoppingItems: {},
     manualShoppingItems: [],
     asdaProductLinks: {},
+    asdaProductSelections: {},
     asdaShoppingStatus: {},
     settings: {
       householdName: "Home",

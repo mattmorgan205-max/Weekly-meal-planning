@@ -18,6 +18,10 @@ interface AsdaHelperQueueItem {
   sourceIngredients?: string[];
   avoidTerms?: string[];
   savedProductUrl: string;
+  savedProductName?: string;
+  savedPackSizeText?: string;
+  savedPackQuantity?: number;
+  savedPackUnit?: string;
   searchUrl: string;
   status?: StoreShoppingStatus;
 }
@@ -116,6 +120,9 @@ interface AsdaLastRecommendation {
   priceText?: string;
   unitPriceText?: string;
   offerText?: string;
+  packSizeText?: string;
+  packQuantity?: number;
+  packUnit?: string;
   selectedAt: string;
 }
 

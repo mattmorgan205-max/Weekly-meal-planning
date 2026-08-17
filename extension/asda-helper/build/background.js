@@ -334,7 +334,11 @@
                         shoppingKey: item.shoppingKey,
                         statusKey: item.statusKey,
                         status: update.status,
-                        productUrl: update.productUrl
+                        productUrl: update.productUrl,
+                        productName: update.product?.name,
+                        packSizeText: update.product?.packSizeText,
+                        packQuantity: update.product?.quantity,
+                        packUnit: update.product?.unit
                     }
                 });
             });
@@ -382,18 +386,31 @@
         const state = await getState(fallbackState);
         const productLinks = { ...state.productLinks };
         const itemStatusMap = {};
+        const lastRecommendations = { ...(state.lastRecommendations ?? {}) };
         queue.items.forEach((item) => {
             if (item.savedProductUrl)
                 productLinks[item.shoppingKey] = item.savedProductUrl;
             if (item.status)
                 itemStatusMap[item.itemId] = item.status;
+            if (item.savedProductUrl && item.savedProductName && !lastRecommendations[item.shoppingKey]) {
+                lastRecommendations[item.shoppingKey] = {
+                    itemId: item.itemId,
+                    shoppingKey: item.shoppingKey,
+                    productUrl: item.savedProductUrl,
+                    productName: item.savedProductName,
+                    packSizeText: item.savedPackSizeText,
+                    packQuantity: item.savedPackQuantity,
+                    packUnit: item.savedPackUnit,
+                    selectedAt: queue.createdAt
+                };
+            }
         });
         const nextState = {
             queue,
             productLinks,
             itemStatus: itemStatusMap,
             autoAddReviews: [],
-            lastRecommendations: state.lastRecommendations ?? {},
+            lastRecommendations,
             rejectedRecommendations: state.rejectedRecommendations ?? {},
             lastAutoAddMessage: "",
             activeAsdaTabId: state.activeAsdaTabId,
@@ -403,8 +420,32 @@
         await saveState(nextState);
         queue.items.forEach((item) => {
             const rememberedUrl = productLinks[item.shoppingKey];
-            if (rememberedUrl && rememberedUrl !== item.savedProductUrl)
-                sendUpdateToApp(item, { productUrl: rememberedUrl });
+            const rememberedProduct = lastRecommendations[item.shoppingKey];
+            if (rememberedUrl && (rememberedUrl !== item.savedProductUrl || rememberedProduct)) {
+                sendUpdateToApp(item, {
+                    productUrl: rememberedUrl,
+                    product: rememberedProduct
+                        ? {
+                            url: rememberedProduct.productUrl,
+                            name: rememberedProduct.productName,
+                            priceText: rememberedProduct.priceText,
+                            unitPriceText: rememberedProduct.unitPriceText,
+                            offerText: rememberedProduct.offerText,
+                            packSizeText: rememberedProduct.packSizeText,
+                            quantity: rememberedProduct.packQuantity,
+                            unit: rememberedProduct.packUnit
+                        }
+                        : item.savedProductName
+                            ? {
+                                url: rememberedUrl,
+                                name: item.savedProductName,
+                                packSizeText: item.savedPackSizeText,
+                                quantity: item.savedPackQuantity,
+                                unit: item.savedPackUnit
+                            }
+                            : undefined
+                });
+            }
         });
         return { ok: true, state: nextState };
     }
@@ -647,12 +688,15 @@
                     priceText: candidate?.priceText,
                     unitPriceText: candidate?.unitPriceText,
                     offerText: candidate?.offerText,
+                    packSizeText: candidate?.packSizeText,
+                    packQuantity: candidate?.quantity,
+                    packUnit: candidate?.unit,
                     selectedAt: new Date().toISOString()
                 }
             }
         };
         await saveState(nextState);
-        sendUpdateToApp(item, { productUrl: cleanUrl });
+        sendUpdateToApp(item, { productUrl: cleanUrl, product: candidate });
         return { ok: true, state: nextState, item, openUrl: cleanUrl };
     }
     async function rejectRecommendation(itemId, productUrl, fallbackState) {

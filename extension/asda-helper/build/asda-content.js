@@ -173,6 +173,50 @@
         const counted = value.match(/\b(\d+)\s?(?:pack|pcs|pieces|items|each)\b/i);
         return counted ? { quantity: Number(counted[1]), unit: "item" } : undefined;
     }
+    const approximateProduceWeightGrams = {
+        apple: 150,
+        banana: 120,
+        broccoli: 350,
+        carrot: 80,
+        courgette: 200,
+        cucumber: 300,
+        lemon: 100,
+        lime: 70,
+        onion: 150,
+        "red onion": 150,
+        "white onion": 150,
+        pepper: 160,
+        potato: 175,
+        "sweet potato": 250
+    };
+    function approximateItemWeight(name) {
+        const normalizedName = normalizeText(name);
+        return Object.entries(approximateProduceWeightGrams)
+            .sort(([first], [second]) => second.length - first.length)
+            .find(([ingredientName]) => normalizedName.includes(ingredientName))?.[1];
+    }
+    function productCoverage(item, product) {
+        const offered = toBaseQuantity(product.quantity, product.unit);
+        let required = toBaseQuantity(item.requiredQuantity ?? item.quantity, item.requiredUnit ?? item.unit);
+        let estimated = false;
+        if (!required || !offered || required.quantity <= 0 || offered.quantity <= 0)
+            return null;
+        if (required.family !== offered.family) {
+            const approximateWeight = approximateItemWeight(item.canonicalName || item.name);
+            if (required.family !== "count" || offered.family !== "weight" || !approximateWeight)
+                return null;
+            required = { quantity: required.quantity * approximateWeight, family: "weight", unit: "g" };
+            estimated = true;
+        }
+        const packCount = Math.max(1, Math.ceil(required.quantity / offered.quantity));
+        return {
+            packCount,
+            estimated,
+            required,
+            offered,
+            display: `${packCount} x ${product.packSizeText || displayBaseQuantity(offered.quantity, offered.unit)}`
+        };
+    }
     function unitPriceValue(candidate) {
         const text = candidate.unitPriceText ?? "";
         const match = text.match(/((?:\u00a3|£)\s?\d+(?:\.\d{1,2})?|\d+\s?p)\s?\/\s?(kg|g|100g|l|litre|ml|100ml|each|item)/i);
@@ -689,18 +733,17 @@
             score += 8;
             reasons.push("offer");
         }
-        const required = toBaseQuantity(item.requiredQuantity ?? item.quantity, item.requiredUnit ?? item.unit);
-        const offered = toBaseQuantity(product.quantity, product.unit);
-        if (required && offered && required.family === offered.family && required.quantity > 0) {
-            if (offered.quantity >= required.quantity) {
-                const wasteRatio = (offered.quantity - required.quantity) / required.quantity;
+        const coverage = productCoverage(item, product);
+        if (coverage) {
+            if (coverage.offered.quantity >= coverage.required.quantity) {
+                const wasteRatio = (coverage.offered.quantity - coverage.required.quantity) / coverage.required.quantity;
                 score += Math.max(0, 18 - wasteRatio * 8);
                 if (wasteRatio <= 0.75)
                     reasons.push("least waste");
             }
             else {
                 score += 7;
-                warnings.push("may need more than one pack");
+                warnings.push(`buy ${coverage.packCount} packs`);
             }
         }
         return { product, score, reasons: Array.from(new Set(reasons)), warnings: Array.from(new Set(warnings)) };
@@ -734,6 +777,13 @@
                 parts.push(offerText);
             return parts.filter(Boolean).join(" · ") || "No visible price";
         }
+        function productPurchaseSummary(product) {
+            const coverage = productCoverage(item, product);
+            const requiredText = item.displayQuantity ? `${item.displayQuantity} ${item.name}` : `${item.name} (quantity not specified)`;
+            if (!coverage)
+                return `<small>Need ${escapeHtml(requiredText)}</small>`;
+            return `<small class="weekwise-purchase-amount"><strong>Buy ${escapeHtml(coverage.display)}</strong> · Need ${escapeHtml(requiredText)}${coverage.estimated ? " · estimated from typical item weight" : ""}</small>`;
+        }
         return `
       <div class="weekwise-recommend">
         <div class="weekwise-recommend-head">
@@ -741,7 +791,7 @@
           <button id="weekwise-scan-products" type="button">Scan visible products</button>
         </div>
         ${savedRecommendation
-            ? `<small class="weekwise-note">Last saved: ${escapeHtml(savedRecommendation.productName)}${savedRecommendation.priceText ? ` · ${escapeHtml(savedRecommendation.priceText)}` : ""}</small>`
+            ? `<small class="weekwise-note">Last saved: ${escapeHtml(savedRecommendation.productName)}${savedRecommendation.packSizeText ? ` · ${escapeHtml(savedRecommendation.packSizeText)}` : ""}${savedRecommendation.priceText ? ` · ${escapeHtml(savedRecommendation.priceText)}` : ""}</small>`
             : ""}
         <small class="weekwise-note">${escapeHtml(recommendationMessage || "Open the Asda search page, then scan the products currently visible on screen.")}</small>
         ${currentRecommendations.length
@@ -753,6 +803,7 @@
                         <div>
                           <strong>${escapeHtml(recommendation.product.name)}</strong>
                           <small>${escapeHtml(productPriceSummary(recommendation.product))}</small>
+                          ${productPurchaseSummary(recommendation.product)}
                           <small>${escapeHtml(recommendation.reasons.join(" · ") || "possible match")}${recommendation.warnings?.length ? ` · Check: ${escapeHtml(recommendation.warnings.join(", "))}` : ""}</small>
                           <div class="weekwise-recommend-actions">
                             <button id="weekwise-rec-open-${index}" type="button">Open</button>
@@ -883,7 +934,24 @@
             await refresh();
         });
         document.getElementById("weekwise-remember")?.addEventListener("click", async () => {
-            await sendMessage({ type: "SAVE_CURRENT_PRODUCT_URL", productUrl: window.location.href });
+            if (!item)
+                return;
+            const visibleProducts = scanVisibleProducts();
+            const currentProduct = visibleProducts.find((product) => absoluteUrl(product.url) === absoluteUrl(window.location.href));
+            if (currentProduct) {
+                await sendMessage({
+                    type: "SAVE_RECOMMENDATION",
+                    itemId: item.itemId,
+                    productUrl: currentProduct.url,
+                    candidate: { ...currentProduct, rawText: undefined }
+                });
+            }
+            else if (/\/(?:groceries\/)?product\//i.test(window.location.pathname)) {
+                await sendMessage({ type: "SAVE_CURRENT_PRODUCT_URL", productUrl: window.location.href });
+            }
+            else {
+                recommendationMessage = "Open the chosen product page before remembering it.";
+            }
             await refresh();
         });
         document.getElementById("weekwise-added")?.addEventListener("click", async () => {

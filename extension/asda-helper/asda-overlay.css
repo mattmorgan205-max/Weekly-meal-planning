@@ -160,6 +160,14 @@
   overflow-wrap: anywhere;
 }
 
+#weekwise-asda-helper .weekwise-recommend-card .weekwise-purchase-amount {
+  color: #244d36;
+}
+
+#weekwise-asda-helper .weekwise-recommend-card .weekwise-purchase-amount strong {
+  font-size: inherit;
+}
+
 #weekwise-asda-helper .weekwise-recommend-card small:first-of-type {
   display: -webkit-box;
   overflow: hidden;
