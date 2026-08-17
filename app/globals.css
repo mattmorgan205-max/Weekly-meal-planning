@@ -512,6 +512,174 @@ h3 {
   margin-top: auto;
 }
 
+.auto-plan-dinners {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.auto-plan-heading,
+.auto-plan-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.auto-plan-controls {
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) minmax(150px, 190px) minmax(260px, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.auto-plan-mode {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(115px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefa;
+}
+
+.auto-plan-mode button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 850;
+}
+
+.auto-plan-mode button.active {
+  background: var(--green);
+  color: #fff;
+}
+
+.auto-plan-preview {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.88);
+}
+
+.auto-plan-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(82px, 1fr));
+  gap: 8px;
+}
+
+.auto-plan-metrics span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-left: 3px solid #91bda2;
+  background: #f2f8f3;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.auto-plan-metrics strong {
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.auto-plan-list {
+  display: grid;
+  border-block: 1px solid var(--line);
+}
+
+.auto-plan-row {
+  display: grid;
+  grid-template-columns: minmax(105px, 0.55fr) minmax(180px, 1.2fr) minmax(220px, 1.4fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 64px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.auto-plan-row:last-child {
+  border-bottom: 0;
+}
+
+.auto-plan-row.preserved {
+  background: rgba(239, 232, 218, 0.42);
+}
+
+.auto-plan-row time {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.auto-plan-meal {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.auto-plan-meal button {
+  width: fit-content;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 900;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.auto-plan-meal button:hover {
+  color: var(--green-dark);
+}
+
+.auto-plan-meal small {
+  color: var(--muted);
+}
+
+.auto-plan-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.auto-plan-badges span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--mint);
+  color: var(--green-dark);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.auto-plan-badges span.warning {
+  background: #fff0ea;
+  color: var(--tomato);
+}
+
+.auto-plan-warnings {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--tomato);
+  background: #fff8f5;
+  color: #8d3f2e;
+  font-size: 0.82rem;
+}
+
+.auto-plan-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .planner-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(210px, 1fr));
@@ -1933,6 +2101,18 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .auto-plan-metrics {
+    grid-template-columns: repeat(3, minmax(82px, 1fr));
+  }
+
+  .auto-plan-row {
+    grid-template-columns: minmax(100px, 0.45fr) minmax(0, 1fr);
+  }
+
+  .auto-plan-badges {
+    grid-column: 2;
+  }
+
   .import-panel {
     position: static;
   }
@@ -1946,7 +2126,8 @@ h3 {
   .topbar,
   .toolbar-band,
   .manual-items-heading,
-  .use-up-heading {
+  .use-up-heading,
+  .auto-plan-heading {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1973,6 +2154,24 @@ h3 {
 
   .use-up-layout,
   .use-up-results {
+    grid-template-columns: 1fr;
+  }
+
+  .auto-plan-controls,
+  .auto-plan-row {
+    grid-template-columns: 1fr;
+  }
+
+  .auto-plan-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .auto-plan-badges {
+    grid-column: 1;
+  }
+
+  .auto-plan-actions {
+    display: grid;
     grid-template-columns: 1fr;
   }
 

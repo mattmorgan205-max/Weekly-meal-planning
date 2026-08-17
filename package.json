@@ -9,6 +9,7 @@
     "check:extension": "tsc --noEmit -p extension/asda-helper/tsconfig.json",
     "start": "next start",
     "preview": "next build --webpack && next start -H 127.0.0.1 -p 3010",
+    "test:dinner-planner": "node scripts/test-dinner-planner.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.check.json"
   },
   "dependencies": {

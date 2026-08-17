@@ -85,6 +85,12 @@ import {
   type ShoppingListItem,
   type StoreShoppingStatus
 } from "@/lib/domain";
+import {
+  buildAutoDinnerPlan,
+  type AutoDinnerPlanMode,
+  type AutoDinnerPlanResult,
+  type DinnerCategory
+} from "@/lib/dinner-planner";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -154,6 +160,15 @@ type UseUpSuggestion = {
   extraIngredientCount: number;
   favoriteCount: number;
 };
+type AutoPlanPreviewRow = {
+  key: string;
+  date: string;
+  title: string;
+  recipeId?: string;
+  detail?: string;
+  badges: string[];
+  preserved: boolean;
+};
 
 const storageKey = "weekwise-meal-planner-v1";
 const backupStorageKey = "weekwise-meal-planner-cloud-backup-v1";
@@ -168,6 +183,14 @@ const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
   month: "short"
 });
+
+const dinnerCategoryLabels: Record<DinnerCategory, string> = {
+  vegetarian: "Vegetarian",
+  chicken: "Chicken",
+  fish: "Fish",
+  "pork-beef": "Pork/beef",
+  other: "Other"
+};
 
 const legacyBroadShoppingNames: Record<string, string[]> = {
   onion: ["red onion", "white onion"],
@@ -1500,6 +1523,42 @@ export default function Home() {
     });
   }
 
+  function applyAutoDinnerPlan(plan: AutoDinnerPlanResult) {
+    updateState((current) => {
+      const retainedMeals = plan.mode === "replace"
+        ? current.plannedMeals.filter(
+            (meal) => !(meal.slot === "dinner" && meal.date >= plan.startDate && meal.date <= plan.endDate)
+          )
+        : current.plannedMeals;
+      const occupiedDinnerDates = new Set(
+        retainedMeals
+          .filter((meal) => meal.slot === "dinner" && meal.date >= plan.startDate && meal.date <= plan.endDate)
+          .map((meal) => meal.date)
+      );
+      const generatedMeals = plan.entries
+        .filter((entry) => plan.mode === "replace" || !occupiedDinnerDates.has(entry.date))
+        .filter((entry) => current.recipes.some((recipe) => recipe.id === entry.recipeId))
+        .map((entry) => ({
+          id: createId("meal"),
+          date: entry.date,
+          slot: "dinner" as const,
+          recipeId: entry.recipeId,
+          peopleCount: current.settings.defaultPeople,
+          selectedIngredientIds: [...entry.selectedIngredientIds],
+          extraSideIngredients: entry.extraSideIngredients.map((ingredient) => ({
+            ...ingredient,
+            id: createId("planned_side")
+          })),
+          notes: entry.coveredUseUpIngredients.length
+            ? `Auto planned · uses ${entry.coveredUseUpIngredients.join(", ")}`
+            : "Auto planned"
+        }));
+
+      return { ...current, plannedMeals: [...retainedMeals, ...generatedMeals] };
+    });
+    setWeekStart(plan.startDate);
+  }
+
   function addManualPlannedMeal(date: string, slot: MealSlot, title: string) {
     const manualTitle = title.trim();
     if (!manualTitle) return;
@@ -2495,7 +2554,9 @@ export default function Home() {
             recipeFrequencies={recipeFrequencies}
             useUpIngredients={state.useUpIngredients}
             ingredientAliases={state.settings.ingredientAliases}
+            defaultPeople={state.settings.defaultPeople}
             onPlanSuggestedRecipes={planSuggestedRecipes}
+            onApplyAutoDinnerPlan={applyAutoDinnerPlan}
             onMoveMeal={movePlannedMeal}
             onRemoveMeal={removePlannedMeal}
             onUpdateMeal={updatePlannedMeal}
@@ -2715,7 +2776,9 @@ function PlannerView({
   recipeFrequencies,
   useUpIngredients,
   ingredientAliases,
+  defaultPeople,
   onPlanSuggestedRecipes,
+  onApplyAutoDinnerPlan,
   onMoveMeal,
   onRemoveMeal,
   onUpdateMeal,
@@ -2741,7 +2804,9 @@ function PlannerView({
   recipeFrequencies: Record<string, number>;
   useUpIngredients: string[];
   ingredientAliases: Record<string, string>;
+  defaultPeople: number;
   onPlanSuggestedRecipes: (recipeIds: string[]) => void;
+  onApplyAutoDinnerPlan: (plan: AutoDinnerPlanResult) => void;
   onMoveMeal: (id: string, date: string, slot: MealSlot) => void;
   onRemoveMeal: (id: string) => void;
   onUpdateMeal: (id: string, patch: Partial<AppState["plannedMeals"][number]>) => void;
@@ -2758,6 +2823,11 @@ function PlannerView({
   onClearWeek: () => void;
 }) {
   const [dragOverSlot, setDragOverSlot] = useState<string | null>(null);
+  const [autoPlanStart, setAutoPlanStart] = useState(weekStart);
+  const [autoPlanEnd, setAutoPlanEnd] = useState(() => formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), 6)));
+  const [autoPlanMode, setAutoPlanMode] = useState<AutoDinnerPlanMode>("fill");
+  const [autoPlanVariation, setAutoPlanVariation] = useState(0);
+  const [showAutoPlanPreview, setShowAutoPlanPreview] = useState(false);
   const endDate = formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount - 1));
   const useUpText = useUpIngredients.join("\n");
   const useUpRecommendations = useMemo(
@@ -2765,6 +2835,111 @@ function PlannerView({
     [ingredientAliases, recipes, useUpIngredients]
   );
   const displayedDateKeys = new Set(days.map(formatDateKey));
+  const dinnerPlanningAvailable = visibleSlots.includes("dinner");
+  const autoPlanMaxEnd = formatDateKey(addDays(new Date(`${autoPlanStart}T12:00:00`), 6));
+  const autoPlanPreview = useMemo(
+    () =>
+      showAutoPlanPreview
+        ? buildAutoDinnerPlan({
+            startDate: autoPlanStart,
+            endDate: autoPlanEnd,
+            mode: autoPlanMode,
+            recipes,
+            plannedMeals,
+            useUpIngredients,
+            ingredientAliases,
+            peopleCount: defaultPeople,
+            variationSeed: autoPlanVariation
+          })
+        : null,
+    [
+      autoPlanEnd,
+      autoPlanMode,
+      autoPlanStart,
+      autoPlanVariation,
+      defaultPeople,
+      ingredientAliases,
+      plannedMeals,
+      recipes,
+      showAutoPlanPreview,
+      useUpIngredients
+    ]
+  );
+  const autoPlanPreviewRows = useMemo<AutoPlanPreviewRow[]>(() => {
+    if (!autoPlanPreview) return [];
+    const preservedRows = autoPlanPreview.preservedDinners.map<AutoPlanPreviewRow>((preserved) => {
+      const recipe = preserved.meal.recipeId ? recipes.find((item) => item.id === preserved.meal.recipeId) : undefined;
+      return {
+        key: `preserved:${preserved.meal.id}`,
+        date: preserved.meal.date,
+        title: recipe?.title ?? preserved.meal.manualTitle ?? "Planned dinner",
+        recipeId: recipe?.id,
+        badges: [
+          "Preserved",
+          preserved.category ? dinnerCategoryLabels[preserved.category] : "Manual",
+          preserved.quick ? "Quick" : "",
+          preserved.familiar ? "Familiar" : "",
+          preserved.previousWeekRepeat ? "Previous-week repeat" : ""
+        ].filter(Boolean),
+        preserved: true
+      };
+    });
+    const generatedRows = autoPlanPreview.entries.map<AutoPlanPreviewRow>((entry) => {
+      const recipe = recipes.find((item) => item.id === entry.recipeId);
+      const choiceNames = recipe?.ingredients
+        .filter((ingredient) => entry.selectedIngredientIds.includes(ingredient.id))
+        .map((ingredient) => ingredient.name) ?? [];
+      const sideNames = entry.extraSideIngredients.map((ingredient) => ingredient.name).filter(Boolean);
+      const additions = [...choiceNames, ...sideNames];
+      return {
+        key: `generated:${entry.date}:${entry.recipeId}`,
+        date: entry.date,
+        title: recipe?.title ?? "Suggested dinner",
+        recipeId: recipe?.id,
+        detail: additions.length ? `With ${additions.join(", ")}` : undefined,
+        badges: entry.reasons,
+        preserved: false
+      };
+    });
+    const plannedRows = [...preservedRows, ...generatedRows];
+    const plannedDates = new Set(plannedRows.map((row) => row.date));
+    const unfilledRows = dateRangeDates(autoPlanPreview.startDate, 7)
+      .map(formatDateKey)
+      .filter((date) => date <= autoPlanPreview.endDate && !plannedDates.has(date))
+      .map<AutoPlanPreviewRow>((date) => ({
+        key: `unfilled:${date}`,
+        date,
+        title: "No eligible dinner found",
+        badges: ["Unfilled"],
+        preserved: false
+      }));
+    return [...plannedRows, ...unfilledRows].sort(
+      (left, right) => left.date.localeCompare(right.date) || Number(right.preserved) - Number(left.preserved)
+    );
+  }, [autoPlanPreview, recipes]);
+
+  useEffect(() => {
+    setAutoPlanStart(weekStart);
+    setAutoPlanEnd(formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), 6)));
+    setAutoPlanVariation(0);
+    setShowAutoPlanPreview(false);
+  }, [weekStart]);
+
+  function changeAutoPlanStart(value: string) {
+    if (!value) return;
+    const maximumEnd = formatDateKey(addDays(new Date(`${value}T12:00:00`), 6));
+    setAutoPlanStart(value);
+    if (autoPlanEnd < value || autoPlanEnd > maximumEnd) setAutoPlanEnd(maximumEnd);
+    setAutoPlanVariation(0);
+    setShowAutoPlanPreview(false);
+  }
+
+  function changeAutoPlanEnd(value: string) {
+    if (!value) return;
+    setAutoPlanEnd(value);
+    setAutoPlanVariation(0);
+    setShowAutoPlanPreview(false);
+  }
 
   function handleDrop(event: DragEvent<HTMLDivElement>, date: string, slot: MealSlot) {
     event.preventDefault();
@@ -2904,6 +3079,140 @@ function PlannerView({
               })
             )}
           </div>
+        </div>
+
+        <div className="auto-plan-dinners">
+          <div className="auto-plan-heading">
+            <div>
+              <p className="eyebrow">Automatic dinner planner</p>
+              <h3>Auto-plan dinners</h3>
+            </div>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={!dinnerPlanningAvailable}
+              title={dinnerPlanningAvailable ? "Build dinner plan" : "Enable Dinner in Settings before auto-planning"}
+              onClick={() => {
+                setAutoPlanVariation(0);
+                setShowAutoPlanPreview(true);
+              }}
+            >
+              <Wand2 size={17} />
+              Build plan
+            </button>
+          </div>
+
+          {!dinnerPlanningAvailable ? <p className="muted">Enable Dinner in Settings to use automatic dinner planning.</p> : null}
+
+          <div className="auto-plan-controls">
+            <label>
+              Start date
+              <input type="date" value={autoPlanStart} onChange={(event) => changeAutoPlanStart(event.target.value)} />
+            </label>
+            <label>
+              End date
+              <input
+                type="date"
+                min={autoPlanStart}
+                max={autoPlanMaxEnd}
+                value={autoPlanEnd}
+                onChange={(event) => changeAutoPlanEnd(event.target.value)}
+              />
+            </label>
+            <div className="auto-plan-mode" role="group" aria-label="Existing dinner behavior">
+              <button
+                className={classNames(autoPlanMode === "fill" && "active")}
+                type="button"
+                onClick={() => {
+                  setAutoPlanMode("fill");
+                  setAutoPlanVariation(0);
+                  setShowAutoPlanPreview(false);
+                }}
+              >
+                Fill empty
+              </button>
+              <button
+                className={classNames(autoPlanMode === "replace" && "active")}
+                type="button"
+                onClick={() => {
+                  setAutoPlanMode("replace");
+                  setAutoPlanVariation(0);
+                  setShowAutoPlanPreview(false);
+                }}
+              >
+                Replace dinners
+              </button>
+            </div>
+          </div>
+
+          {autoPlanPreview ? (
+            <div className="auto-plan-preview" aria-live="polite">
+              <div className="auto-plan-metrics">
+                {(["vegetarian", "chicken", "fish", "pork-beef"] as const).map((category) => (
+                  <span key={category}>
+                    <strong>{autoPlanPreview.summary.categoryCounts[category]}/{autoPlanPreview.summary.categoryTargets[category]}</strong>
+                    {dinnerCategoryLabels[category]}
+                  </span>
+                ))}
+                <span>
+                  <strong>{autoPlanPreview.summary.quickCount}/{autoPlanPreview.summary.quickTarget}</strong>
+                  Quick
+                </span>
+                <span>
+                  <strong>{autoPlanPreview.summary.familiarCount}/{autoPlanPreview.summary.familiarTarget}</strong>
+                  Familiar
+                </span>
+              </div>
+
+              <div className="auto-plan-list">
+                {autoPlanPreviewRows.map((row) => (
+                  <article className={classNames("auto-plan-row", row.preserved && "preserved")} key={row.key}>
+                    <time dateTime={row.date}>{dateFormatter.format(new Date(`${row.date}T12:00:00`))}</time>
+                    <div className="auto-plan-meal">
+                      {row.recipeId ? (
+                        <button type="button" onClick={() => onOpenRecipe(row.recipeId as string)}>{row.title}</button>
+                      ) : (
+                        <strong>{row.title}</strong>
+                      )}
+                      {row.detail ? <small>{row.detail}</small> : null}
+                    </div>
+                    <div className="auto-plan-badges">
+                      {row.badges.map((badge) => (
+                        <span className={classNames((badge === "Previous-week repeat" || badge === "Unfilled") && "warning")} key={badge}>{badge}</span>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              {autoPlanPreview.warnings.length > 0 ? (
+                <div className="auto-plan-warnings">
+                  {autoPlanPreview.warnings.map((warning) => (
+                    <span key={warning}>{warning}</span>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="auto-plan-actions">
+                <button className="icon-text-button" type="button" onClick={() => setAutoPlanVariation((current) => current + 1)}>
+                  <RefreshCw size={17} />
+                  Try another mix
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={autoPlanPreview.entries.length === 0}
+                  onClick={() => {
+                    onApplyAutoDinnerPlan(autoPlanPreview);
+                    setShowAutoPlanPreview(false);
+                  }}
+                >
+                  <CalendarDays size={17} />
+                  Apply dinner plan
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </section>
 
