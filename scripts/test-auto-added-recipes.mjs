@@ -21,6 +21,7 @@ const compile = spawnSync(
     "--outDir", outputDirectory,
     "lib/domain.ts",
     "lib/auto-added-recipes.ts",
+    "lib/auto-added-recipes-v2.ts",
     "tests/auto-added-recipes.test.ts"
   ],
   { cwd: projectRoot, stdio: "inherit" }

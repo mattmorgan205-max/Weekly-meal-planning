@@ -92,6 +92,7 @@ import {
   type DinnerCategory
 } from "@/lib/dinner-planner";
 import { installAutoAddedRecipePack } from "@/lib/auto-added-recipes";
+import { installAutoAddedRecipePackV2 } from "@/lib/auto-added-recipes-v2";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -278,8 +279,9 @@ function hydrateState(value: unknown): AppState {
   const parsed = (value ?? {}) as Partial<AppState>;
   const seeded = seedState();
   const hydratedRecipes = (parsed.recipes ?? seeded.recipes).map(hydrateRecipe);
-  const installedPack = installAutoAddedRecipePack(hydratedRecipes, parsed.installedRecipePacks ?? []);
-  const recipes = installedPack.recipes.map(hydrateRecipe);
+  const installedPackV1 = installAutoAddedRecipePack(hydratedRecipes, parsed.installedRecipePacks ?? []);
+  const installedPackV2 = installAutoAddedRecipePackV2(installedPackV1.recipes, installedPackV1.installedRecipePacks);
+  const recipes = installedPackV2.recipes.map(hydrateRecipe);
   const currentWeekStart = formatDateKey(startOfWeek(new Date()));
   const legacyManualItemRangeKey = shoppingRangeKeyForRange({
     startDate: currentWeekStart,
@@ -290,7 +292,7 @@ function hydrateState(value: unknown): AppState {
     ...seeded,
     ...parsed,
     recipes,
-    installedRecipePacks: installedPack.installedRecipePacks,
+    installedRecipePacks: installedPackV2.installedRecipePacks,
     plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople, recipes))
       .filter((meal) => meal.recipeId || meal.manualTitle),

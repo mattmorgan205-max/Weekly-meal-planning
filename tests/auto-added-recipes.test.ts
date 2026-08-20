@@ -5,6 +5,11 @@ import {
   autoAddedRecipes,
   installAutoAddedRecipePack
 } from "../lib/auto-added-recipes";
+import {
+  AUTO_ADDED_RECIPE_PACK_V2_ID,
+  autoAddedRecipesV2,
+  installAutoAddedRecipePackV2
+} from "../lib/auto-added-recipes-v2";
 import type { Recipe } from "../lib/domain";
 
 test("curated pack contains 20 complete, attributed dinner recipes", () => {
@@ -73,4 +78,59 @@ test("first installation skips a recipe that the household already has", () => {
 
   assert.equal(installed.addedCount, 19);
   assert.equal(installed.recipes.length, 20);
+});
+
+test("second curated pack contains 20 different recipes with meal pictures", () => {
+  const firstPackTitles = new Set(autoAddedRecipes.map((recipe) => recipe.title.toLowerCase()));
+  const firstPackSources = new Set(autoAddedRecipes.map((recipe) => recipe.sourceUrl?.toLowerCase()));
+
+  assert.equal(autoAddedRecipesV2.length, 20);
+  assert.equal(new Set(autoAddedRecipesV2.map((recipe) => recipe.id)).size, 20);
+  assert.equal(new Set(autoAddedRecipesV2.map((recipe) => recipe.sourceUrl)).size, 20);
+
+  autoAddedRecipesV2.forEach((recipe) => {
+    assert.ok(!firstPackTitles.has(recipe.title.toLowerCase()), `${recipe.title} duplicates the first pack`);
+    assert.ok(!firstPackSources.has(recipe.sourceUrl?.toLowerCase()), `${recipe.title} reuses an existing source`);
+    assert.ok(recipe.tags.includes("auto-added"), `${recipe.title} is missing the auto-added tag`);
+    assert.deepEqual(recipe.mealTypes, ["dinner"]);
+    assert.equal(recipe.source, "Good Food");
+    assert.match(recipe.sourceUrl ?? "", /^https:\/\/www\.bbcgoodfood\.com\/recipes\//);
+    assert.match(recipe.mealImageUrl ?? "", /^https:\/\/images\.immediate\.co\.uk\//);
+    assert.ok(recipe.ingredients.length >= 7, `${recipe.title} needs a useful ingredient list`);
+    assert.ok(recipe.instructions.length >= 2, `${recipe.title} needs a useful method`);
+    assert.equal(recipe.importedFrom, "url");
+  });
+});
+
+test("second pack supports the automatic dinner targets and correct time labels", () => {
+  const countTag = (tag: string) => autoAddedRecipesV2.filter((recipe) => recipe.tags.includes(tag)).length;
+
+  assert.equal(countTag("vegetarian"), 8);
+  assert.equal(countTag("chicken"), 5);
+  assert.equal(countTag("fish"), 4);
+  assert.equal(countTag("pork") + countTag("beef"), 3);
+  assert.ok(countTag("under 30 mins") >= 4);
+
+  autoAddedRecipesV2.forEach((recipe) => {
+    const total = (recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0);
+    const expected = total < 30 ? "under 30 mins" : total <= 60 ? "30-60 mins" : "over 60 mins";
+    assert.ok(recipe.tags.includes(expected), `${recipe.title} should be tagged ${expected}`);
+  });
+});
+
+test("second recipe pack installs after the first and respects later deletions", () => {
+  const firstInstall = installAutoAddedRecipePack([]);
+  const secondInstall = installAutoAddedRecipePackV2(firstInstall.recipes, firstInstall.installedRecipePacks);
+
+  assert.equal(secondInstall.addedCount, 20);
+  assert.equal(secondInstall.recipes.length, 40);
+  assert.deepEqual(secondInstall.installedRecipePacks, [AUTO_ADDED_RECIPE_PACK_ID, AUTO_ADDED_RECIPE_PACK_V2_ID]);
+
+  const deletedRecipeId = autoAddedRecipesV2[0].id;
+  const afterDeletion = secondInstall.recipes.filter((recipe) => recipe.id !== deletedRecipeId);
+  const repeatedInstall = installAutoAddedRecipePackV2(afterDeletion, secondInstall.installedRecipePacks);
+
+  assert.equal(repeatedInstall.addedCount, 0);
+  assert.equal(repeatedInstall.recipes.length, 39);
+  assert.ok(!repeatedInstall.recipes.some((recipe) => recipe.id === deletedRecipeId));
 });
