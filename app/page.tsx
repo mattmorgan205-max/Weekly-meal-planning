@@ -91,6 +91,7 @@ import {
   type AutoDinnerPlanResult,
   type DinnerCategory
 } from "@/lib/dinner-planner";
+import { installAutoAddedRecipePack } from "@/lib/auto-added-recipes";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -276,7 +277,9 @@ function hydratePlannedMeal(
 function hydrateState(value: unknown): AppState {
   const parsed = (value ?? {}) as Partial<AppState>;
   const seeded = seedState();
-  const recipes = (parsed.recipes ?? seeded.recipes).map(hydrateRecipe);
+  const hydratedRecipes = (parsed.recipes ?? seeded.recipes).map(hydrateRecipe);
+  const installedPack = installAutoAddedRecipePack(hydratedRecipes, parsed.installedRecipePacks ?? []);
+  const recipes = installedPack.recipes.map(hydrateRecipe);
   const currentWeekStart = formatDateKey(startOfWeek(new Date()));
   const legacyManualItemRangeKey = shoppingRangeKeyForRange({
     startDate: currentWeekStart,
@@ -287,6 +290,7 @@ function hydrateState(value: unknown): AppState {
     ...seeded,
     ...parsed,
     recipes,
+    installedRecipePacks: installedPack.installedRecipePacks,
     plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople, recipes))
       .filter((meal) => meal.recipeId || meal.manualTitle),
@@ -316,10 +320,10 @@ function loadState(): AppState {
   if (typeof window === "undefined") return seedState();
   try {
     const stored = window.localStorage.getItem(storageKey);
-    if (!stored) return seedState();
+    if (!stored) return hydrateState(seedState());
     return hydrateState(JSON.parse(stored));
   } catch {
-    return seedState();
+    return hydrateState(seedState());
   }
 }
 
@@ -2711,7 +2715,7 @@ export default function Home() {
             onSendMagicLink={sendMagicLink}
             onSaveCloud={saveCloudSnapshot}
             onLoadCloud={loadCloudSnapshot}
-            onResetDemo={() => setState(seedState())}
+            onResetDemo={() => setState(hydrateState(seedState()))}
           />
         )}
 
@@ -3751,7 +3755,8 @@ function RecipeDetailModal({
   onEditRecipe: (recipe: Recipe) => void;
 }) {
   const totalMinutes = totalRecipeMinutes(recipe);
-  const source = recipe.source ?? recipe.sourceUrl;
+  const sourceLabel = recipe.source && !isHttpUrl(recipe.source) ? recipe.source : undefined;
+  const sourceUrl = recipe.sourceUrl ?? (recipe.source && isHttpUrl(recipe.source) ? recipe.source : undefined);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -3786,15 +3791,15 @@ function RecipeDetailModal({
           </span>
           {recipe.prepMinutes ? <span>{recipe.prepMinutes} mins prep</span> : null}
           {recipe.cookMinutes ? <span>{recipe.cookMinutes} mins cook</span> : null}
-          {source ? (
+          {sourceLabel || sourceUrl ? (
             <span>
               Source:{" "}
-              {isHttpUrl(source) ? (
-                <a href={source} target="_blank" rel="noreferrer">
-                  link
+              {sourceUrl ? (
+                <a href={sourceUrl} target="_blank" rel="noreferrer">
+                  {sourceLabel ?? "link"}
                 </a>
               ) : (
-                source
+                sourceLabel
               )}
             </span>
           ) : null}

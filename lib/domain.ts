@@ -139,6 +139,7 @@ export type ImportDraft = {
 
 export type AppState = {
   recipes: Recipe[];
+  installedRecipePacks: string[];
   plannedMeals: PlannedMeal[];
   dayNotes: Record<string, string>;
   useUpIngredients: string[];
@@ -1304,6 +1305,7 @@ export function seedState(): AppState {
 
   return {
     recipes,
+    installedRecipePacks: [],
     plannedMeals: [
       {
         id: "meal_1",
