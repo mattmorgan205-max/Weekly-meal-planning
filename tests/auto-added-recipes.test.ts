@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
+import path from "node:path";
 import {
   AUTO_ADDED_RECIPE_PACK_ID,
   autoAddedRecipes,
@@ -10,6 +12,11 @@ import {
   autoAddedRecipesV2,
   installAutoAddedRecipePackV2
 } from "../lib/auto-added-recipes-v2";
+import {
+  GREEN_ROASTING_TIN_RECIPE_PACK_ID,
+  greenRoastingTinRecipes,
+  installGreenRoastingTinRecipePack
+} from "../lib/green-roasting-tin-recipes";
 import type { Recipe } from "../lib/domain";
 
 test("curated pack contains 20 complete, attributed dinner recipes", () => {
@@ -132,5 +139,46 @@ test("second recipe pack installs after the first and respects later deletions",
 
   assert.equal(repeatedInstall.addedCount, 0);
   assert.equal(repeatedInstall.recipes.length, 39);
+  assert.ok(!repeatedInstall.recipes.some((recipe) => recipe.id === deletedRecipeId));
+});
+
+test("Green Roasting Tin pack contains 12 attributed recipes with local meal pictures", () => {
+  assert.equal(greenRoastingTinRecipes.length, 12);
+  assert.equal(new Set(greenRoastingTinRecipes.map((recipe) => recipe.id)).size, 12);
+  assert.equal(greenRoastingTinRecipes.filter((recipe) => recipe.mealTypes.includes("breakfast")).length, 1);
+  assert.equal(greenRoastingTinRecipes.filter((recipe) => recipe.mealTypes.includes("dinner")).length, 11);
+
+  greenRoastingTinRecipes.forEach((recipe) => {
+    assert.equal(recipe.source, "The Green Roasting Tin");
+    assert.equal(recipe.importedFrom, "photo");
+    assert.ok(recipe.tags.includes("cookbook"), `${recipe.title} is missing the cookbook tag`);
+    assert.match(recipe.mealImageUrl ?? "", /^\/recipe-images\/green-roasting-tin\/[a-z0-9-]+\.jpg$/);
+    const imagePath = path.join(process.cwd(), "public", (recipe.mealImageUrl ?? "").replace(/^\//, ""));
+    assert.ok(fs.existsSync(imagePath), `${recipe.title} is missing its local meal picture`);
+    assert.ok(fs.statSync(imagePath).size > 20_000, `${recipe.title} meal picture is unexpectedly small`);
+    assert.ok(recipe.ingredients.length >= 8, `${recipe.title} needs a useful ingredient list`);
+    assert.ok(recipe.instructions.length >= 3, `${recipe.title} needs a useful condensed method`);
+  });
+});
+
+test("Green Roasting Tin pack installs once after both curated packs", () => {
+  const firstInstall = installAutoAddedRecipePack([]);
+  const secondInstall = installAutoAddedRecipePackV2(firstInstall.recipes, firstInstall.installedRecipePacks);
+  const cookbookInstall = installGreenRoastingTinRecipePack(secondInstall.recipes, secondInstall.installedRecipePacks);
+
+  assert.equal(cookbookInstall.addedCount, 12);
+  assert.equal(cookbookInstall.recipes.length, 52);
+  assert.deepEqual(cookbookInstall.installedRecipePacks, [
+    AUTO_ADDED_RECIPE_PACK_ID,
+    AUTO_ADDED_RECIPE_PACK_V2_ID,
+    GREEN_ROASTING_TIN_RECIPE_PACK_ID
+  ]);
+
+  const deletedRecipeId = greenRoastingTinRecipes[0].id;
+  const afterDeletion = cookbookInstall.recipes.filter((recipe) => recipe.id !== deletedRecipeId);
+  const repeatedInstall = installGreenRoastingTinRecipePack(afterDeletion, cookbookInstall.installedRecipePacks);
+
+  assert.equal(repeatedInstall.addedCount, 0);
+  assert.equal(repeatedInstall.recipes.length, 51);
   assert.ok(!repeatedInstall.recipes.some((recipe) => recipe.id === deletedRecipeId));
 });
