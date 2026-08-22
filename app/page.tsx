@@ -5,6 +5,8 @@ import {
   Camera,
   Check,
   ChefHat,
+  ChevronLeft,
+  ChevronRight,
   CircleOff,
   Clock,
   Clipboard,
@@ -18,7 +20,9 @@ import {
   Link,
   ListChecks,
   Loader2,
+  MoreHorizontal,
   Minus,
+  Move,
   Pencil,
   Plus,
   Printer,
@@ -103,6 +107,8 @@ type MealPickerGroup = MealSlot | "all";
 type RecipeGroupFilter = MealSlot | "all";
 type PhotoCropMode = "whole" | "ingredients" | "method";
 type ManualItemCategory = GroceryCategory | "Auto";
+type MobilePlannerMode = "overview" | "day";
+type MobilePlannerTool = "use-up" | "auto-plan";
 type AsdaHelperQueueItem = {
   itemId: string;
   shoppingKey: string;
@@ -186,6 +192,9 @@ const dateFormatter = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
   month: "short"
 });
+
+const mobileWeekdayFormatter = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
+const mobileDayFormatter = new Intl.DateTimeFormat("en-GB", { day: "numeric" });
 
 const dinnerCategoryLabels: Record<DinnerCategory, string> = {
   vegetarian: "Vegetarian",
@@ -2776,6 +2785,269 @@ function NavButton({
   );
 }
 
+function MobileMealCard({
+  meal,
+  recipe,
+  days,
+  visibleSlots,
+  ingredientAliases,
+  recipeFrequency,
+  onMoveMeal,
+  onRemoveMeal,
+  onUpdateMeal,
+  onAddLeftovers,
+  onOpenRecipe
+}: {
+  meal: AppState["plannedMeals"][number];
+  recipe?: Recipe;
+  days: Date[];
+  visibleSlots: MealSlot[];
+  ingredientAliases: Record<string, string>;
+  recipeFrequency: number;
+  onMoveMeal: (id: string, date: string, slot: MealSlot) => void;
+  onRemoveMeal: (id: string) => void;
+  onUpdateMeal: (id: string, patch: Partial<AppState["plannedMeals"][number]>) => void;
+  onAddLeftovers: (meal: AppState["plannedMeals"][number]) => void;
+  onOpenRecipe: (recipeId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [moveDate, setMoveDate] = useState(meal.date);
+  const [moveSlot, setMoveSlot] = useState<MealSlot>(meal.slot);
+  const title = recipe?.title ?? meal.manualTitle ?? "Planned meal";
+  const optionalIngredients = recipe?.ingredients.filter((ingredient) => ingredient.role === "optional") ?? [];
+  const recipeSideSuggestions = recipe?.ingredients.filter((ingredient) => ingredient.role === "side") ?? [];
+  const selectedOptionalId = optionalIngredients.find((ingredient) => meal.selectedIngredientIds?.includes(ingredient.id))?.id ?? "";
+  const plannedSides = meal.extraSideIngredients ?? [];
+  const plannedSideNames = new Set(
+    plannedSides.map((ingredient) => canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName)
+  );
+  const availableRecipeSideSuggestions = recipeSideSuggestions.filter(
+    (ingredient) => !plannedSideNames.has(canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName)
+  );
+  const selectedOptionNames = recipe
+    ? recipe.ingredients
+        .filter((ingredient) => ingredient.role === "optional" && meal.selectedIngredientIds?.includes(ingredient.id))
+        .map((ingredient) => ingredient.name)
+    : [];
+  const additions = [...selectedOptionNames, ...plannedSides.map((ingredient) => ingredient.name).filter(Boolean)];
+  const meta = recipe
+    ? `${recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}${recipeFrequency > 1 ? ` · planned ${recipeFrequency}x` : ""}`
+    : meal.notes || "Manual plan";
+
+  useEffect(() => {
+    setMoveDate(meal.date);
+    setMoveSlot(meal.slot);
+  }, [meal.date, meal.slot]);
+
+  function updatePlannedSide(sideId: string, patch: Partial<Ingredient>) {
+    const extraSideIngredients = plannedSides.map((ingredient) => {
+      if (ingredient.id !== sideId) return ingredient;
+      const nextIngredient = { ...ingredient, ...patch };
+      if (typeof patch.name === "string") {
+        nextIngredient.category = inferCategory(patch.name);
+        nextIngredient.canonicalName = canonicalizeIngredientName(patch.name, ingredientAliases).canonicalName;
+      }
+      return nextIngredient;
+    });
+    onUpdateMeal(meal.id, { extraSideIngredients });
+  }
+
+  function addPlannedSide(source?: Ingredient) {
+    const factor = recipe ? meal.peopleCount / Math.max(1, recipe.servings) : 1;
+    const name = source?.name ?? "";
+    onUpdateMeal(meal.id, {
+      extraSideIngredients: [
+        ...plannedSides,
+        {
+          ...(source ?? {}),
+          id: createId("planned_side"),
+          name,
+          quantity: typeof source?.quantity === "number" ? source.quantity * factor : 1,
+          unit: source?.unit || "item",
+          role: "side",
+          category: source?.category ?? inferCategory(name),
+          canonicalName: canonicalizeIngredientName(name, ingredientAliases).canonicalName,
+          needsReview: false
+        }
+      ]
+    });
+  }
+
+  return (
+    <article className={classNames("mobile-meal-card", expanded && "expanded")}>
+      <div className="mobile-meal-summary">
+        {recipe ? (
+          <button className="mobile-meal-title" type="button" onClick={() => onOpenRecipe(recipe.id)}>
+            <strong>{title}</strong>
+            <span>{meta}</span>
+            {additions.length > 0 ? <small>With {additions.join(", ")}</small> : null}
+          </button>
+        ) : (
+          <div className="mobile-meal-title manual-meal-main">
+            <strong>{title}</strong>
+            <span>{meta}</span>
+          </div>
+        )}
+
+        <div className="people-stepper" aria-label={`${meal.peopleCount} people eating`}>
+          <button
+            type="button"
+            title="One fewer person"
+            disabled={meal.peopleCount === 0}
+            onClick={() => onUpdateMeal(meal.id, { peopleCount: Math.max(0, meal.peopleCount - 1) })}
+          >
+            <Minus size={15} />
+          </button>
+          <span><Users size={14} />{meal.peopleCount}</span>
+          <button type="button" title="One more person" onClick={() => onUpdateMeal(meal.id, { peopleCount: meal.peopleCount + 1 })}>
+            <Plus size={15} />
+          </button>
+        </div>
+
+        <button
+          className="mobile-more-button"
+          type="button"
+          title={expanded ? "Close meal controls" : "Edit meal options"}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <X size={18} /> : <MoreHorizontal size={19} />}
+        </button>
+      </div>
+
+      {expanded ? (
+        <div className="mobile-meal-editor">
+          {optionalIngredients.length > 0 ? (
+            <label>
+              Meal choice
+              <select
+                aria-label={`Ingredient choice for ${title}`}
+                value={selectedOptionalId}
+                onChange={(event) =>
+                  onUpdateMeal(meal.id, { selectedIngredientIds: event.target.value ? [event.target.value] : [] })
+                }
+              >
+                <option value="">Choose when cooking</option>
+                {optionalIngredients.map((ingredient) => (
+                  <option value={ingredient.id} key={ingredient.id}>{ingredient.name}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          {recipe ? (
+            <div className="mobile-side-editor">
+              <div className="mobile-editor-heading">
+                <strong>Sides</strong>
+                <button className="icon-text-button" type="button" onClick={() => addPlannedSide()}>
+                  <Plus size={15} />
+                  Add side
+                </button>
+              </div>
+              {availableRecipeSideSuggestions.length > 0 ? (
+                <select
+                  aria-label={`Add a saved side to ${title}`}
+                  value=""
+                  onChange={(event) => {
+                    const suggestion = availableRecipeSideSuggestions.find((ingredient) => ingredient.id === event.target.value);
+                    if (suggestion) addPlannedSide(suggestion);
+                  }}
+                >
+                  <option value="">Add saved side...</option>
+                  {availableRecipeSideSuggestions.map((ingredient) => (
+                    <option value={ingredient.id} key={ingredient.id}>{ingredient.name}</option>
+                  ))}
+                </select>
+              ) : null}
+              {plannedSides.map((ingredient) => (
+                <div className="mobile-side-row" key={ingredient.id}>
+                  <input
+                    aria-label="Side name"
+                    value={ingredient.name}
+                    onChange={(event) => updatePlannedSide(ingredient.id, { name: event.target.value })}
+                    placeholder="Side"
+                  />
+                  <input
+                    aria-label={`Quantity for ${ingredient.name || "side"}`}
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={ingredient.quantity ?? ""}
+                    onChange={(event) =>
+                      updatePlannedSide(ingredient.id, {
+                        quantity: event.target.value === "" ? undefined : Math.max(0, Number(event.target.value))
+                      })
+                    }
+                  />
+                  <select
+                    aria-label={`Unit for ${ingredient.name || "side"}`}
+                    value={ingredient.unit ?? ""}
+                    onChange={(event) => updatePlannedSide(ingredient.id, { unit: event.target.value || undefined })}
+                  >
+                    <option value="">No unit</option>
+                    {standardIngredientUnits.map((unit) => <option value={unit} key={unit}>{unit}</option>)}
+                  </select>
+                  <button
+                    className="icon-button danger"
+                    type="button"
+                    title="Remove side"
+                    onClick={() => onUpdateMeal(meal.id, { extraSideIngredients: plannedSides.filter((side) => side.id !== ingredient.id) })}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="mobile-move-controls">
+            <label>
+              Move to day
+              <select value={moveDate} onChange={(event) => setMoveDate(event.target.value)}>
+                {days.map((date) => {
+                  const dateKey = formatDateKey(date);
+                  return <option value={dateKey} key={dateKey}>{dateFormatter.format(date)}</option>;
+                })}
+              </select>
+            </label>
+            <label>
+              Meal
+              <select value={moveSlot} onChange={(event) => setMoveSlot(event.target.value as MealSlot)}>
+                {visibleSlots.map((slot) => <option value={slot} key={slot}>{labelMealSlot(slot)}</option>)}
+              </select>
+            </label>
+            <button
+              className="icon-text-button"
+              type="button"
+              disabled={moveDate === meal.date && moveSlot === meal.slot}
+              onClick={() => {
+                onMoveMeal(meal.id, moveDate, moveSlot);
+                setExpanded(false);
+              }}
+            >
+              <Move size={16} />
+              Move
+            </button>
+          </div>
+
+          <div className="mobile-meal-actions">
+            {recipe ? (
+              <button className="icon-text-button" type="button" onClick={() => onAddLeftovers(meal)}>
+                <RefreshCw size={16} />
+                Leftovers
+              </button>
+            ) : null}
+            <button className="ghost-danger" type="button" onClick={() => onRemoveMeal(meal.id)}>
+              <Trash2 size={16} />
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 function PlannerView({
   days,
   weekStart,
@@ -2834,6 +3106,10 @@ function PlannerView({
   onClearWeek: () => void;
 }) {
   const [dragOverSlot, setDragOverSlot] = useState<string | null>(null);
+  const [mobilePlannerMode, setMobilePlannerMode] = useState<MobilePlannerMode>("overview");
+  const [selectedMobileDate, setSelectedMobileDate] = useState(weekStart);
+  const [mobilePlannerTool, setMobilePlannerTool] = useState<MobilePlannerTool | null>(null);
+  const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [autoPlanStart, setAutoPlanStart] = useState(weekStart);
   const [autoPlanEnd, setAutoPlanEnd] = useState(() => formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), 6)));
   const [autoPlanMode, setAutoPlanMode] = useState<AutoDinnerPlanMode>("fill");
@@ -2936,6 +3212,11 @@ function PlannerView({
     setShowAutoPlanPreview(false);
   }, [weekStart]);
 
+  useEffect(() => {
+    const displayedDates = days.map(formatDateKey);
+    if (!displayedDates.includes(selectedMobileDate)) setSelectedMobileDate(displayedDates[0] ?? weekStart);
+  }, [days, selectedMobileDate, weekStart]);
+
   function changeAutoPlanStart(value: string) {
     if (!value) return;
     const maximumEnd = formatDateKey(addDays(new Date(`${value}T12:00:00`), 6));
@@ -2961,7 +3242,7 @@ function PlannerView({
 
   return (
     <div className="view-stack">
-      <section className="toolbar-band">
+      <section className="toolbar-band desktop-planner-only">
         <div>
           <p className="eyebrow">Planner range</p>
           <h2>
@@ -2999,7 +3280,205 @@ function PlannerView({
         </div>
       </section>
 
-      <section className="use-up-planner">
+      <section className="mobile-planner-shell" aria-label="Mobile meal planner">
+        <div className="mobile-planner-toolbar">
+          <div className="mobile-range-row">
+            <button className="mobile-icon-button" type="button" title="Previous range" onClick={() => onMoveWeek(-1)}>
+              <ChevronLeft size={20} />
+            </button>
+            <button className="mobile-range-title" type="button" onClick={onThisWeek}>
+              <span>{plannerDayCount === 7 ? "Week" : "Two weeks"}</span>
+              <strong>{dateFormatter.format(new Date(`${weekStart}T12:00:00`))} - {dateFormatter.format(new Date(`${endDate}T12:00:00`))}</strong>
+            </button>
+            <button className="mobile-icon-button" type="button" title="Next range" onClick={() => onMoveWeek(1)}>
+              <ChevronRight size={20} />
+            </button>
+            <button
+              className="mobile-icon-button"
+              type="button"
+              title="More planner options"
+              aria-expanded={mobileOptionsOpen}
+              onClick={() => setMobileOptionsOpen((current) => !current)}
+            >
+              <MoreHorizontal size={20} />
+            </button>
+          </div>
+
+          <div className="mobile-planner-switches">
+            <div className="segmented-control compact-segmented" aria-label="Planner days shown">
+              <button className={classNames(plannerDayCount === 7 && "active")} type="button" onClick={() => onSetPlannerDayCount(7)}>7 days</button>
+              <button className={classNames(plannerDayCount === 14 && "active")} type="button" onClick={() => onSetPlannerDayCount(14)}>14 days</button>
+            </div>
+            <div className="segmented-control compact-segmented" aria-label="Mobile planner view">
+              <button className={classNames(mobilePlannerMode === "overview" && "active")} type="button" onClick={() => setMobilePlannerMode("overview")}>Overview</button>
+              <button className={classNames(mobilePlannerMode === "day" && "active")} type="button" onClick={() => setMobilePlannerMode("day")}>Edit day</button>
+            </div>
+          </div>
+
+          {mobileOptionsOpen ? (
+            <div className="mobile-planner-options">
+              <label>
+                Start date
+                <input type="date" value={weekStart} onChange={(event) => onSetPlannerStart(event.target.value)} />
+              </label>
+              <div className="button-row">
+                <button className="icon-text-button" type="button" onClick={() => { onThisWeek(); setMobileOptionsOpen(false); }}>
+                  <CalendarDays size={16} />
+                  This week
+                </button>
+                <button className="icon-text-button" type="button" onClick={() => { onDuplicateWeek(); setMobileOptionsOpen(false); }}>
+                  <Copy size={16} />
+                  Repeat
+                </button>
+                <button className="ghost-danger" type="button" onClick={() => { onClearWeek(); setMobileOptionsOpen(false); }}>
+                  <CircleOff size={16} />
+                  Clear
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mobile-planner-tools">
+          <button className="icon-text-button" type="button" onClick={() => setMobilePlannerTool("use-up")}>
+            <Sparkles size={16} />
+            Use up food
+          </button>
+          <button className="icon-text-button" type="button" onClick={() => setMobilePlannerTool("auto-plan")}>
+            <Wand2 size={16} />
+            Auto-plan
+          </button>
+        </div>
+
+        {mobilePlannerMode === "overview" ? (
+          <div className="mobile-week-overview">
+            {days.map((date, index) => {
+              const dateKey = formatDateKey(date);
+              const mealsForDay = plannedMeals.filter(
+                (meal) => meal.date === dateKey && visibleSlots.includes(meal.slot) && (meal.recipeId || meal.manualTitle)
+              );
+              const note = dayNotes[dateKey]?.trim();
+
+              return (
+                <button
+                  className={classNames("mobile-overview-day", index === 7 && "second-week")}
+                  type="button"
+                  key={dateKey}
+                  onClick={() => {
+                    setSelectedMobileDate(dateKey);
+                    setMobilePlannerMode("day");
+                  }}
+                >
+                  <span className="mobile-overview-date">
+                    <strong>{mobileWeekdayFormatter.format(date)}</strong>
+                    <b>{mobileDayFormatter.format(date)}</b>
+                  </span>
+                  <span className="mobile-overview-content">
+                    {note ? <small>{note}</small> : null}
+                    {mealsForDay.length > 0 ? (
+                      mealsForDay.map((meal) => {
+                        const recipe = meal.recipeId ? recipes.find((item) => item.id === meal.recipeId) : undefined;
+                        return (
+                          <span className="mobile-overview-meal" key={meal.id}>
+                            <em>{labelMealSlot(meal.slot)}</em>
+                            <strong>{recipe?.title ?? meal.manualTitle}</strong>
+                            <b>{meal.peopleCount}</b>
+                          </span>
+                        );
+                      })
+                    ) : (
+                      <span className="mobile-overview-empty">No meals planned</span>
+                    )}
+                  </span>
+                  <ChevronRight size={18} />
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mobile-day-planner">
+            <div className="mobile-date-strip" aria-label="Choose a day to edit">
+              {days.map((date) => {
+                const dateKey = formatDateKey(date);
+                const mealCount = plannedMeals.filter((meal) => meal.date === dateKey && visibleSlots.includes(meal.slot)).length;
+                return (
+                  <button
+                    className={classNames(selectedMobileDate === dateKey && "active")}
+                    type="button"
+                    key={dateKey}
+                    onClick={() => setSelectedMobileDate(dateKey)}
+                  >
+                    <span>{mobileWeekdayFormatter.format(date)}</span>
+                    <strong>{mobileDayFormatter.format(date)}</strong>
+                    <small>{mealCount || ""}</small>
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="mobile-day-note">
+              Day note
+              <input
+                value={dayNotes[selectedMobileDate] ?? ""}
+                onChange={(event) => onUpdateDayNote(selectedMobileDate, event.target.value)}
+                placeholder="Add a note for this day"
+              />
+            </label>
+
+            <div className="mobile-day-slots">
+              {visibleSlots.map((slot) => {
+                const slotMeals = plannedMeals.filter((meal) => meal.date === selectedMobileDate && meal.slot === slot);
+                return (
+                  <section className="mobile-day-slot" key={slot}>
+                    <div className="mobile-slot-heading">
+                      <strong>{labelMealSlot(slot)}</strong>
+                      <button className="mobile-icon-button" type="button" title={`Add ${labelMealSlot(slot)}`} onClick={() => onOpenMealPicker(selectedMobileDate, slot)}>
+                        <Plus size={18} />
+                      </button>
+                    </div>
+                    {slotMeals.length > 0 ? (
+                      <div className="mobile-slot-meals">
+                        {slotMeals.map((meal) => (
+                          <MobileMealCard
+                            meal={meal}
+                            recipe={meal.recipeId ? recipes.find((item) => item.id === meal.recipeId) : undefined}
+                            days={days}
+                            visibleSlots={visibleSlots}
+                            ingredientAliases={ingredientAliases}
+                            recipeFrequency={meal.recipeId ? recipeFrequencies[meal.recipeId] ?? 0 : 0}
+                            onMoveMeal={onMoveMeal}
+                            onRemoveMeal={onRemoveMeal}
+                            onUpdateMeal={onUpdateMeal}
+                            onAddLeftovers={onAddLeftovers}
+                            onOpenRecipe={onOpenRecipe}
+                            key={meal.id}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <button className="mobile-empty-slot" type="button" onClick={() => onOpenMealPicker(selectedMobileDate, slot)}>
+                        <Plus size={15} />
+                        Add meal
+                      </button>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section
+          className={classNames("use-up-planner", Boolean(mobilePlannerTool) && "mobile-tool-open")}
+        data-mobile-tool={mobilePlannerTool ?? undefined}
+      >
+        <div className="mobile-sheet-heading">
+          <strong>{mobilePlannerTool === "auto-plan" ? "Auto-plan dinners" : "Use up food"}</strong>
+          <button className="mobile-icon-button" type="button" title="Close planning tool" onClick={() => setMobilePlannerTool(null)}>
+            <X size={19} />
+          </button>
+        </div>
         <div className="use-up-heading">
           <div>
             <p className="eyebrow">Use what is already at home</p>
@@ -3227,7 +3706,7 @@ function PlannerView({
         </div>
       </section>
 
-      <section className="planner-grid">
+      <section className="planner-grid desktop-planner-grid">
         {days.map((date) => {
           const dateKey = formatDateKey(date);
 
