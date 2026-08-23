@@ -2236,6 +2236,10 @@ h3 {
     flex: 1 1 130px;
   }
 
+  .asda-shop-panel {
+    display: none;
+  }
+
   .segmented-control {
     grid-template-columns: repeat(2, 1fr);
   }

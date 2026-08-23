@@ -51,6 +51,7 @@ import {
   addDays,
   canonicalizeIngredientName,
   cleanOcrRecipeText,
+  commonExtraItemsForProfile,
   createId,
   defaultCommonExtraItems,
   draftToRecipe,
@@ -72,12 +73,14 @@ import {
   parseIngredientLine,
   parseRecipeText,
   parseTags,
+  recordManualExtraUsage,
   recipeToDraft,
   seedState,
   startOfWeek,
   standardIngredientUnits,
   standardizeIngredientQuantity,
   totalRecipeMinutes,
+  updateCommonExtraProfileChoices,
   type AsdaProductSelection,
   type AppState,
   type GroceryCategory,
@@ -317,7 +320,11 @@ function hydrateState(value: unknown): AppState {
       ...parsed.settings,
       ingredientAliases: parsed.settings?.ingredientAliases ?? {},
       shoppingNameVariants: parsed.settings?.shoppingNameVariants ?? {},
-      commonExtraItems: Array.isArray(parsed.settings?.commonExtraItems) ? parsed.settings.commonExtraItems : [...defaultCommonExtraItems]
+      commonExtraItems: Array.isArray(parsed.settings?.commonExtraItems) ? parsed.settings.commonExtraItems : [...defaultCommonExtraItems],
+      commonExtraProfiles:
+        parsed.settings?.commonExtraProfiles && typeof parsed.settings.commonExtraProfiles === "object"
+          ? parsed.settings.commonExtraProfiles
+          : {}
     },
     shoppingChecks: parsed.shoppingChecks ?? {},
     hiddenShoppingItems: parsed.hiddenShoppingItems ?? {},
@@ -1106,6 +1113,7 @@ export default function Home() {
     () => mealSlots.filter((slot) => !state.settings.hiddenSlots.includes(slot)),
     [state.settings.hiddenSlots]
   );
+  const commonExtraProfileKey = cloudUser?.trim().toLowerCase() || "local";
   const days = useMemo(() => dateRangeDates(weekStart, plannerDayCount), [plannerDayCount, weekStart]);
   const shoppingDateRange = useMemo(() => normalizeDateRange(shoppingStartDate, shoppingEndDate), [shoppingStartDate, shoppingEndDate]);
   const shoppingRangeKey = useMemo(() => shoppingRangeKeyForRange(shoppingDateRange), [shoppingDateRange]);
@@ -2151,7 +2159,14 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item]),
+      settings: current.manualShoppingItems.some(
+        (existing) =>
+          existing.shoppingRangeKey === shoppingRangeKey &&
+          shoppingPreferenceKey(existing) === shoppingPreferenceKey(item)
+      )
+        ? current.settings
+        : recordManualExtraUsage(current.settings, commonExtraProfileKey, [item.name])
     }));
     setManualItemName("");
     setManualItemQuantity("");
@@ -2166,10 +2181,22 @@ export default function Home() {
 
     if (!newItems.length) return;
 
-    updateState((current) => ({
-      ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...newItems])
-    }));
+    updateState((current) => {
+      const existingKeys = new Set(
+        current.manualShoppingItems
+          .filter((item) => item.shoppingRangeKey === shoppingRangeKey)
+          .map(shoppingPreferenceKey)
+      );
+      const newlyUsedNames = newItems
+        .filter((item) => !existingKeys.has(shoppingPreferenceKey(item)))
+        .map((item) => item.name);
+
+      return {
+        ...current,
+        manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...newItems]),
+        settings: recordManualExtraUsage(current.settings, commonExtraProfileKey, newlyUsedNames)
+      };
+    });
     setManualBulkItems("");
   }
 
@@ -2179,16 +2206,22 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item]),
+      settings: current.manualShoppingItems.some(
+        (existing) =>
+          existing.shoppingRangeKey === shoppingRangeKey &&
+          shoppingPreferenceKey(existing) === shoppingPreferenceKey(item)
+      )
+        ? current.settings
+        : recordManualExtraUsage(current.settings, commonExtraProfileKey, [item.name])
     }));
   }
 
   function updateCommonExtraItems(items: string[]) {
-    const normalizedItems = items
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .filter((item, index, allItems) => allItems.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index);
-    updateSettings({ commonExtraItems: normalizedItems });
+    updateState((current) => ({
+      ...current,
+      settings: updateCommonExtraProfileChoices(current.settings, commonExtraProfileKey, items)
+    }));
   }
 
   function clearManualShoppingItemsForRange() {
@@ -2228,6 +2261,37 @@ export default function Home() {
       };
     });
     syncAsdaHelperItemStatus(id, statusKey, checked ? "added" : undefined);
+  }
+
+  function unselectAllShoppingItems() {
+    const checkedItems = shoppingList.filter((item) => item.checked);
+    if (!checkedItems.length) return;
+    const checkedIds = new Set(checkedItems.map((item) => item.id));
+    const statusKeys = new Map(
+      checkedItems.map((item) => [item.id, storeStatusItemKey(shoppingDateRange, item.id)] as const)
+    );
+
+    updateState((current) => {
+      const shoppingChecks = { ...current.shoppingChecks };
+      const asdaShoppingStatus = { ...current.asdaShoppingStatus };
+
+      checkedIds.forEach((itemId) => {
+        delete shoppingChecks[itemId];
+        const statusKey = statusKeys.get(itemId);
+        if (statusKey && asdaShoppingStatus[statusKey] === "added") delete asdaShoppingStatus[statusKey];
+      });
+
+      return {
+        ...current,
+        shoppingChecks,
+        asdaShoppingStatus,
+        manualShoppingItems: current.manualShoppingItems.map((item) =>
+          checkedIds.has(item.id) ? { ...item, checked: false } : item
+        )
+      };
+    });
+
+    statusKeys.forEach((statusKey, itemId) => syncAsdaHelperItemStatus(itemId, statusKey));
   }
 
   function updateManualShoppingItem(id: string, patch: Partial<ShoppingListItem>) {
@@ -2675,6 +2739,7 @@ export default function Home() {
           <ShoppingView
             items={shoppingList}
             settings={state.settings}
+            commonExtraProfileKey={commonExtraProfileKey}
             startDate={shoppingStartDate}
             endDate={shoppingEndDate}
             rangeStartDate={shoppingDateRange.startDate}
@@ -2705,6 +2770,7 @@ export default function Home() {
             onClearManualItems={clearManualShoppingItemsForRange}
             onUpdateCommonExtras={updateCommonExtraItems}
             onToggleItem={toggleShoppingItem}
+            onUnselectAll={unselectAllShoppingItems}
             onUpdateManualItem={updateManualShoppingItem}
             onDeleteItem={deleteShoppingItem}
             onOpenRecipe={setSelectedRecipeId}
@@ -4954,6 +5020,7 @@ function AddRecipeView({
 function ShoppingView({
   items,
   settings,
+  commonExtraProfileKey,
   startDate,
   endDate,
   rangeStartDate,
@@ -4979,6 +5046,7 @@ function ShoppingView({
   onClearManualItems,
   onUpdateCommonExtras,
   onToggleItem,
+  onUnselectAll,
   onUpdateManualItem,
   onDeleteItem,
   onOpenRecipe,
@@ -4991,6 +5059,7 @@ function ShoppingView({
 }: {
   items: ShoppingListItem[];
   settings: AppState["settings"];
+  commonExtraProfileKey: string;
   startDate: string;
   endDate: string;
   rangeStartDate: string;
@@ -5016,6 +5085,7 @@ function ShoppingView({
   onClearManualItems: () => void;
   onUpdateCommonExtras: (items: string[]) => void;
   onToggleItem: (id: string, checked: boolean) => void;
+  onUnselectAll: () => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
   onOpenRecipe: (recipeId: string) => void;
@@ -5026,9 +5096,13 @@ function ShoppingView({
   onPrint: () => void;
   onRestoreGenerated: () => void;
 }) {
+  const commonExtraItems = useMemo(
+    () => commonExtraItemsForProfile(settings, commonExtraProfileKey),
+    [commonExtraProfileKey, settings]
+  );
   const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
   const [editingCommonExtras, setEditingCommonExtras] = useState(false);
-  const [commonExtrasDraft, setCommonExtrasDraft] = useState<string[]>(settings.commonExtraItems);
+  const [commonExtrasDraft, setCommonExtrasDraft] = useState<string[]>(commonExtraItems);
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
@@ -5040,6 +5114,7 @@ function ShoppingView({
     });
   const manualItemKeys = new Set(manualItems.map((item) => shoppingPreferenceKey(item)));
   const manualItemCount = manualItems.length;
+  const checkedItemCount = items.filter((item) => item.checked).length;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const grouped = groceryCategories
     .map((category) => ({
@@ -5049,8 +5124,8 @@ function ShoppingView({
     .filter((group) => group.items.length > 0);
 
   useEffect(() => {
-    if (!editingCommonExtras) setCommonExtrasDraft(settings.commonExtraItems);
-  }, [editingCommonExtras, settings.commonExtraItems]);
+    if (!editingCommonExtras) setCommonExtrasDraft(commonExtraItems);
+  }, [commonExtraItems, editingCommonExtras]);
 
   function buildAsdaHelperQueue(): AsdaHelperQueue {
     return {
@@ -5155,6 +5230,10 @@ function ShoppingView({
             <input type="checkbox" checked={settings.includeStaples} onChange={(event) => onToggleIncludeStaples(event.target.checked)} />
             Include staples
           </label>
+          <button className="icon-text-button" type="button" disabled={!checkedItemCount} onClick={onUnselectAll}>
+            <CircleOff size={18} />
+            Unselect all
+          </button>
           <button className="icon-text-button" onClick={onCopy}>
             <Download size={18} />
             Copy
@@ -5220,7 +5299,7 @@ function ShoppingView({
                     className="text-button"
                     type="button"
                     onClick={() => {
-                      setCommonExtrasDraft(settings.commonExtraItems);
+                      setCommonExtrasDraft(commonExtraItems);
                       setEditingCommonExtras(false);
                     }}
                   >
@@ -5243,7 +5322,7 @@ function ShoppingView({
                   className="icon-text-button"
                   type="button"
                   onClick={() => {
-                    setCommonExtrasDraft(settings.commonExtraItems);
+                    setCommonExtrasDraft(commonExtraItems);
                     setEditingCommonExtras(true);
                   }}
                 >
@@ -5281,7 +5360,7 @@ function ShoppingView({
               </div>
             ) : (
               <div className="common-extra-list">
-                {settings.commonExtraItems.map((itemName) => {
+                {commonExtraItems.map((itemName) => {
                   const alreadyAdded = manualItemKeys.has(shoppingPreferenceKey({ name: itemName }));
 
                   return (

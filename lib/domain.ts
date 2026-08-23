@@ -104,6 +104,18 @@ export type ShoppingListItem = {
 
 export type StoreShoppingStatus = "opened" | "added" | "unavailable";
 
+export type CommonExtraUsage = {
+  name: string;
+  count: number;
+  lastAddedAt: string;
+};
+
+export type CommonExtraProfile = {
+  usage: Record<string, CommonExtraUsage>;
+  pinnedItems: string[];
+  hiddenItems: string[];
+};
+
 export type AppSettings = {
   householdName: string;
   defaultPeople: number;
@@ -113,6 +125,7 @@ export type AppSettings = {
   ingredientAliases: Record<string, string>;
   shoppingNameVariants: Record<string, string[]>;
   commonExtraItems: string[];
+  commonExtraProfiles: Record<string, CommonExtraProfile>;
   splitShoppingItems: Record<string, boolean>;
 };
 
@@ -183,6 +196,112 @@ export const defaultCommonExtraItems = [
   "Tea bags",
   "Toilet roll"
 ];
+
+function commonExtraKey(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function uniqueCommonExtraItems(items: string[]) {
+  const seen = new Set<string>();
+
+  return items
+    .map((item) => item.trim().replace(/\s+/g, " "))
+    .filter((item) => {
+      const key = commonExtraKey(item);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function commonExtraProfile(settings: AppSettings, profileKey: string): CommonExtraProfile {
+  return settings.commonExtraProfiles[profileKey] ?? { usage: {}, pinnedItems: [], hiddenItems: [] };
+}
+
+export function commonExtraItemsForProfile(settings: AppSettings, profileKey: string, limit = 15) {
+  const profile = commonExtraProfile(settings, profileKey);
+  const hiddenKeys = new Set(profile.hiddenItems.map(commonExtraKey));
+  const pinnedKeys = new Set(profile.pinnedItems.map(commonExtraKey));
+  const rankedUsage = Object.values(profile.usage).sort(
+    (first, second) =>
+      second.count - first.count ||
+      second.lastAddedAt.localeCompare(first.lastAddedAt) ||
+      first.name.localeCompare(second.name)
+  );
+  const candidates = uniqueCommonExtraItems([
+    ...profile.pinnedItems,
+    ...rankedUsage.map((item) => item.name),
+    ...settings.commonExtraItems,
+    ...defaultCommonExtraItems
+  ]);
+
+  return candidates
+    .filter((item) => pinnedKeys.has(commonExtraKey(item)) || !hiddenKeys.has(commonExtraKey(item)))
+    .slice(0, Math.max(0, limit));
+}
+
+export function recordManualExtraUsage(
+  settings: AppSettings,
+  profileKey: string,
+  itemNames: string[],
+  addedAt = new Date().toISOString()
+) {
+  const profile = commonExtraProfile(settings, profileKey);
+  const usage = { ...profile.usage };
+
+  uniqueCommonExtraItems(itemNames).forEach((name) => {
+    const key = commonExtraKey(name);
+    const current = usage[key];
+    usage[key] = {
+      name,
+      count: (current?.count ?? 0) + 1,
+      lastAddedAt: addedAt
+    };
+  });
+
+  return {
+    ...settings,
+    commonExtraProfiles: {
+      ...settings.commonExtraProfiles,
+      [profileKey]: { ...profile, usage }
+    }
+  };
+}
+
+export function updateCommonExtraProfileChoices(settings: AppSettings, profileKey: string, nextItems: string[], limit = 15) {
+  const currentItems = commonExtraItemsForProfile(settings, profileKey, limit);
+  const normalizedItems = uniqueCommonExtraItems(nextItems);
+  const nextKeys = new Set(normalizedItems.map(commonExtraKey));
+  const currentKeys = new Set(currentItems.map(commonExtraKey));
+  const profile = commonExtraProfile(settings, profileKey);
+  const pinnedItems = uniqueCommonExtraItems([
+    ...profile.pinnedItems.filter((item) => nextKeys.has(commonExtraKey(item))),
+    ...normalizedItems.filter((item) => !currentKeys.has(commonExtraKey(item)))
+  ]);
+  const hiddenItems = uniqueCommonExtraItems([
+    ...profile.hiddenItems.filter((item) => !nextKeys.has(commonExtraKey(item))),
+    ...currentItems.filter((item) => !nextKeys.has(commonExtraKey(item)))
+  ]);
+
+  return {
+    ...settings,
+    commonExtraProfiles: {
+      ...settings.commonExtraProfiles,
+      [profileKey]: {
+        ...profile,
+        pinnedItems,
+        hiddenItems
+      }
+    }
+  };
+}
 
 export const standardIngredientUnits = [
   "g",
@@ -1348,6 +1467,7 @@ export function seedState(): AppState {
       ingredientAliases: {},
       shoppingNameVariants: {},
       commonExtraItems: [...defaultCommonExtraItems],
+      commonExtraProfiles: {},
       splitShoppingItems: {}
     }
   };
