@@ -11,6 +11,18 @@ export type GroceryCategory =
   | "Other";
 
 export type IngredientRole = "required" | "optional" | "side";
+export type RecipeVisibility = "global" | "household";
+export type RecipeReaction = "love" | "like" | "okay" | "not_again";
+
+export type RecipePopularitySummary = {
+  loveCount: number;
+  likeCount: number;
+  okayCount: number;
+  notAgainCount: number;
+  ratingCount: number;
+  householdCount: number;
+  score: number;
+};
 
 export type Ingredient = {
   id: string;
@@ -35,6 +47,9 @@ export type Recipe = {
   cookMinutes?: number;
   tags: string[];
   favorite: boolean;
+  visibility?: RecipeVisibility;
+  catalogSourceHouseholdId?: string;
+  catalogEntryId?: string;
   ingredients: Ingredient[];
   instructions: string[];
   source?: string;
@@ -137,6 +152,7 @@ export type ImportDraft = {
   prepMinutes?: number;
   cookMinutes?: number;
   tags: string[];
+  visibility?: RecipeVisibility;
   ingredients: Ingredient[];
   instructions: string[];
   source?: string;
@@ -1103,6 +1119,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     cookMinutes: draft.cookMinutes,
     tags: draft.tags,
     favorite: false,
+    visibility: draft.visibility ?? "household",
     ingredients: draft.ingredients.map((ingredient) => ({
       ...ingredient,
       id: ingredient.id || createId("ing"),
@@ -1133,6 +1150,7 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
     tags: recipe.tags,
+    visibility: recipe.visibility ?? "household",
     ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, role: ingredient.role ?? "required" })),
     instructions: [...recipe.instructions],
     source: recipe.source ?? recipe.sourceUrl,

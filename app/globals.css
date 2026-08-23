@@ -1265,6 +1265,61 @@ h3 {
   font-weight: 800;
 }
 
+.recipe-rating-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.recipe-rating-summary strong {
+  color: var(--green-dark);
+}
+
+.recipe-reaction-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(340px, 1.3fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.recipe-reaction-panel h3 {
+  margin: 0 0 3px;
+}
+
+.recipe-reaction-panel span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.recipe-reaction-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.recipe-reaction-options button {
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fffefa;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.recipe-reaction-options button.active {
+  border-color: #79aa8c;
+  background: var(--mint);
+  color: var(--green-dark);
+}
+
 .split-view {
   display: grid;
   grid-template-columns: minmax(280px, 390px) minmax(0, 1fr);
@@ -2000,6 +2055,24 @@ h3 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.recipe-visibility-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.recipe-visibility-option {
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  text-align: left;
+}
+
+.recipe-visibility-option small {
+  color: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
 .toggle-tile {
   justify-content: flex-start;
   padding: 0 12px;
@@ -2019,6 +2092,31 @@ h3 {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto;
   gap: 8px;
+}
+
+.household-action-form,
+.household-invite-form {
+  display: grid;
+  gap: 8px;
+}
+
+.household-action-form {
+  grid-template-columns: minmax(150px, 1fr) auto;
+}
+
+.household-invite-form {
+  grid-template-columns: minmax(170px, 1fr) minmax(100px, 0.45fr) auto;
+}
+
+.household-role-badge {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--green-dark);
+  background: var(--mint);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: capitalize;
 }
 
 .status-line {
@@ -2247,6 +2345,23 @@ h3 {
   .meal-group-tabs,
   .meal-type-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .recipe-reaction-panel,
+  .household-action-form,
+  .household-invite-form {
+    grid-template-columns: 1fr;
+  }
+
+  .recipe-reaction-options,
+  .recipe-visibility-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recipe-rating-summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .app-shell {

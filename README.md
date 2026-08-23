@@ -26,14 +26,19 @@ Then open `http://localhost:3000`.
 - Simple staples list that hides ingredients usually kept at home.
 - Local persistence in the browser with cloud backup before remote loads.
 - Supabase magic-link login with automatic snapshot sync across devices.
+- Multiple switchable households with owner/editor/viewer invitations.
+- Shared recipe catalogue plus household-only recipes.
+- Personal meal reactions and anonymous cross-household popularity totals that guide auto-planning.
 - Install-friendly web app manifest and icons for phone home screens.
 
 ## Supabase Setup
 
 1. Create a Supabase project.
 2. Run `supabase/schema.sql` in the Supabase SQL editor.
-3. Run `supabase/recipe-images.sql` in the Supabase SQL editor.
-4. Add these values to `.env.local`:
+3. Run `supabase/shared-household.sql` in the Supabase SQL editor.
+4. Run `supabase/recipe-images.sql` in the Supabase SQL editor.
+5. Run `supabase/multi-household.sql` in the Supabase SQL editor.
+6. Add these values to `.env.local`:
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=your-project-url
@@ -41,7 +46,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 OCR_SPACE_API_KEY=optional-free-ocr-fallback-key
 ```
 
-The MVP saves the app state to `household_snapshots` for quick cross-device sync. After sign-in, the app loads the latest cloud snapshot and automatically saves changes after a short pause. Before a cloud snapshot overwrites local data, the previous local state is backed up in browser storage.
+The app saves one fast snapshot per household in `household_app_snapshots`. On first sign-in after the multi-household migration, existing `household_snapshots` data and shared-household invitations are copied into the new structure automatically. The old tables remain in place as a rollback path. Before a cloud household overwrites local data, the previous local state is backed up in browser storage.
+
+Household owners can create another household, invite editors or viewers by email, and switch households in Settings. Invited people use their own magic-link login. Supabase persists that session, so they do not normally need a new email link every time the app reopens.
+
+Bundled Weekwise recipes are available in every household. Recipes that existed before this upgrade are shared on the first upgraded load so the current library carries across. A new recipe saved as **All households** is published to `shared_recipe_catalog`; **This household** keeps it in the active household only. Ratings are stored per signed-in user in `recipe_reactions`. Other households see totals, never who submitted a rating.
 
 Uploaded meal pictures are kept in the private `recipe-images` Supabase Storage bucket rather than embedded in the snapshot. This prevents browser storage limits as the recipe library grows. Existing embedded recipe photos are moved into the bucket automatically after the user signs in. Recipe URLs can continue to use the source page's image URL without uploading a copy.
 
@@ -88,4 +97,4 @@ The extension does not store Asda passwords and does not automate checkout, deli
 
 If your deployed Vercel URL changes, edit `extension/asda-helper/manifest.json` and replace `https://weekly-meal-planning-alpha.vercel.app/*` with your live app URL, then reload the extension.
 
-The normalized meal-planner tables are included for a future row-level sync migration.
+The normalized meal-planner tables remain available for a later move from household snapshots to row-level meal and shopping sync.

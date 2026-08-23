@@ -178,3 +178,18 @@ test("returns a validation warning for ranges longer than seven days", () => {
   assert.equal(plan.entries.length, 0);
   assert.match(plan.warnings[0], /no more than seven days/i);
 });
+
+test("uses personal meal preference as a tie-breaker without changing planning targets", () => {
+  const liked = recipe("liked", "Liked bean stew", "beans", 25);
+  const unrated = recipe("unrated", "Unrated bean stew", "beans", 25);
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([unrated, liked]),
+    endDate: "2026-08-10",
+    recipePreferenceScores: { liked: 6, unrated: 0 }
+  });
+
+  assert.equal(plan.entries.length, 1);
+  assert.equal(plan.entries[0].recipeId, liked.id);
+  assert.equal(plan.summary.categoryCounts.vegetarian, 1);
+  assert.equal(plan.summary.quickCount, 1);
+});

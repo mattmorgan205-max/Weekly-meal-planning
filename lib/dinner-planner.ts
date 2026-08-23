@@ -24,6 +24,7 @@ export type AutoDinnerPlanRequest = {
   useUpIngredients: string[];
   ingredientAliases: Record<string, string>;
   peopleCount: number;
+  recipePreferenceScores?: Record<string, number>;
   variationSeed?: number;
 };
 
@@ -83,6 +84,7 @@ type DinnerCandidate = {
   historyCount: number;
   coveredUseUpIngredients: string[];
   favorite: boolean;
+  preferenceScore: number;
 };
 
 type SelectedCandidate = {
@@ -229,7 +231,8 @@ function buildRecipeCandidates(
   targets: UseUpTarget[],
   ingredientAliases: Record<string, string>,
   peopleCount: number,
-  historyCount: number
+  historyCount: number,
+  preferenceScore: number
 ) {
   const requiredIngredients = recipe.ingredients.filter((ingredient) => (ingredient.role ?? "required") === "required");
   const optionalIngredients = recipe.ingredients.filter((ingredient) => ingredient.role === "optional");
@@ -251,7 +254,8 @@ function buildRecipeCandidates(
       quick: totalRecipeMinutes(recipe) > 0 && totalRecipeMinutes(recipe) < 30,
       historyCount,
       coveredUseUpIngredients: coveredTargets(includedIngredients, targets, ingredientAliases),
-      favorite: recipe.favorite
+      favorite: recipe.favorite,
+      preferenceScore
     };
   });
 
@@ -312,7 +316,14 @@ function selectUseUpCandidates(candidates: DinnerCandidate[], targets: UseUpTarg
   const options: Option[] = matching.map((candidate) => ({
     candidates: [candidate],
     coverage: candidate.coveredUseUpIngredients,
-    score: [candidate.coveredUseUpIngredients.length, -1, -candidate.recipe.ingredients.length, Number(candidate.favorite), tieValue(candidate.key, seed)]
+    score: [
+      candidate.coveredUseUpIngredients.length,
+      -1,
+      -candidate.recipe.ingredients.length,
+      Number(candidate.favorite),
+      candidate.preferenceScore,
+      tieValue(candidate.key, seed)
+    ]
   }));
 
   for (let firstIndex = 0; firstIndex < matching.length; firstIndex += 1) {
@@ -329,6 +340,7 @@ function selectUseUpCandidates(candidates: DinnerCandidate[], targets: UseUpTarg
           -2,
           -(first.recipe.ingredients.length + second.recipe.ingredients.length),
           Number(first.favorite) + Number(second.favorite),
+          first.preferenceScore + second.preferenceScore,
           tieValue(`${first.key}:${second.key}`, seed)
         ]
       });
@@ -361,6 +373,7 @@ function stateScore(
   const historyCounts: number[] = [];
   let quickCount = 0;
   let favoriteCount = 0;
+  let preferenceScore = 0;
 
   fixed.forEach((dinner) => {
     categoryCounts[dinner.category] += 1;
@@ -372,6 +385,7 @@ function stateScore(
     quickCount += Number(candidate.quick);
     historyCounts.push(candidate.historyCount);
     favoriteCount += Number(candidate.favorite);
+    preferenceScore += candidate.preferenceScore;
   });
 
   const categoryDeviation = targetCategories.reduce(
@@ -395,6 +409,7 @@ function stateScore(
     familiarQuality,
     -varietyCost,
     favoriteCount,
+    preferenceScore,
     tie
   ];
 }
@@ -488,7 +503,8 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
       targets,
       request.ingredientAliases,
       request.peopleCount,
-      historyCounts[recipe.id] ?? 0
+      historyCounts[recipe.id] ?? 0,
+      request.recipePreferenceScores?.[recipe.id] ?? 0
     )
   );
   const useUpCandidates = selectUseUpCandidates(allCandidates, targets, seed).slice(0, openDates.length);
