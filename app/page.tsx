@@ -1756,6 +1756,27 @@ export default function Home() {
     setWeekStart(formatDateKey(nextWeek));
   }
 
+  function copyDayNotesForward(weekCount: number) {
+    const sourceDays = days.slice(0, 7);
+    const safeWeekCount = Math.max(1, Math.min(12, Math.round(weekCount)));
+
+    updateState((current) => {
+      const dayNotes = { ...current.dayNotes };
+      sourceDays.forEach((day) => {
+        const sourceDate = formatDateKey(day);
+        const note = current.dayNotes[sourceDate]?.trim();
+        if (!note) return;
+
+        for (let week = 1; week <= safeWeekCount; week += 1) {
+          const targetDate = formatDateKey(addDays(day, week * 7));
+          if (!dayNotes[targetDate]?.trim()) dayNotes[targetDate] = note;
+        }
+      });
+
+      return { ...current, dayNotes };
+    });
+  }
+
   function clearWeek() {
     const dayKeys = new Set(days.map(formatDateKey));
     updateState((current) => ({
@@ -1967,6 +1988,30 @@ export default function Home() {
     }));
   }
 
+  function batchAddRecipeTags(recipeIds: string[], tags: string[]) {
+    const selectedIds = new Set(recipeIds);
+    const cleanTags = parseTags(tags.join(","));
+    if (!selectedIds.size || !cleanTags.length) return;
+
+    const updatedAt = new Date().toISOString();
+    const updatedRecipes = state.recipes
+      .filter((recipe) => selectedIds.has(recipe.id))
+      .map((recipe) => ({
+        ...recipe,
+        tags: Array.from(new Set([...recipe.tags, ...cleanTags])),
+        updatedAt
+      }));
+    const updatedById = new Map(updatedRecipes.map((recipe) => [recipe.id, recipe]));
+
+    updateState((current) => ({
+      ...current,
+      recipes: current.recipes.map((recipe) => updatedById.get(recipe.id) ?? recipe)
+    }));
+    void Promise.all(updatedRecipes.map((recipe) => syncPublishedRecipe(recipe))).catch((error) => {
+      setCloudMessage(error instanceof Error ? error.message : "The shared recipe tags could not be updated.");
+    });
+  }
+
   function updateDraftIngredient(id: string, patch: Partial<Ingredient>) {
     const hasCanonicalNamePatch = Object.prototype.hasOwnProperty.call(patch, "canonicalName");
 
@@ -1994,8 +2039,8 @@ export default function Home() {
     setDraft((current) => ({
       ...current,
       ingredients: [
-        ...current.ingredients,
-        { id: createId("ing"), name: "", unit: "", category: "Other", canonicalName: "", confidence: "medium", role: "required" }
+        { id: createId("ing"), name: "", unit: "", category: "Other", canonicalName: "", confidence: "medium", role: "required" },
+        ...current.ingredients
       ]
     }));
   }
@@ -2039,7 +2084,7 @@ export default function Home() {
   }
 
   function addInstruction() {
-    setDraft((current) => ({ ...current, instructions: [...current.instructions, ""] }));
+    setDraft((current) => ({ ...current, instructions: ["", ...current.instructions] }));
   }
 
   function removeInstruction(index: number) {
@@ -2498,12 +2543,46 @@ export default function Home() {
     updateState((current) => (Object.keys(current.hiddenShoppingItems).length ? { ...current, hiddenShoppingItems: {} } : current));
   }
 
+  function moveManualShoppingItemsToRange(nextRange: ReturnType<typeof normalizeDateRange>) {
+    const previousRange = shoppingDateRange;
+    const previousRangeKey = shoppingRangeKeyForRange(previousRange);
+    const nextRangeKey = shoppingRangeKeyForRange(nextRange);
+    if (previousRangeKey === nextRangeKey) return;
+
+    updateState((current) => {
+      const movingItemIds = current.manualShoppingItems
+        .filter((item) => item.shoppingRangeKey === previousRangeKey)
+        .map((item) => item.id);
+      if (!movingItemIds.length) return current;
+
+      const asdaShoppingStatus = { ...current.asdaShoppingStatus };
+      movingItemIds.forEach((itemId) => {
+        const previousStatusKey = storeStatusItemKey(previousRange, itemId);
+        const nextStatusKey = storeStatusItemKey(nextRange, itemId);
+        if (asdaShoppingStatus[previousStatusKey]) {
+          asdaShoppingStatus[nextStatusKey] = asdaShoppingStatus[previousStatusKey];
+          delete asdaShoppingStatus[previousStatusKey];
+        }
+      });
+
+      return {
+        ...current,
+        asdaShoppingStatus,
+        manualShoppingItems: current.manualShoppingItems.map((item) =>
+          item.shoppingRangeKey === previousRangeKey ? { ...item, shoppingRangeKey: nextRangeKey } : item
+        )
+      };
+    });
+  }
+
   function updateShoppingStartDate(value: string) {
+    moveManualShoppingItemsToRange(normalizeDateRange(value, shoppingEndDate));
     setShoppingStartDate(value);
     forgetHiddenShoppingItems();
   }
 
   function updateShoppingEndDate(value: string) {
+    moveManualShoppingItemsToRange(normalizeDateRange(shoppingStartDate, value));
     setShoppingEndDate(value);
     forgetHiddenShoppingItems();
   }
@@ -3084,6 +3163,7 @@ export default function Home() {
             onSetPlannerStart={setWeekStart}
             onSetPlannerDayCount={setPlannerDayCount}
             onUpdateDayNote={updateDayNote}
+            onCopyDayNotesForward={copyDayNotesForward}
             onUpdateUseUpIngredients={(value) =>
               updateState((current) => ({ ...current, useUpIngredients: value.split(/\r?\n/) }))
             }
@@ -3114,6 +3194,7 @@ export default function Home() {
             onDuplicateRecipe={duplicateRecipe}
             onDeleteRecipe={deleteRecipe}
             onToggleFavorite={toggleFavorite}
+            onBatchAddTags={batchAddRecipeTags}
             onOpenRecipe={setSelectedRecipeId}
           />
         )}
@@ -3581,6 +3662,7 @@ function PlannerView({
   onSetPlannerStart,
   onSetPlannerDayCount,
   onUpdateDayNote,
+  onCopyDayNotesForward,
   onUpdateUseUpIngredients,
   onThisWeek,
   onDuplicateWeek,
@@ -3610,6 +3692,7 @@ function PlannerView({
   onSetPlannerStart: (date: string) => void;
   onSetPlannerDayCount: (dayCount: 7 | 14) => void;
   onUpdateDayNote: (date: string, note: string) => void;
+  onCopyDayNotesForward: (weekCount: number) => void;
   onUpdateUseUpIngredients: (value: string) => void;
   onThisWeek: () => void;
   onDuplicateWeek: () => void;
@@ -3620,6 +3703,7 @@ function PlannerView({
   const [selectedMobileDate, setSelectedMobileDate] = useState(weekStart);
   const [mobilePlannerTool, setMobilePlannerTool] = useState<MobilePlannerTool | null>(null);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
+  const [notesCopyWeeks, setNotesCopyWeeks] = useState(4);
   const [autoPlanStart, setAutoPlanStart] = useState(weekStart);
   const [autoPlanEnd, setAutoPlanEnd] = useState(() => formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), 6)));
   const [autoPlanMode, setAutoPlanMode] = useState<AutoDinnerPlanMode>("fill");
@@ -3645,6 +3729,7 @@ function PlannerView({
             plannedMeals,
             useUpIngredients,
             ingredientAliases,
+            dayNotes,
             peopleCount: defaultPeople,
             recipePreferenceScores,
             variationSeed: autoPlanVariation
@@ -3657,6 +3742,7 @@ function PlannerView({
       autoPlanVariation,
       defaultPeople,
       ingredientAliases,
+      dayNotes,
       plannedMeals,
       recipes,
       recipePreferenceScores,
@@ -3785,6 +3871,22 @@ function PlannerView({
             <Copy size={18} />
             Repeat
           </button>
+          <div className="copy-notes-control">
+            <select
+              aria-label="Weeks to copy day notes forward"
+              value={notesCopyWeeks}
+              onChange={(event) => setNotesCopyWeeks(Number(event.target.value))}
+            >
+              <option value={1}>1 week</option>
+              <option value={4}>4 weeks</option>
+              <option value={8}>8 weeks</option>
+              <option value={12}>12 weeks</option>
+            </select>
+            <button className="icon-text-button" type="button" onClick={() => onCopyDayNotesForward(notesCopyWeeks)}>
+              <Copy size={18} />
+              Copy notes
+            </button>
+          </div>
           <button className="ghost-danger" onClick={onClearWeek}>
             <CircleOff size={18} />
             Clear
@@ -3845,6 +3947,22 @@ function PlannerView({
                 <button className="ghost-danger" type="button" onClick={() => { onClearWeek(); setMobileOptionsOpen(false); }}>
                   <CircleOff size={16} />
                   Clear
+                </button>
+              </div>
+              <div className="copy-notes-control mobile-copy-notes-control">
+                <select
+                  aria-label="Weeks to copy day notes forward"
+                  value={notesCopyWeeks}
+                  onChange={(event) => setNotesCopyWeeks(Number(event.target.value))}
+                >
+                  <option value={1}>1 week</option>
+                  <option value={4}>4 weeks</option>
+                  <option value={8}>8 weeks</option>
+                  <option value={12}>12 weeks</option>
+                </select>
+                <button className="icon-text-button" type="button" onClick={() => onCopyDayNotesForward(notesCopyWeeks)}>
+                  <Copy size={16} />
+                  Copy day notes
                 </button>
               </div>
             </div>
@@ -4512,6 +4630,7 @@ function RecipeLibrary({
   onDuplicateRecipe,
   onDeleteRecipe,
   onToggleFavorite,
+  onBatchAddTags,
   onOpenRecipe
 }: {
   recipes: Recipe[];
@@ -4528,8 +4647,39 @@ function RecipeLibrary({
   onDuplicateRecipe: (recipe: Recipe) => void;
   onDeleteRecipe: (recipeId: string) => void;
   onToggleFavorite: (recipeId: string) => void;
+  onBatchAddTags: (recipeIds: string[], tags: string[]) => void;
   onOpenRecipe: (recipeId: string) => void;
 }) {
+  const [batchTagMode, setBatchTagMode] = useState(false);
+  const [selectedRecipeIds, setSelectedRecipeIds] = useState<Set<string>>(new Set());
+  const [batchTagInput, setBatchTagInput] = useState("");
+  const tagSuggestions = Array.from(new Set(recipes.flatMap((recipe) => recipe.tags))).sort((left, right) =>
+    left.localeCompare(right)
+  );
+
+  function toggleSelectedRecipe(recipeId: string) {
+    setSelectedRecipeIds((current) => {
+      const next = new Set(current);
+      if (next.has(recipeId)) next.delete(recipeId);
+      else next.add(recipeId);
+      return next;
+    });
+  }
+
+  function closeBatchTagMode() {
+    setBatchTagMode(false);
+    setSelectedRecipeIds(new Set());
+    setBatchTagInput("");
+  }
+
+  function applyBatchTags(event: FormEvent) {
+    event.preventDefault();
+    const tags = parseTags(batchTagInput);
+    if (!selectedRecipeIds.size || !tags.length) return;
+    onBatchAddTags(Array.from(selectedRecipeIds), tags);
+    setBatchTagInput("");
+  }
+
   return (
     <div className="view-stack">
       <section className="toolbar-band">
@@ -4537,10 +4687,20 @@ function RecipeLibrary({
           <Search size={18} />
           <input value={recipeSearch} onChange={(event) => setRecipeSearch(event.target.value)} placeholder="Search meals, tags, sources, ingredients" />
         </label>
-        <button className="primary-button" onClick={onAddRecipe}>
-          <Plus size={18} />
-          New recipe
-        </button>
+        <div className="button-row">
+          <button
+            className={classNames("icon-text-button", batchTagMode && "active")}
+            type="button"
+            onClick={() => (batchTagMode ? closeBatchTagMode() : setBatchTagMode(true))}
+          >
+            <Check size={18} />
+            {batchTagMode ? "Done tagging" : "Batch tags"}
+          </button>
+          <button className="primary-button" onClick={onAddRecipe}>
+            <Plus size={18} />
+            New recipe
+          </button>
+        </div>
       </section>
 
       <div className="meal-group-tabs recipe-filter-tabs" aria-label="Recipe meal group filter">
@@ -4559,9 +4719,47 @@ function RecipeLibrary({
         ))}
       </div>
 
+      {batchTagMode ? (
+        <form className="batch-tag-panel" onSubmit={applyBatchTags}>
+          <div>
+            <strong>{selectedRecipeIds.size} selected</strong>
+            <span>Add one or more tags to every selected recipe.</span>
+          </div>
+          <label>
+            Tags
+            <input
+              list="batch-recipe-tag-suggestions"
+              value={batchTagInput}
+              onChange={(event) => setBatchTagInput(event.target.value)}
+              placeholder="e.g. freezer friendly, family favourite"
+            />
+            <datalist id="batch-recipe-tag-suggestions">
+              {tagSuggestions.map((tag) => <option value={tag} key={tag} />)}
+            </datalist>
+          </label>
+          <div className="button-row">
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setSelectedRecipeIds(new Set(recipes.map((recipe) => recipe.id)))}
+              disabled={!recipes.length}
+            >
+              Select shown
+            </button>
+            <button className="text-button" type="button" onClick={() => setSelectedRecipeIds(new Set())} disabled={!selectedRecipeIds.size}>
+              Clear selection
+            </button>
+            <button className="primary-button" type="submit" disabled={!selectedRecipeIds.size || !parseTags(batchTagInput).length}>
+              <Plus size={17} />
+              Add tags
+            </button>
+          </div>
+        </form>
+      ) : null}
+
       <section className="recipe-grid">
         {recipes.map((recipe, index) => (
-          <article className="recipe-card" key={recipe.id}>
+          <article className={classNames("recipe-card", selectedRecipeIds.has(recipe.id) && "batch-selected")} key={recipe.id}>
             <button
               className={`recipe-visual visual-${index % 6}`}
               type="button"
@@ -4574,6 +4772,16 @@ function RecipeLibrary({
               {recipe.favorite && <Star size={20} fill="currentColor" />}
             </button>
             <div className="recipe-body">
+              {batchTagMode ? (
+                <label className="recipe-batch-selector">
+                  <input
+                    type="checkbox"
+                    checked={selectedRecipeIds.has(recipe.id)}
+                    onChange={() => toggleSelectedRecipe(recipe.id)}
+                  />
+                  Select recipe
+                </label>
+              ) : null}
               <div className="recipe-title-row">
                 <h2>
                   <button className="recipe-title-button" type="button" onClick={() => onOpenRecipe(recipe.id)}>

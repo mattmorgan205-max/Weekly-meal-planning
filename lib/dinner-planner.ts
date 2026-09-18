@@ -23,6 +23,7 @@ export type AutoDinnerPlanRequest = {
   plannedMeals: PlannedMeal[];
   useUpIngredients: string[];
   ingredientAliases: Record<string, string>;
+  dayNotes?: Record<string, string>;
   peopleCount: number;
   recipePreferenceScores?: Record<string, number>;
   variationSeed?: number;
@@ -425,6 +426,39 @@ function metricLabel(category: TargetDinnerCategory) {
   return categoryLabels[category].toLowerCase();
 }
 
+function isSophiaNurseryDay(date: string, dayNotes: Record<string, string> = {}) {
+  return /\bsophia\s+nursery\b/i.test(dayNotes[date] ?? "");
+}
+
+function isNotSophiaFriendly(recipe: Recipe) {
+  return recipe.tags.some((tag) => tag.trim().toLowerCase() === "not sophia friendly");
+}
+
+function candidateAllowedForDate(candidate: DinnerCandidate, date: string, dayNotes: Record<string, string> = {}) {
+  return !isNotSophiaFriendly(candidate.recipe) || isSophiaNurseryDay(date, dayNotes);
+}
+
+function assignUseUpCandidatesToDates(
+  candidates: DinnerCandidate[],
+  dates: string[],
+  dayNotes: Record<string, string> = {}
+) {
+  const orderedCandidates = [...candidates].sort(
+    (left, right) => Number(isNotSophiaFriendly(right.recipe)) - Number(isNotSophiaFriendly(left.recipe))
+  );
+  const availableDates = [...dates];
+  const selections: SelectedCandidate[] = [];
+
+  orderedCandidates.forEach((candidate) => {
+    const dateIndex = availableDates.findIndex((date) => candidateAllowedForDate(candidate, date, dayNotes));
+    if (dateIndex < 0) return;
+    const [date] = availableDates.splice(dateIndex, 1);
+    selections.push({ date, candidate, useUpChoice: true });
+  });
+
+  return selections.sort((left, right) => left.date.localeCompare(right.date));
+}
+
 export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerPlanResult {
   const seed = request.variationSeed ?? 0;
   const dates = dateKeysBetween(request.startDate, request.endDate);
@@ -489,7 +523,7 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
   const targetRecipeDinnerCount = fixedRecipeDinners.length + openDates.length;
   const plannedCategoryTargets = categoryTargets(targetRecipeDinnerCount);
   const quickTarget = Math.min(2, targetRecipeDinnerCount);
-  const familiarTarget = targetRecipeDinnerCount === 0 ? 0 : targetRecipeDinnerCount <= 2 ? 1 : 2;
+  const familiarTarget = targetRecipeDinnerCount === 0 ? 0 : 1;
   const targets = useUpTargets(request.useUpIngredients, request.ingredientAliases);
   const eligibleRecipes = request.recipes.filter(
     (recipe) =>
@@ -507,14 +541,14 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
       request.recipePreferenceScores?.[recipe.id] ?? 0
     )
   );
-  const useUpCandidates = selectUseUpCandidates(allCandidates, targets, seed).slice(0, openDates.length);
-  const pinnedSelections = useUpCandidates.map<SelectedCandidate>((candidate, index) => ({
-    date: openDates[index],
-    candidate,
-    useUpChoice: true
-  }));
-  const pinnedRecipeIds = new Set(useUpCandidates.map((candidate) => candidate.recipe.id));
-  const remainingDates = openDates.slice(pinnedSelections.length);
+  const dateCompatibleCandidates = allCandidates.filter((candidate) =>
+    openDates.some((date) => candidateAllowedForDate(candidate, date, request.dayNotes))
+  );
+  const useUpCandidates = selectUseUpCandidates(dateCompatibleCandidates, targets, seed).slice(0, openDates.length);
+  const pinnedSelections = assignUseUpCandidatesToDates(useUpCandidates, openDates, request.dayNotes);
+  const pinnedRecipeIds = new Set(pinnedSelections.map((selection) => selection.candidate.recipe.id));
+  const pinnedDates = new Set(pinnedSelections.map((selection) => selection.date));
+  const remainingDates = openDates.filter((date) => !pinnedDates.has(date));
   const regularCandidates = allCandidates
     .filter((candidate) => !pinnedRecipeIds.has(candidate.recipe.id))
     .map((candidate) => ({ ...candidate, extraSideIngredients: [], coveredUseUpIngredients: [] }));
@@ -526,7 +560,11 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
   for (const date of remainingDates) {
     const expanded: SearchState[] = [];
     beam.forEach((state) => {
-      const available = regularCandidates.filter((candidate) => !state.usedRecipeIds.has(candidate.recipe.id));
+      const available = regularCandidates.filter(
+        (candidate) =>
+          !state.usedRecipeIds.has(candidate.recipe.id) &&
+          candidateAllowedForDate(candidate, date, request.dayNotes)
+      );
       if (available.length === 0) {
         expanded.push(state);
         return;

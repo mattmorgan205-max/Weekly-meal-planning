@@ -77,8 +77,8 @@ test("builds the requested seven-day category mix with quick and familiar meals"
     { vegetarian: 3, chicken: 2, fish: 1, "pork-beef": 1 }
   );
   assert.ok(plan.summary.quickCount >= 2);
-  assert.equal(plan.summary.familiarCount, 2);
-  assert.equal(plan.entries.filter((entry) => entry.familiar).length, 2);
+  assert.equal(plan.summary.familiarCount, 1);
+  assert.equal(plan.entries.filter((entry) => entry.familiar).length, 1);
 });
 
 test("never proposes a recipe used in the preceding seven days", () => {
@@ -192,4 +192,31 @@ test("uses personal meal preference as a tie-breaker without changing planning t
   assert.equal(plan.entries[0].recipeId, liked.id);
   assert.equal(plan.summary.categoryCounts.vegetarian, 1);
   assert.equal(plan.summary.quickCount, 1);
+});
+
+test("only places Not Sophia friendly recipes on Sophia nursery days", () => {
+  const restricted = recipe("restricted", "Spicy bean chilli", "beans", 25);
+  restricted.tags = ["Not Sophia friendly"];
+  const familyMeal = recipe("family", "Family tomato pasta", "tomatoes", 25);
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([restricted, familyMeal]),
+    endDate: "2026-08-11",
+    dayNotes: { "2026-08-11": "Sophia nursery" }
+  });
+
+  assert.equal(plan.entries.length, 2);
+  assert.equal(plan.entries.find((entry) => entry.recipeId === restricted.id)?.date, "2026-08-11");
+  assert.equal(plan.entries.find((entry) => entry.recipeId === familyMeal.id)?.date, "2026-08-10");
+});
+
+test("does not suggest Not Sophia friendly recipes without a Sophia nursery day note", () => {
+  const restricted = recipe("restricted_only", "Very spicy curry", "beans", 25);
+  restricted.tags = ["not sophia friendly"];
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([restricted]),
+    endDate: "2026-08-10",
+    dayNotes: { "2026-08-10": "Matt on nights" }
+  });
+
+  assert.equal(plan.entries.length, 0);
 });

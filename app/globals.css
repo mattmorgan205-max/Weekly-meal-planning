@@ -716,6 +716,19 @@ h3 {
   background: #fffefa;
 }
 
+.copy-notes-control {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  gap: 5px;
+  align-items: center;
+}
+
+.copy-notes-control select {
+  min-height: 40px;
+  width: 104px;
+  padding: 0 8px;
+}
+
 .meal-slot {
   display: grid;
   gap: 8px;
@@ -918,6 +931,36 @@ h3 {
   gap: 16px;
 }
 
+.batch-tag-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(240px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #9dbda8;
+  border-radius: 8px;
+  background: #f1f8f3;
+}
+
+.batch-tag-panel > div:first-child {
+  align-self: center;
+  display: grid;
+  gap: 2px;
+}
+
+.batch-tag-panel > div:first-child span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.batch-tag-panel label {
+  min-width: 0;
+}
+
+.batch-tag-panel .button-row {
+  justify-content: flex-end;
+}
+
 .recipe-card {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
@@ -927,6 +970,28 @@ h3 {
   background: #fffdf8;
   overflow: hidden;
   box-shadow: var(--shadow);
+}
+
+.recipe-card.batch-selected {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(47, 111, 78, 0.16), var(--shadow);
+}
+
+.recipe-batch-selector {
+  width: fit-content;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  color: var(--green-dark);
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
+.recipe-batch-selector input {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
 }
 
 .recipe-visual {
@@ -2593,6 +2658,30 @@ h3 {
     min-height: 38px;
     padding: 0 6px;
     font-size: 0.74rem;
+  }
+
+  .mobile-copy-notes-control {
+    grid-template-columns: 94px minmax(0, 1fr);
+  }
+
+  .mobile-copy-notes-control select,
+  .mobile-copy-notes-control .icon-text-button {
+    width: 100%;
+    min-height: 38px;
+  }
+
+  .batch-tag-panel {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .batch-tag-panel .button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .batch-tag-panel .primary-button {
+    grid-column: 1 / -1;
   }
 
   .mobile-planner-tools {
