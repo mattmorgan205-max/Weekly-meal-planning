@@ -24,6 +24,7 @@ export type AutoDinnerPlanRequest = {
   useUpIngredients: string[];
   ingredientAliases: Record<string, string>;
   dayNotes?: Record<string, string>;
+  excludedRecipeIds?: string[];
   peopleCount: number;
   recipePreferenceScores?: Record<string, number>;
   variationSeed?: number;
@@ -83,6 +84,7 @@ type DinnerCandidate = {
   category: DinnerCategory;
   quick: boolean;
   historyCount: number;
+  familiarPriority: number;
   coveredUseUpIngredients: string[];
   favorite: boolean;
   preferenceScore: number;
@@ -101,6 +103,7 @@ type FixedRecipeDinner = {
   category: DinnerCategory;
   quick: boolean;
   historyCount: number;
+  familiarPriority: number;
   previousWeekRepeat: boolean;
 };
 
@@ -138,7 +141,7 @@ function dateKeysBetween(startDate: string, endDate: string) {
   const dates: string[] = [];
   for (let date = start; date <= end; date = addDays(date, 1)) {
     dates.push(formatDateKey(date));
-    if (dates.length > 7) return [];
+    if (dates.length > 14) return [];
   }
   return dates;
 }
@@ -179,6 +182,15 @@ function categoryFromText(text: string): DinnerCategory {
   }
   if (/\b(duck|lamb|venison)\b/.test(normalized)) return "other";
   return "vegetarian";
+}
+
+function recipeHasTag(recipe: Recipe, tagName: string) {
+  const normalizedTag = tagName.trim().toLowerCase();
+  return recipe.tags.some((tag) => tag.trim().toLowerCase() === normalizedTag);
+}
+
+function familiarPriority(recipe: Recipe, historyCount: number) {
+  return recipeHasTag(recipe, "familiar") ? 1000 + historyCount : historyCount;
 }
 
 function classifyRecipe(recipe: Recipe, includedIngredients: Ingredient[], selectedOptional?: Ingredient) {
@@ -254,6 +266,7 @@ function buildRecipeCandidates(
       category: classifyRecipe(recipe, includedWithoutSides, selectedOptional),
       quick: totalRecipeMinutes(recipe) > 0 && totalRecipeMinutes(recipe) < 30,
       historyCount,
+      familiarPriority: familiarPriority(recipe, historyCount),
       coveredUseUpIngredients: coveredTargets(includedIngredients, targets, ingredientAliases),
       favorite: recipe.favorite,
       preferenceScore
@@ -371,7 +384,7 @@ function stateScore(
   seed: number
 ) {
   const categoryCounts = emptyCategoryCounts();
-  const historyCounts: number[] = [];
+  const familiarPriorities: number[] = [];
   let quickCount = 0;
   let favoriteCount = 0;
   let preferenceScore = 0;
@@ -379,12 +392,12 @@ function stateScore(
   fixed.forEach((dinner) => {
     categoryCounts[dinner.category] += 1;
     quickCount += Number(dinner.quick);
-    historyCounts.push(dinner.historyCount);
+    familiarPriorities.push(dinner.familiarPriority);
   });
   state.selections.forEach(({ candidate }) => {
     categoryCounts[candidate.category] += 1;
     quickCount += Number(candidate.quick);
-    historyCounts.push(candidate.historyCount);
+    familiarPriorities.push(candidate.familiarPriority);
     favoriteCount += Number(candidate.favorite);
     preferenceScore += candidate.preferenceScore;
   });
@@ -393,10 +406,10 @@ function stateScore(
     (sum, category) => sum + Math.abs(targets[category] - categoryCounts[category]),
     0
   ) + categoryCounts.other;
-  const positiveHistory = historyCounts.filter((count) => count > 0).sort((a, b) => b - a);
-  const familiarCount = Math.min(familiarTarget, positiveHistory.length);
-  const familiarQuality = positiveHistory.slice(0, familiarTarget).reduce((sum, count) => sum + count, 0);
-  const varietyCost = positiveHistory.slice(familiarTarget).reduce((sum, count) => sum + count, 0);
+  const familiarChoices = familiarPriorities.filter((priority) => priority > 0).sort((a, b) => b - a);
+  const familiarCount = Math.min(familiarTarget, familiarChoices.length);
+  const familiarQuality = familiarChoices.slice(0, familiarTarget).reduce((sum, priority) => sum + priority, 0);
+  const varietyCost = familiarChoices.slice(familiarTarget).reduce((sum, priority) => sum + priority, 0);
   const tie = state.selections.reduce(
     (sum, selection) => sum + tieValue(`${selection.date}:${selection.candidate.key}`, seed),
     0
@@ -481,7 +494,7 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
       entries: [],
       preservedDinners: [],
       summary: emptySummary,
-      warnings: ["Choose a valid date range of no more than seven days."]
+      warnings: ["Choose a valid date range of no more than fourteen days."]
     };
   }
 
@@ -516,20 +529,26 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
       category: classifyPlannedMeal(recipe, meal),
       quick: totalRecipeMinutes(recipe) > 0 && totalRecipeMinutes(recipe) < 30,
       historyCount: historyCounts[recipe.id] ?? 0,
+      familiarPriority: familiarPriority(recipe, historyCounts[recipe.id] ?? 0),
       previousWeekRepeat: previousRecipeIds.has(recipe.id)
     }];
   });
 
   const targetRecipeDinnerCount = fixedRecipeDinners.length + openDates.length;
   const plannedCategoryTargets = categoryTargets(targetRecipeDinnerCount);
-  const quickTarget = Math.min(2, targetRecipeDinnerCount);
-  const familiarTarget = targetRecipeDinnerCount === 0 ? 0 : 1;
+  const quickTarget = Math.min(
+    targetRecipeDinnerCount,
+    targetRecipeDinnerCount <= 7 ? 2 : Math.ceil((targetRecipeDinnerCount * 2) / 7)
+  );
+  const familiarTarget = targetRecipeDinnerCount === 0 ? 0 : Math.ceil(targetRecipeDinnerCount / 7);
   const targets = useUpTargets(request.useUpIngredients, request.ingredientAliases);
+  const excludedRecipeIds = new Set(request.excludedRecipeIds ?? []);
   const eligibleRecipes = request.recipes.filter(
     (recipe) =>
       normalizeMealTypes(recipe.mealTypes).includes("dinner") &&
       !previousRecipeIds.has(recipe.id) &&
-      !existingRecipeIds.has(recipe.id)
+      !existingRecipeIds.has(recipe.id) &&
+      !excludedRecipeIds.has(recipe.id)
   );
   const allCandidates = eligibleRecipes.flatMap((recipe) =>
     buildRecipeCandidates(
@@ -588,15 +607,19 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
 
   const selectedState = beam[0] ?? { selections: pinnedSelections, usedRecipeIds: pinnedRecipeIds };
   const familiarOptions = [
-    ...fixedRecipeDinners.map((dinner) => ({ key: dinner.key, historyCount: dinner.historyCount, date: dinner.meal.date })),
+    ...fixedRecipeDinners.map((dinner) => ({
+      key: dinner.key,
+      familiarPriority: dinner.familiarPriority,
+      date: dinner.meal.date
+    })),
     ...selectedState.selections.map((selection) => ({
       key: `generated:${selection.date}:${selection.candidate.key}`,
-      historyCount: selection.candidate.historyCount,
+      familiarPriority: selection.candidate.familiarPriority,
       date: selection.date
     }))
   ]
-    .filter((item) => item.historyCount > 0)
-    .sort((a, b) => b.historyCount - a.historyCount || a.date.localeCompare(b.date));
+    .filter((item) => item.familiarPriority > 0)
+    .sort((a, b) => b.familiarPriority - a.familiarPriority || a.date.localeCompare(b.date));
   const familiarKeys = new Set(familiarOptions.slice(0, familiarTarget).map((item) => item.key));
 
   const entries = selectedState.selections
@@ -667,7 +690,9 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
     }
   });
   if (quickCount < quickTarget) warnings.push(`Target ${quickTarget} quick meals; this plan has ${quickCount}.`);
-  if (familiarCount < familiarTarget) warnings.push(`Target ${familiarTarget} familiar meals; only ${familiarCount} are available from planning history.`);
+  if (familiarCount < familiarTarget) {
+    warnings.push(`Target ${familiarTarget} familiar meals; only ${familiarCount} are available from tags or planning history.`);
+  }
   if (categoryCounts.other > 0) warnings.push(`${categoryCounts.other} dinner could not be assigned to the requested meal groups.`);
   const coveredTargetNames = new Set(entries.flatMap((entry) => entry.coveredUseUpIngredients.map((name) =>
     canonicalizeIngredientName(name, request.ingredientAliases).canonicalName

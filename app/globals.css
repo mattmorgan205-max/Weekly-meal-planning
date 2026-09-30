@@ -597,12 +597,16 @@ h3 {
 
 .auto-plan-row {
   display: grid;
-  grid-template-columns: minmax(105px, 0.55fr) minmax(180px, 1.2fr) minmax(220px, 1.4fr);
+  grid-template-columns: minmax(105px, 0.55fr) minmax(180px, 1.2fr) minmax(220px, 1.4fr) 40px;
   gap: 12px;
   align-items: center;
   min-height: 64px;
   padding: 10px 4px;
   border-bottom: 1px solid var(--line);
+}
+
+.auto-plan-remove {
+  justify-self: end;
 }
 
 .auto-plan-row:last-child {
@@ -2274,11 +2278,16 @@ h3 {
   }
 
   .auto-plan-row {
-    grid-template-columns: minmax(100px, 0.45fr) minmax(0, 1fr);
+    grid-template-columns: minmax(100px, 0.45fr) minmax(0, 1fr) 40px;
   }
 
   .auto-plan-badges {
     grid-column: 2;
+  }
+
+  .auto-plan-remove {
+    grid-column: 3;
+    grid-row: 1 / span 2;
   }
 
   .import-panel {
@@ -2336,6 +2345,12 @@ h3 {
 
   .auto-plan-badges {
     grid-column: 1;
+  }
+
+  .auto-plan-remove {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: end;
   }
 
   .auto-plan-actions {

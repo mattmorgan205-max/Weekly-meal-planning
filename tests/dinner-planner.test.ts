@@ -169,14 +169,61 @@ test("use-up planning selects a matching optional protein and editable side", ()
   assert.deepEqual(plan.entries[0].coveredUseUpIngredients, ["chicken breast", "broccoli"]);
 });
 
-test("returns a validation warning for ranges longer than seven days", () => {
+test("builds a balanced fourteen-day plan", () => {
+  const recipes = [
+    ...Array.from({ length: 6 }, (_, index) => recipe(`veg_${index}`, `Vegetable meal ${index}`, "beans", index < 2 ? 20 : 45)),
+    ...Array.from({ length: 3 }, (_, index) => recipe(`chicken_${index}`, `Chicken meal ${index}`, "chicken breast", index === 0 ? 20 : 45)),
+    ...Array.from({ length: 3 }, (_, index) => recipe(`fish_${index}`, `Fish meal ${index}`, "salmon", index === 0 ? 20 : 45)),
+    ...Array.from({ length: 2 }, (_, index) => recipe(`beef_${index}`, `Beef meal ${index}`, "beef mince"))
+  ];
+  recipes[0].tags = ["familiar"];
+  recipes[6].tags = ["Familiar"];
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest(recipes),
+    endDate: "2026-08-23"
+  });
+
+  assert.equal(plan.entries.length, 14);
+  assert.equal(plan.summary.quickTarget, 4);
+  assert.ok(plan.summary.quickCount >= 4);
+  assert.equal(plan.summary.familiarTarget, 2);
+  assert.equal(plan.summary.familiarCount, 2);
+  assert.deepEqual(plan.summary.categoryTargets, { vegetarian: 6, chicken: 3, fish: 3, "pork-beef": 2 });
+});
+
+test("returns a validation warning for ranges longer than fourteen days", () => {
   const plan = buildAutoDinnerPlan({
     ...baseRequest([recipe("veg", "Vegetable stew", "beans")]),
-    endDate: "2026-08-17"
+    endDate: "2026-08-24"
   });
 
   assert.equal(plan.entries.length, 0);
-  assert.match(plan.warnings[0], /no more than seven days/i);
+  assert.match(plan.warnings[0], /no more than fourteen days/i);
+});
+
+test("treats a familiar recipe tag as an explicit familiar choice", () => {
+  const tagged = recipe("tagged_familiar", "Tagged familiar pasta", "tomatoes", 25);
+  tagged.tags = ["familiar"];
+  const untagged = recipe("untagged", "New tomato pasta", "tomatoes", 25);
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([untagged, tagged]),
+    endDate: "2026-08-10"
+  });
+
+  assert.equal(plan.entries[0].recipeId, tagged.id);
+  assert.equal(plan.entries[0].familiar, true);
+});
+
+test("does not reuse an excluded preview recipe when filling a gap", () => {
+  const excluded = recipe("excluded", "Excluded pasta", "tomatoes", 25);
+  const alternative = recipe("alternative_fill", "Alternative pasta", "tomatoes", 25);
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([excluded, alternative]),
+    endDate: "2026-08-10",
+    excludedRecipeIds: [excluded.id]
+  });
+
+  assert.equal(plan.entries[0].recipeId, alternative.id);
 });
 
 test("uses personal meal preference as a tie-breaker without changing planning targets", () => {
