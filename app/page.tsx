@@ -105,6 +105,7 @@ import {
 import { installAutoAddedRecipePack } from "@/lib/auto-added-recipes";
 import { installAutoAddedRecipePackV2 } from "@/lib/auto-added-recipes-v2";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
+import { shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -1904,6 +1905,9 @@ export default function Home() {
       const recipe = {
         ...draftToRecipe(cleanedDraft),
         id: recipeId,
+        favorite: existingRecipe?.favorite ?? cleanedDraft.tags.includes("favorite"),
+        createdAt: existingRecipe?.createdAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         catalogSourceHouseholdId: existingRecipe?.catalogSourceHouseholdId,
         catalogEntryId: existingRecipe?.catalogEntryId
       };
@@ -1915,12 +1919,7 @@ export default function Home() {
             ...current,
             recipes: current.recipes.map((item) =>
               item.id === editingRecipeId
-                ? {
-                    ...recipe,
-                    favorite: existing?.favorite ?? false,
-                    createdAt: existing?.createdAt ?? recipe.createdAt,
-                    updatedAt: new Date().toISOString()
-                  }
+                ? recipe
                 : item
             )
           };
@@ -1928,16 +1927,18 @@ export default function Home() {
 
         return {
           ...current,
-          recipes: [{ ...recipe, favorite: cleanedDraft.tags.includes("favorite") }, ...current.recipes]
+          recipes: [recipe, ...current.recipes]
         };
       });
-
-      await syncPublishedRecipe(recipe);
 
       applyDraft(emptyDraft());
       setEditingRecipeId(null);
       setImportMode("manual");
       setActiveView("recipes");
+      void syncPublishedRecipe(recipe).catch((error) => {
+        const message = error instanceof Error ? error.message : "The shared recipe catalogue could not be updated.";
+        setCloudMessage(`Recipe saved to this household. ${message}`);
+      });
     } catch (error) {
       const warning = error instanceof Error ? error.message : "The recipe could not be saved.";
       setDraft((current) => ({ ...current, warnings: Array.from(new Set([...current.warnings, warning])) }));
@@ -1978,7 +1979,11 @@ export default function Home() {
       recipes: current.recipes.filter((recipe) => recipe.id !== recipeId),
       plannedMeals: current.plannedMeals.filter((meal) => meal.recipeId !== recipeId)
     }));
-    if (recipe) void syncPublishedRecipe({ ...recipe, visibility: "household" });
+    if (recipe) {
+      void syncPublishedRecipe({ ...recipe, visibility: "household" }).catch((error) => {
+        setCloudMessage(error instanceof Error ? error.message : "The shared recipe catalogue could not be updated.");
+      });
+    }
   }
 
   function toggleFavorite(recipeId: string) {
@@ -2735,7 +2740,9 @@ export default function Home() {
       const catalogOwnsExisting =
         existing.visibility === "global" &&
         (!existing.catalogSourceHouseholdId || existing.catalogSourceHouseholdId === catalogRecipe.catalogSourceHouseholdId);
-      if (catalogOwnsExisting) recipes[existingIndex] = catalogRecipe;
+      if (catalogOwnsExisting && shouldReplaceRecipeWithCatalog(existing, catalogRecipe, row.updated_at)) {
+        recipes[existingIndex] = catalogRecipe;
+      }
     });
 
     return { ...snapshot, recipes };

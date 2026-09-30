@@ -12,6 +12,7 @@
     "test:auto-recipes": "node scripts/test-auto-added-recipes.mjs",
     "test:common-extras": "node scripts/test-common-extras.mjs",
     "test:dinner-planner": "node scripts/test-dinner-planner.mjs",
+    "test:recipe-sync": "node scripts/test-recipe-sync.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.check.json"
   },
   "dependencies": {
