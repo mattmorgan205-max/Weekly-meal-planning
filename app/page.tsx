@@ -104,6 +104,7 @@ import {
 } from "@/lib/dinner-planner";
 import { installAutoAddedRecipePack } from "@/lib/auto-added-recipes";
 import { installAutoAddedRecipePackV2 } from "@/lib/auto-added-recipes-v2";
+import { installAutoAddedRecipePackV3 } from "@/lib/auto-added-recipes-v3";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
 import { shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
@@ -337,7 +338,8 @@ function hydrateState(value: unknown): AppState {
     installedPackV2.recipes,
     installedPackV2.installedRecipePacks
   );
-  const recipes = installedCookbookPack.recipes.map(hydrateRecipe);
+  const installedPackV3 = installAutoAddedRecipePackV3(installedCookbookPack.recipes, installedCookbookPack.installedRecipePacks);
+  const recipes = installedPackV3.recipes.map(hydrateRecipe);
   const currentWeekStart = formatDateKey(startOfWeek(new Date()));
   const legacyManualItemRangeKey = shoppingRangeKeyForRange({
     startDate: currentWeekStart,
@@ -348,7 +350,7 @@ function hydrateState(value: unknown): AppState {
     ...seeded,
     ...parsed,
     recipes,
-    installedRecipePacks: installedCookbookPack.installedRecipePacks,
+    installedRecipePacks: installedPackV3.installedRecipePacks,
     plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople, recipes))
       .filter((meal) => meal.recipeId || meal.manualTitle),

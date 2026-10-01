@@ -18,6 +18,71 @@ import {
   installGreenRoastingTinRecipePack
 } from "../lib/green-roasting-tin-recipes";
 import type { Recipe } from "../lib/domain";
+import { seedState } from "../lib/domain";
+import {
+  AUTO_ADDED_RECIPE_PACK_V3_ID,
+  autoAddedRecipesV3,
+  installAutoAddedRecipePackV3
+} from "../lib/auto-added-recipes-v3";
+
+test("third pack has 20 new Good Food meals meeting the verified rating threshold", () => {
+  const existing = [...seedState().recipes, ...autoAddedRecipes, ...autoAddedRecipesV2, ...greenRoastingTinRecipes];
+  const installed = installAutoAddedRecipePackV3(existing);
+  assert.equal(autoAddedRecipesV3.length, 20);
+  assert.equal(installed.addedCount, 20);
+  assert.equal(new Set(autoAddedRecipesV3.map((recipe) => recipe.id)).size, 20);
+  assert.equal(new Set(autoAddedRecipesV3.map((recipe) => recipe.sourceUrl)).size, 20);
+  for (const recipe of autoAddedRecipesV3) {
+    assert.ok(recipe.sourceRating.value >= 4 && recipe.sourceRating.value <= 5, recipe.title);
+    assert.ok(recipe.sourceRating.ratingCount > 100, recipe.title);
+    assert.equal(recipe.sourceRating.checkedAt, "2026-10-01");
+    assert.ok(recipe.tags.includes("auto-added"));
+    assert.match(recipe.sourceUrl ?? "", /^https:\/\/www\.bbcgoodfood\.com\/recipes\//);
+    assert.match(recipe.mealImageUrl ?? "", /^https:\/\/images\.immediate\.co\.uk\//);
+    assert.ok(recipe.ingredients.length >= 5, recipe.title);
+    assert.ok(recipe.instructions.length >= 2, recipe.title);
+    assert.ok(recipe.servings > 0);
+    const total = (recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0);
+    assert.ok(recipe.tags.includes(total < 30 ? "under 30 mins" : total <= 60 ? "30-60 mins" : "over 60 mins"));
+    assert.ok(recipe.notes?.includes(`${recipe.sourceRating.ratingCount} ratings`));
+    for (const ingredient of recipe.ingredients) {
+      assert.ok(ingredient.quantity === undefined || ingredient.quantity > 0, `${recipe.title}: ${ingredient.name}`);
+      assert.ok(ingredient.quantity === undefined || ingredient.unit, `${recipe.title}: missing unit`);
+    }
+  }
+});
+
+test("third pack preserves edits and deletions after installation", () => {
+  const first = installAutoAddedRecipePackV3([], ["previous-pack"]);
+  assert.deepEqual(first.installedRecipePacks, ["previous-pack", AUTO_ADDED_RECIPE_PACK_V3_ID]);
+  const edited = first.recipes.slice(1).map((recipe, index) => index === 0 ? { ...recipe, title: "My edited meal" } : recipe);
+  const again = installAutoAddedRecipePackV3(edited, first.installedRecipePacks);
+  assert.equal(again.addedCount, 0);
+  assert.equal(again.recipes, edited);
+  assert.equal(again.recipes[0].title, "My edited meal");
+});
+
+test("third pack skips existing source variants and equivalent meal titles", () => {
+  const sourceCopy = { ...autoAddedRecipesV3[0], id: "my-soup", title: "My soup", sourceUrl: `${autoAddedRecipesV3[0].sourceUrl}/?utm_source=test` };
+  const titleCopy = { ...autoAddedRecipesV3[1], id: "my-pasta", title: "Mac and cheese", sourceUrl: undefined };
+  const punctuationCopy = { ...autoAddedRecipesV3[19], id: "my-sausages", title: "Toad in the hole", sourceUrl: undefined };
+  const existing = [sourceCopy, titleCopy, punctuationCopy];
+  const installed = installAutoAddedRecipePackV3(existing);
+  assert.equal(installed.addedCount, 17);
+  assert.deepEqual(installed.recipes.slice(0, 3), existing);
+});
+
+test("source ranges, serving accompaniments and combined source ingredients are handled explicitly", () => {
+  const biryani = autoAddedRecipesV3.find((recipe) => recipe.title === "Chicken biryani")!;
+  assert.ok(biryani.ingredients.some((ingredient) => ingredient.name === "flaked almonds" && ingredient.quantity === 2));
+  const soup = autoAddedRecipesV3[0];
+  assert.ok(soup.ingredients.some((ingredient) => ingredient.name === "naan bread" && ingredient.quantity === undefined));
+  const gnocchi = autoAddedRecipesV3.find((recipe) => recipe.title === "Gnocchi & tomato bake")!;
+  assert.ok(gnocchi.ingredients.some((ingredient) => ingredient.name === "mozzarella" && ingredient.quantity === 62.5));
+  const coronation = autoAddedRecipesV3.find((recipe) => recipe.title === "Easy coronation chicken")!;
+  assert.ok(coronation.notes?.includes("4-6"));
+  assert.deepEqual(coronation.mealTypes, ["lunch"]);
+});
 
 test("curated pack contains 20 complete, attributed dinner recipes", () => {
   assert.equal(autoAddedRecipes.length, 20);
