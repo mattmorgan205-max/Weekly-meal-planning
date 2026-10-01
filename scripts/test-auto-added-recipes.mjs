@@ -23,6 +23,7 @@ const compile = spawnSync(
     "lib/auto-added-recipes.ts",
     "lib/auto-added-recipes-v2.ts",
     "lib/auto-added-recipes-v3.ts",
+    "lib/auto-added-lunch-recipes.ts",
     "lib/green-roasting-tin-recipes.ts",
     "tests/auto-added-recipes.test.ts"
   ],

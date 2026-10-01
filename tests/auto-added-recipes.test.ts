@@ -24,6 +24,41 @@ import {
   autoAddedRecipesV3,
   installAutoAddedRecipePackV3
 } from "../lib/auto-added-recipes-v3";
+import {
+  AUTO_ADDED_LUNCH_PACK_ID,
+  autoAddedLunchRecipes,
+  installAutoAddedLunchPack
+} from "../lib/auto-added-lunch-recipes";
+
+test("lunch pack has 20 distinct Good Food lunches with the requested ratings and prep times", () => {
+  const existing = [...seedState().recipes, ...autoAddedRecipes, ...autoAddedRecipesV2, ...autoAddedRecipesV3, ...greenRoastingTinRecipes];
+  const installed = installAutoAddedLunchPack(existing);
+  assert.equal(autoAddedLunchRecipes.length, 20);
+  assert.equal(installed.addedCount, 20);
+  assert.equal(new Set(autoAddedLunchRecipes.map((recipe) => recipe.sourceUrl)).size, 20);
+  assert.equal(autoAddedLunchRecipes.filter((recipe) => (recipe.prepMinutes ?? 0) <= 10).length, 17);
+  for (const recipe of autoAddedLunchRecipes) {
+    assert.deepEqual(recipe.mealTypes, ["lunch"], recipe.title);
+    assert.ok(recipe.sourceRating.value >= 4 && recipe.sourceRating.value <= 5, recipe.title);
+    assert.ok(recipe.sourceRating.ratingCount > 20, recipe.title);
+    assert.ok(recipe.tags.includes("auto-added"));
+    assert.match(recipe.sourceUrl ?? "", /^https:\/\/www\.bbcgoodfood\.com\/recipes\//);
+    assert.match(recipe.mealImageUrl ?? "", /^https:\/\/images\.immediate\.co\.uk\//);
+    assert.ok(recipe.ingredients.length >= 4, recipe.title);
+    assert.ok(recipe.instructions.length >= 2, recipe.title);
+    assert.ok(recipe.notes?.includes(`${recipe.sourceRating.ratingCount} ratings`));
+  }
+});
+
+test("lunch pack installs once and preserves household changes", () => {
+  const first = installAutoAddedLunchPack([]);
+  assert.deepEqual(first.installedRecipePacks, [AUTO_ADDED_LUNCH_PACK_ID]);
+  const edited = first.recipes.slice(1).map((recipe, index) => index === 0 ? { ...recipe, title: "My lunch" } : recipe);
+  const again = installAutoAddedLunchPack(edited, first.installedRecipePacks);
+  assert.equal(again.addedCount, 0);
+  assert.equal(again.recipes, edited);
+  assert.equal(again.recipes[0].title, "My lunch");
+});
 
 test("third pack has 20 new Good Food meals meeting the verified rating threshold", () => {
   const existing = [...seedState().recipes, ...autoAddedRecipes, ...autoAddedRecipesV2, ...greenRoastingTinRecipes];
