@@ -106,6 +106,7 @@ import { installAutoAddedRecipePack } from "@/lib/auto-added-recipes";
 import { installAutoAddedRecipePackV2 } from "@/lib/auto-added-recipes-v2";
 import { installAutoAddedRecipePackV3 } from "@/lib/auto-added-recipes-v3";
 import { installAutoAddedLunchPack } from "@/lib/auto-added-lunch-recipes";
+import { installReviewedCookbookPack } from "@/lib/reviewed-cookbook-recipes";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
 import { shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
@@ -341,7 +342,8 @@ function hydrateState(value: unknown): AppState {
   );
   const installedPackV3 = installAutoAddedRecipePackV3(installedCookbookPack.recipes, installedCookbookPack.installedRecipePacks);
   const installedLunchPack = installAutoAddedLunchPack(installedPackV3.recipes, installedPackV3.installedRecipePacks);
-  const recipes = installedLunchPack.recipes.map(hydrateRecipe);
+  const installedReviewedPack = installReviewedCookbookPack(installedLunchPack.recipes, installedLunchPack.installedRecipePacks);
+  const recipes = installedReviewedPack.recipes.map(hydrateRecipe);
   const currentWeekStart = formatDateKey(startOfWeek(new Date()));
   const legacyManualItemRangeKey = shoppingRangeKeyForRange({
     startDate: currentWeekStart,
@@ -352,7 +354,7 @@ function hydrateState(value: unknown): AppState {
     ...seeded,
     ...parsed,
     recipes,
-    installedRecipePacks: installedLunchPack.installedRecipePacks,
+    installedRecipePacks: installedReviewedPack.installedRecipePacks,
     plannedMeals: (parsed.plannedMeals ?? seeded.plannedMeals)
       .map((meal) => hydratePlannedMeal(meal, parsed.settings?.defaultPeople ?? seeded.settings.defaultPeople, recipes))
       .filter((meal) => meal.recipeId || meal.manualTitle),
@@ -5189,6 +5191,12 @@ function RecipeDetailModal({
             </ol>
           </section>
         </div>
+        {recipe.notes ? (
+          <section>
+            <h3>Recipe notes</h3>
+            <p style={{ whiteSpace: "pre-line" }}>{recipe.notes}</p>
+          </section>
+        ) : null}
       </section>
     </div>
   );
@@ -5513,7 +5521,25 @@ function AddRecipeView({
               onChange={(event) => setDraft((current) => ({ ...current, cookMinutes: parseNumberInput(event.target.value) }))}
             />
           </label>
+          <label>
+            Total mins (optional)
+            <input
+              type="number"
+              min={0}
+              value={draft.totalMinutes ?? ""}
+              onChange={(event) => setDraft((current) => ({ ...current, totalMinutes: parseNumberInput(event.target.value) }))}
+            />
+          </label>
         </div>
+
+        <label>
+          Recipe notes
+          <textarea
+            rows={4}
+            value={draft.notes ?? ""}
+            onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
+          />
+        </label>
 
         <label>
           Recipe source

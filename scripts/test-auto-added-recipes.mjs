@@ -25,6 +25,7 @@ const compile = spawnSync(
     "lib/auto-added-recipes-v3.ts",
     "lib/auto-added-lunch-recipes.ts",
     "lib/green-roasting-tin-recipes.ts",
+    "lib/reviewed-cookbook-recipes.ts",
     "tests/auto-added-recipes.test.ts"
   ],
   { cwd: projectRoot, stdio: "inherit" }

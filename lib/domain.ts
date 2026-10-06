@@ -45,6 +45,7 @@ export type Recipe = {
   mealTypes: MealSlot[];
   prepMinutes?: number;
   cookMinutes?: number;
+  totalMinutes?: number;
   tags: string[];
   favorite: boolean;
   visibility?: RecipeVisibility;
@@ -151,6 +152,8 @@ export type ImportDraft = {
   mealTypes: MealSlot[];
   prepMinutes?: number;
   cookMinutes?: number;
+  totalMinutes?: number;
+  notes?: string;
   tags: string[];
   visibility?: RecipeVisibility;
   ingredients: Ingredient[];
@@ -886,7 +889,7 @@ export function draftFromOcrText(text: string, fileName = "Recipe book import") 
   };
 }
 
-export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes">) {
+export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes" | "totalMinutes">) {
   const text = `${recipe.title} ${recipe.ingredients.map((ingredient) => ingredient.name).join(" ")}`.toLowerCase();
   const tags: string[] = [];
 
@@ -900,7 +903,7 @@ export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredi
 
   if (!tags.length) tags.push("vegetarian");
 
-  const totalMinutes = (recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0);
+  const totalMinutes = totalRecipeMinutes(recipe);
   if (totalMinutes > 0 && totalMinutes < 30) tags.push("under 30 mins");
   if (totalMinutes >= 30 && totalMinutes <= 60) tags.push("30-60 mins");
   if (totalMinutes > 60) tags.push("over 60 mins");
@@ -910,7 +913,7 @@ export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredi
 
 export function mergeAutomaticRecipeTags(
   manualTags: string[],
-  recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes">,
+  recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes" | "totalMinutes">,
   suppressedAutoTags: string[] = []
 ) {
   const suppressed = new Set(normalizeSuppressedAutomaticTags(suppressedAutoTags));
@@ -944,8 +947,8 @@ export function inferRecipeMealTypes(recipe: Pick<Recipe, "title" | "tags" | "in
   return normalizeMealTypes(inferred, "dinner");
 }
 
-export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMinutes">) {
-  return (recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0);
+export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMinutes" | "totalMinutes">) {
+  return recipe.totalMinutes ?? ((recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0));
 }
 
 export function inferCategory(name: string): GroceryCategory {
@@ -1117,6 +1120,8 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     mealTypes: normalizeMealTypes(draft.mealTypes),
     prepMinutes: draft.prepMinutes,
     cookMinutes: draft.cookMinutes,
+    totalMinutes: draft.totalMinutes,
+    notes: draft.notes,
     tags: draft.tags,
     favorite: false,
     visibility: draft.visibility ?? "household",
@@ -1149,6 +1154,8 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
+    totalMinutes: recipe.totalMinutes,
+    notes: recipe.notes,
     tags: recipe.tags,
     visibility: recipe.visibility ?? "household",
     ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, role: ingredient.role ?? "required" })),

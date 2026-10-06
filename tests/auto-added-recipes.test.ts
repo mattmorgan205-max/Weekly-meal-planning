@@ -19,6 +19,67 @@ import {
 } from "../lib/green-roasting-tin-recipes";
 import type { Recipe } from "../lib/domain";
 import { seedState } from "../lib/domain";
+import { draftToRecipe, recipeToDraft, totalRecipeMinutes, inferAutomaticRecipeTags } from "../lib/domain";
+import { reviewedCookbookRecipes, installReviewedCookbookPack, REVIEWED_COOKBOOK_PACK_ID } from "../lib/reviewed-cookbook-recipes";
+
+test("reviewed cookbook pack installs all 20, keeping same-titled source variants", () => {
+  const existing = [{ ...reviewedCookbookRecipes[2], id: "different-source-stroganoff", source: "BBC Good Food" }];
+  const result = installReviewedCookbookPack(existing);
+  assert.equal(result.addedCount, 20);
+  assert.equal(result.recipes[0], existing[0]);
+  assert.equal(new Set(result.recipes.map(r => r.id)).size, 21);
+  for (const recipe of reviewedCookbookRecipes) {
+    assert.equal(recipe.visibility, "household");
+    assert.ok(recipe.source && recipe.source.length > 10);
+    assert.ok(recipe.ingredients.length > 0);
+    assert.ok(recipe.ingredients.every(i => i.originalLine && i.id));
+    assert.ok(recipe.instructions.length > 0);
+  }
+});
+
+test("reviewed cookbook pack does not restore deletions or overwrite edits", () => {
+  const first = installReviewedCookbookPack([]);
+  const edited = first.recipes.slice(1).map((r, i) => i === 0 ? { ...r, title: "My version" } : r);
+  const next = installReviewedCookbookPack(edited, first.installedRecipePacks);
+  assert.equal(next.addedCount, 0);
+  assert.equal(next.recipes, edited);
+  assert.ok(next.installedRecipePacks.includes(REVIEWED_COOKBOOK_PACK_ID));
+  assert.equal(installReviewedCookbookPack([reviewedCookbookRecipes[0]]).addedCount, 19);
+});
+
+test("reviewed total estimates are not added to cooking time, and notes survive editing", () => {
+  const honey = reviewedCookbookRecipes[1];
+  assert.equal(totalRecipeMinutes(honey), 180);
+  assert.equal(honey.totalMinutes, 180);
+  assert.equal(totalRecipeMinutes({ prepMinutes: 10, cookMinutes: 180, totalMinutes: 180 }), 180);
+  assert.equal(totalRecipeMinutes({ prepMinutes: 10, cookMinutes: 180 }), 190);
+  assert.equal(totalRecipeMinutes(reviewedCookbookRecipes[5]), 10);
+  assert.equal(totalRecipeMinutes(reviewedCookbookRecipes[16]), 10);
+  assert.equal(totalRecipeMinutes(reviewedCookbookRecipes[18]), 10);
+  assert.ok(inferAutomaticRecipeTags(reviewedCookbookRecipes[10]).includes("30-60 mins"));
+  for (const recipe of reviewedCookbookRecipes) {
+    const roundtrip = draftToRecipe(recipeToDraft(recipe));
+    assert.equal(roundtrip.totalMinutes, recipe.totalMinutes);
+    assert.equal(roundtrip.notes, recipe.notes);
+  }
+});
+
+test("reviewed quantities preserve tins, fractions, cooked weights and the incomplete pie", () => {
+  const curry = reviewedCookbookRecipes[4];
+  assert.equal(curry.ingredients[0].quantity, 400);
+  assert.equal(curry.ingredients[0].unit, "g");
+  const lasagne = reviewedCookbookRecipes[5];
+  assert.equal(lasagne.ingredients[4].quantity, 800);
+  assert.equal(lasagne.ingredients[5].quantity, 0.5);
+  assert.equal(lasagne.ingredients[10].quantity, 250);
+  const pie = reviewedCookbookRecipes[6];
+  assert.ok(pie.tags.includes("incomplete method"));
+  assert.match(pie.instructions.at(-1) ?? "", /INCOMPLETE METHOD/);
+  assert.match(pie.notes ?? "", /Only the vegan filling/);
+  assert.equal(pie.ingredients[2].quantity, 0.25);
+  assert.match(reviewedCookbookRecipes[2].ingredients[3].name, /cooked tagliatelle/);
+  assert.match(reviewedCookbookRecipes[15].ingredients[5].name, /cooked white basmati/);
+});
 import {
   AUTO_ADDED_RECIPE_PACK_V3_ID,
   autoAddedRecipesV3,
