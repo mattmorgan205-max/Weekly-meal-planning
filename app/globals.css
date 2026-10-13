@@ -1793,6 +1793,39 @@ h3 {
   color: var(--green-dark);
 }
 
+.extra-usage-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 1.5em;
+  text-align: center;
+  border-left: 1px solid var(--line);
+  padding-left: 6px;
+}
+
+.occasional-extras {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.occasional-extras summary { cursor: pointer; font-weight: 600; }
+.occasional-extras summary span { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.occasional-extras-heading { display: flex; justify-content: flex-end; margin: 8px 0; }
+.occasional-settings form, .occasional-settings-list { display: grid; gap: 14px; }
+.occasional-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 105px 42px;
+  gap: 10px;
+  align-items: start;
+}
+.occasional-settings-row label { min-width: 0; }
+.occasional-settings-row small { font-size: 11px; }
+.occasional-settings-row .icon-button { margin-top: 25px; }
+@media (max-width: 600px) {
+  .occasional-settings-row { grid-template-columns: minmax(0, 1fr) 82px 42px; gap: 6px; }
+  .occasional-settings-row label { font-size: 12px; }
+}
+
 .added-extra-panel {
   display: grid;
   gap: 10px;

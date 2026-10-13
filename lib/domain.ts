@@ -130,6 +130,15 @@ export type CommonExtraProfile = {
   usage: Record<string, CommonExtraUsage>;
   pinnedItems: string[];
   hiddenItems: string[];
+  completedShops?: Record<string, { extraKeys: string[]; itemKeys: string[] }>;
+  occasionalItems?: OccasionalItem[];
+};
+
+export type OccasionalItem = {
+  id: string;
+  name: string;
+  intervalDays: number;
+  lastAddedAt?: string;
 };
 
 export type AppSettings = {
@@ -213,7 +222,25 @@ export const defaultCommonExtraItems = [
   "Rice",
   "Coffee",
   "Tea bags",
-  "Toilet roll"
+  "Toilet roll",
+  "Butter",
+  "Oats",
+  "Orange juice",
+  "Crackers",
+  "Berries"
+];
+
+export const defaultOccasionalItems: OccasionalItem[] = [
+  { id: "bin-bags", name: "Bin bags", intervalDays: 56 },
+  { id: "nappy-wipes", name: "Nappy wipes", intervalDays: 14 },
+  { id: "toilet-roll", name: "Toilet roll", intervalDays: 28 },
+  { id: "kitchen-roll", name: "Kitchen roll", intervalDays: 28 },
+  { id: "washing-up-liquid", name: "Washing-up liquid", intervalDays: 42 },
+  { id: "dishwasher-tablets", name: "Dishwasher tablets", intervalDays: 42 },
+  { id: "laundry-detergent", name: "Laundry detergent", intervalDays: 42 },
+  { id: "surface-cleaner", name: "Surface cleaner", intervalDays: 56 },
+  { id: "toothpaste", name: "Toothpaste", intervalDays: 56 },
+  { id: "hand-soap", name: "Hand soap", intervalDays: 42 }
 ];
 
 function commonExtraKey(name: string) {
@@ -241,10 +268,15 @@ function uniqueCommonExtraItems(items: string[]) {
 }
 
 function commonExtraProfile(settings: AppSettings, profileKey: string): CommonExtraProfile {
-  return settings.commonExtraProfiles[profileKey] ?? { usage: {}, pinnedItems: [], hiddenItems: [] };
+  const profile = settings.commonExtraProfiles?.[profileKey];
+  return { ...profile, usage: profile?.usage ?? {}, pinnedItems: profile?.pinnedItems ?? [], hiddenItems: profile?.hiddenItems ?? [] };
 }
 
-export function commonExtraItemsForProfile(settings: AppSettings, profileKey: string, limit = 15) {
+export function commonExtraUsageForProfile(settings: AppSettings, profileKey: string, name: string) {
+  return commonExtraProfile(settings, profileKey).usage[commonExtraKey(name)];
+}
+
+export function commonExtraItemsForProfile(settings: AppSettings, profileKey: string, limit = 20) {
   const profile = commonExtraProfile(settings, profileKey);
   const hiddenKeys = new Set(profile.hiddenItems.map(commonExtraKey));
   const pinnedKeys = new Set(profile.pinnedItems.map(commonExtraKey));
@@ -263,6 +295,7 @@ export function commonExtraItemsForProfile(settings: AppSettings, profileKey: st
 
   return candidates
     .filter((item) => pinnedKeys.has(commonExtraKey(item)) || !hiddenKeys.has(commonExtraKey(item)))
+    .sort((a, b) => (profile.usage[commonExtraKey(b)]?.count ?? 0) - (profile.usage[commonExtraKey(a)]?.count ?? 0))
     .slice(0, Math.max(0, limit));
 }
 
@@ -294,7 +327,7 @@ export function recordManualExtraUsage(
   };
 }
 
-export function updateCommonExtraProfileChoices(settings: AppSettings, profileKey: string, nextItems: string[], limit = 15) {
+export function updateCommonExtraProfileChoices(settings: AppSettings, profileKey: string, nextItems: string[], limit = 20) {
   const currentItems = commonExtraItemsForProfile(settings, profileKey, limit);
   const normalizedItems = uniqueCommonExtraItems(nextItems);
   const nextKeys = new Set(normalizedItems.map(commonExtraKey));
@@ -317,6 +350,77 @@ export function updateCommonExtraProfileChoices(settings: AppSettings, profileKe
         ...profile,
         pinnedItems,
         hiddenItems
+      }
+    }
+  };
+}
+
+export function occasionalItemsForProfile(settings: AppSettings, profileKey: string): OccasionalItem[] {
+  const profile = commonExtraProfile(settings, profileKey);
+  return (profile.occasionalItems ?? defaultOccasionalItems).map(item => ({
+    ...item,
+    lastAddedAt: item.lastAddedAt ?? profile.usage[commonExtraKey(item.name)]?.lastAddedAt
+  }));
+}
+
+export function dueOccasionalItems(settings: AppSettings, profileKey: string, asOf = new Date().toISOString()) {
+  const day = (value: string) => Date.parse(`${value.slice(0, 10)}T00:00:00Z`);
+  const today = day(asOf);
+  return occasionalItemsForProfile(settings, profileKey)
+    .filter(item => !item.lastAddedAt || day(item.lastAddedAt) + item.intervalDays * 86400000 <= today)
+    .sort((a, b) => {
+      const due = (item: OccasionalItem) => item.lastAddedAt ? day(item.lastAddedAt) + item.intervalDays * 86400000 : 0;
+      return due(a) - due(b);
+    });
+}
+
+export function updateOccasionalItems(settings: AppSettings, profileKey: string, items: OccasionalItem[]) {
+  const seen = new Set<string>();
+  const occasionalItems = items.filter(item => {
+    const key = commonExtraKey(item.name);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(item => ({
+    ...item,
+    name: item.name.trim(),
+    intervalDays: Math.max(1, Math.round(Number(item.intervalDays) || 28))
+  }));
+  const profile = commonExtraProfile(settings, profileKey);
+  return { ...settings, commonExtraProfiles: { ...settings.commonExtraProfiles, [profileKey]: { ...profile, occasionalItems } } };
+}
+
+// Sending completes a shop. A retry can add newly included items but never count an item twice for that range.
+export function recordCompletedShoppingList(
+  settings: AppSettings,
+  profileKey: string,
+  rangeKey: string,
+  items: Pick<ShoppingListItem, "name" | "manual">[],
+  completedAt = new Date().toISOString()
+) {
+  if (!rangeKey || !items.length) return settings;
+  const profile = commonExtraProfile(settings, profileKey);
+  const previous = profile.completedShops?.[rangeKey];
+  const extraKeys = new Set(previous?.extraKeys ?? []);
+  const itemKeys = new Set(previous?.itemKeys ?? []);
+  const newExtras = uniqueCommonExtraItems(items.filter(item => item.manual).map(item => item.name))
+    .filter(name => !extraKeys.has(commonExtraKey(name)));
+  const newItemKeys = new Set(items.map(item => commonExtraKey(item.name)).filter(key => key && !itemKeys.has(key)));
+  if (!newExtras.length && !newItemKeys.size) return settings;
+  const next = recordManualExtraUsage(settings, profileKey, newExtras, completedAt);
+  newExtras.forEach(name => extraKeys.add(commonExtraKey(name)));
+  newItemKeys.forEach(key => itemKeys.add(key));
+  const occasionalItems = occasionalItemsForProfile(settings, profileKey).map(item =>
+    newItemKeys.has(commonExtraKey(item.name)) ? { ...item, lastAddedAt: completedAt } : item
+  );
+  return {
+    ...next,
+    commonExtraProfiles: {
+      ...next.commonExtraProfiles,
+      [profileKey]: {
+        ...next.commonExtraProfiles[profileKey],
+        occasionalItems,
+        completedShops: { ...profile.completedShops, [rangeKey]: { extraKeys: [...extraKeys], itemKeys: [...itemKeys] } }
       }
     }
   };

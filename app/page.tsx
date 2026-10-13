@@ -52,6 +52,10 @@ import {
   canonicalizeIngredientName,
   cleanOcrRecipeText,
   commonExtraItemsForProfile,
+  commonExtraUsageForProfile,
+  dueOccasionalItems,
+  occasionalItemsForProfile,
+  updateOccasionalItems,
   createId,
   defaultCommonExtraItems,
   draftToRecipe,
@@ -73,7 +77,7 @@ import {
   parseIngredientLine,
   parseRecipeText,
   parseTags,
-  recordManualExtraUsage,
+  recordCompletedShoppingList,
   recipeToDraft,
   seedState,
   startOfWeek,
@@ -88,6 +92,7 @@ import {
   type Ingredient,
   type IngredientRole,
   type MealSlot,
+  type OccasionalItem,
   type Recipe,
   type RecipePopularitySummary,
   type RecipeReaction,
@@ -2367,14 +2372,7 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item]),
-      settings: current.manualShoppingItems.some(
-        (existing) =>
-          existing.shoppingRangeKey === shoppingRangeKey &&
-          shoppingPreferenceKey(existing) === shoppingPreferenceKey(item)
-      )
-        ? current.settings
-        : recordManualExtraUsage(current.settings, commonExtraProfileKey, [item.name])
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
     }));
     setManualItemName("");
     setManualItemQuantity("");
@@ -2389,22 +2387,10 @@ export default function Home() {
 
     if (!newItems.length) return;
 
-    updateState((current) => {
-      const existingKeys = new Set(
-        current.manualShoppingItems
-          .filter((item) => item.shoppingRangeKey === shoppingRangeKey)
-          .map(shoppingPreferenceKey)
-      );
-      const newlyUsedNames = newItems
-        .filter((item) => !existingKeys.has(shoppingPreferenceKey(item)))
-        .map((item) => item.name);
-
-      return {
-        ...current,
-        manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...newItems]),
-        settings: recordManualExtraUsage(current.settings, commonExtraProfileKey, newlyUsedNames)
-      };
-    });
+    updateState((current) => ({
+      ...current,
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...newItems])
+    }));
     setManualBulkItems("");
   }
 
@@ -2414,14 +2400,7 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item]),
-      settings: current.manualShoppingItems.some(
-        (existing) =>
-          existing.shoppingRangeKey === shoppingRangeKey &&
-          shoppingPreferenceKey(existing) === shoppingPreferenceKey(item)
-      )
-        ? current.settings
-        : recordManualExtraUsage(current.settings, commonExtraProfileKey, [item.name])
+      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
     }));
   }
 
@@ -2429,6 +2408,21 @@ export default function Home() {
     updateState((current) => ({
       ...current,
       settings: updateCommonExtraProfileChoices(current.settings, commonExtraProfileKey, items)
+    }));
+  }
+
+  function completeShoppingList() {
+    const completedAt = new Date().toISOString();
+    updateState(current => ({
+      ...current,
+      settings: recordCompletedShoppingList(current.settings, commonExtraProfileKey, shoppingRangeKey, shoppingList, completedAt)
+    }));
+  }
+
+  function saveOccasionalItems(items: OccasionalItem[]) {
+    updateState(current => ({
+      ...current,
+      settings: updateOccasionalItems(current.settings, commonExtraProfileKey, items)
     }));
   }
 
@@ -3297,6 +3291,8 @@ export default function Home() {
             onAddCommonManualItem={addCommonManualShoppingItem}
             onClearManualItems={clearManualShoppingItemsForRange}
             onUpdateCommonExtras={updateCommonExtraItems}
+            onCompleteShop={completeShoppingList}
+            onManageOccasionalItems={() => setActiveView("settings")}
             onToggleItem={toggleShoppingItem}
             onUnselectAll={unselectAllShoppingItems}
             onUpdateManualItem={updateManualShoppingItem}
@@ -3314,6 +3310,8 @@ export default function Home() {
         {activeView === "settings" && (
           <SettingsView
             settings={state.settings}
+            commonExtraProfileKey={commonExtraProfileKey}
+            onSaveOccasionalItems={saveOccasionalItems}
             updateSettings={updateSettings}
             supabaseConfigured={supabaseConfigured}
             cloudEmail={cloudEmail}
@@ -5895,6 +5893,8 @@ function ShoppingView({
   onAddCommonManualItem,
   onClearManualItems,
   onUpdateCommonExtras,
+  onCompleteShop,
+  onManageOccasionalItems,
   onToggleItem,
   onUnselectAll,
   onUpdateManualItem,
@@ -5934,6 +5934,8 @@ function ShoppingView({
   onAddCommonManualItem: (itemName: string) => void;
   onClearManualItems: () => void;
   onUpdateCommonExtras: (items: string[]) => void;
+  onCompleteShop: () => void;
+  onManageOccasionalItems: () => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUnselectAll: () => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
@@ -5954,6 +5956,7 @@ function ShoppingView({
   const [editingCommonExtras, setEditingCommonExtras] = useState(false);
   const [commonExtrasDraft, setCommonExtrasDraft] = useState<string[]>(commonExtraItems);
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
+  const dueEssentials = dueOccasionalItems(settings, commonExtraProfileKey, `${rangeEndDate}T12:00:00`);
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
   const manualItems = items
@@ -6045,6 +6048,7 @@ function ShoppingView({
   function sendToAsdaHelper() {
     const queue = buildAsdaHelperQueue();
 
+    onCompleteShop();
     publishAsdaHelperQueue(queue);
     window.postMessage({ source: asdaHelperAppSource, type: "ASDA_HELPER_IMPORT_QUEUE", payload: queue }, window.location.origin);
     setAsdaHelperMessage("Sending shopping queue to Asda Helper...");
@@ -6212,6 +6216,7 @@ function ShoppingView({
               <div className="common-extra-list">
                 {commonExtraItems.map((itemName) => {
                   const alreadyAdded = manualItemKeys.has(shoppingPreferenceKey({ name: itemName }));
+                  const count = commonExtraUsageForProfile(settings, commonExtraProfileKey, itemName)?.count ?? 0;
 
                   return (
                     <button
@@ -6222,12 +6227,36 @@ function ShoppingView({
                     >
                       {alreadyAdded ? <Check size={15} /> : <Plus size={15} />}
                       {itemName}
+                      <small className="extra-usage-count" title="Times included in a completed shopping list" aria-label={`${count} completed ${count === 1 ? "shop" : "shops"}`}>
+                        {count}
+                      </small>
                     </button>
                   );
                 })}
               </div>
             )}
           </section>
+          <details className="occasional-extras">
+            <summary>Occasional essentials <span>{dueEssentials.length} due</span></summary>
+            <div className="occasional-extras-heading">
+              <button className="icon-text-button" type="button" onClick={onManageOccasionalItems}>
+                <Settings size={16} /> Manage intervals
+              </button>
+            </div>
+            <div className="common-extra-list">
+              {dueEssentials.map(item => {
+                const added = manualItemKeys.has(shoppingPreferenceKey({ name: item.name }));
+                return (
+                  <button className={classNames("text-button", added && "active")} type="button" key={item.id}
+                    title={item.lastAddedAt ? `Last added ${item.lastAddedAt.slice(0, 10)}; every ${item.intervalDays} days` : `Every ${item.intervalDays} days; not yet recorded`}
+                    onClick={() => onAddCommonManualItem(item.name)} disabled={added}>
+                    {added ? <Check size={15} /> : <Plus size={15} />}{item.name}
+                  </button>
+                );
+              })}
+            </div>
+            {!dueEssentials.length ? <p className="muted">Nothing due for this shop.</p> : null}
+          </details>
         </div>
 
         <section className="added-extra-panel" aria-live="polite">
@@ -6523,8 +6552,64 @@ function ManualShoppingItemModal({
   );
 }
 
+function OccasionalItemsSettings({ settings, profileKey, onSave }: {
+  settings: AppState["settings"];
+  profileKey: string;
+  onSave: (items: OccasionalItem[]) => void;
+}) {
+  const [items, setItems] = useState(() => occasionalItemsForProfile(settings, profileKey));
+  const [dirty, setDirty] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!dirty) setItems(occasionalItemsForProfile(settings, profileKey));
+  }, [settings, profileKey, dirty]);
+
+  function edit(next: OccasionalItem[]) {
+    setItems(next);
+    setDirty(true);
+    setSaved(false);
+  }
+
+  return (
+    <section className="settings-section occasional-settings">
+      <h2>Occasional essentials</h2>
+      <form onSubmit={event => { event.preventDefault(); onSave(items); setDirty(false); setSaved(true); }}>
+        <div className="occasional-settings-list">
+          {items.map((item, index) => (
+            <div className="occasional-settings-row" key={item.id}>
+              <label>
+                Item
+                <input required aria-label={`Occasional item ${index + 1}`} value={item.name}
+                  onChange={event => edit(items.map(entry => entry.id === item.id ? { ...entry, name: event.target.value } : entry))} />
+                <small className="muted">{item.lastAddedAt ? `Last added: ${item.lastAddedAt.slice(0, 10)}` : "Not yet recorded"}</small>
+              </label>
+              <label>
+                Every (days)
+                <input type="number" min={1} max={3650} required aria-label={`Interval for ${item.name || `item ${index + 1}`}`}
+                  value={item.intervalDays || ""} onChange={event => edit(items.map(entry => entry.id === item.id ? { ...entry, intervalDays: Number(event.target.value) } : entry))} />
+              </label>
+              <button className="icon-button danger" type="button" title={`Remove ${item.name || "item"}`}
+                onClick={() => edit(items.filter(entry => entry.id !== item.id))}><Trash2 size={16} /></button>
+            </div>
+          ))}
+        </div>
+        <div className="button-row">
+          <button type="button" className="icon-text-button" onClick={() => edit([...items, { id: createId("occasional"), name: "", intervalDays: 28 }])}>
+            <Plus size={16} /> Add item
+          </button>
+          <button className="primary-button compact-button" type="submit" disabled={!dirty}><Check size={16} /> Save</button>
+          {saved ? <span role="status" className="muted">Saved</span> : null}
+        </div>
+      </form>
+    </section>
+  );
+}
+
 function SettingsView({
   settings,
+  commonExtraProfileKey,
+  onSaveOccasionalItems,
   updateSettings,
   supabaseConfigured,
   cloudEmail,
@@ -6546,6 +6631,8 @@ function SettingsView({
   onResetDemo
 }: {
   settings: AppState["settings"];
+  commonExtraProfileKey: string;
+  onSaveOccasionalItems: (items: OccasionalItem[]) => void;
   updateSettings: (patch: Partial<AppState["settings"]>) => void;
   supabaseConfigured: boolean;
   cloudEmail: string;
@@ -6633,6 +6720,9 @@ function SettingsView({
           />
         </label>
       </section>
+
+      <OccasionalItemsSettings key={`${activeHouseholdId ?? "local"}:${commonExtraProfileKey}`}
+        settings={settings} profileKey={commonExtraProfileKey} onSave={onSaveOccasionalItems} />
 
       <section className="settings-section">
         <h2>Cloud sync</h2>
