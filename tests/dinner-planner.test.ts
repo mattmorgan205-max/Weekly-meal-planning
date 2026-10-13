@@ -241,6 +241,57 @@ test("uses personal meal preference as a tie-breaker without changing planning t
   assert.equal(plan.summary.quickCount, 1);
 });
 
+test("personal preference outranks favourites in regular and use-up dinner planning", () => {
+  const liked = recipe("liked", "Liked bean stew", "beans", 25);
+  const favourite = { ...recipe("favourite", "Favourite bean stew", "beans", 25), favorite: true };
+  for (const useUpIngredients of [[], ["beans"]]) {
+    const plan = buildAutoDinnerPlan({
+      ...baseRequest([favourite, liked]), endDate: "2026-08-10", useUpIngredients,
+      recipePreferenceScores: { liked: 6, favourite: 0 }
+    });
+    assert.equal(plan.entries[0].recipeId, liked.id);
+  }
+});
+
+test("Not again is excluded even when favourited, familiar, a use-up match or the only candidate", () => {
+  const rejected = { ...recipe("rejected", "Rejected bean stew", "beans", 25), favorite: true, tags: ["familiar"] };
+  const alternative = recipe("alternative", "Alternative pasta", "tomatoes", 25);
+  for (const recipes of [[rejected], [rejected, alternative]]) {
+    for (const useUpIngredients of [[], ["beans"]]) {
+      const plan = buildAutoDinnerPlan({
+        ...baseRequest(recipes), useUpIngredients,
+        recipeReactions: { rejected: "not_again" },
+        recipePreferenceScores: { rejected: 100 }
+      });
+      assert.ok(plan.entries.every(entry => entry.recipeId !== rejected.id));
+      assert.equal(plan.entries.length, recipes.length - 1);
+      assert.ok(plan.warnings.some(warning => warning.includes("open dinner slots")));
+    }
+  }
+});
+
+test("fill mode preserves an already planned rejected meal but never adds it to a gap", () => {
+  const rejected = recipe("rejected", "Rejected bean stew", "beans", 25);
+  const alternative = recipe("alternative", "Alternative pasta", "tomatoes", 25);
+  const existing = plannedMeal("existing", "2026-08-10", rejected.id);
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([rejected, alternative], [existing]), mode: "fill",
+    recipeReactions: { rejected: "not_again" }
+  });
+  assert.equal(plan.preservedDinners[0].meal.id, existing.id);
+  assert.deepEqual(plan.entries.map(entry => entry.recipeId), [alternative.id]);
+});
+
+test("clearing Not again restores eligibility and favourites still break equal-preference ties", () => {
+  const favourite = { ...recipe("favourite", "Favourite beans", "beans", 25), favorite: true };
+  const alternative = recipe("alternative", "Other beans", "beans", 25);
+  const plan = buildAutoDinnerPlan({
+    ...baseRequest([alternative, favourite]), endDate: "2026-08-10",
+    recipeReactions: {}, recipePreferenceScores: { favourite: 0, alternative: 0 }
+  });
+  assert.equal(plan.entries[0].recipeId, favourite.id);
+});
+
 test("only places Not Sophia friendly recipes on Sophia nursery days", () => {
   const restricted = recipe("restricted", "Spicy bean chilli", "beans", 25);
   restricted.tags = ["Not Sophia friendly"];

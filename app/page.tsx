@@ -113,7 +113,7 @@ import { installAutoAddedRecipePackV3 } from "@/lib/auto-added-recipes-v3";
 import { installAutoAddedLunchPack } from "@/lib/auto-added-lunch-recipes";
 import { installReviewedCookbookPack } from "@/lib/reviewed-cookbook-recipes";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
-import { shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
+import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
 
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -190,6 +190,7 @@ type UseUpSuggestion = {
   missingIngredients: string[];
   extraIngredientCount: number;
   favoriteCount: number;
+  preferenceScore: number;
 };
 type AutoPlanPreviewRow = {
   key: string;
@@ -704,12 +705,15 @@ function useUpNamesMatch(targetName: string, recipeIngredientName: string) {
 function suggestUseUpRecipes(
   recipes: Recipe[],
   values: string[],
-  ingredientAliases: Record<string, string>
+  ingredientAliases: Record<string, string>,
+  recipeReactions: Record<string, RecipeReaction>,
+  recipePreferenceScores: Record<string, number>
 ): { targets: UseUpTarget[]; suggestions: UseUpSuggestion[] } {
   const targets = useUpTargets(values, ingredientAliases);
   if (targets.length === 0) return { targets, suggestions: [] };
 
   const recipeMatches = recipes
+    .filter((recipe) => recipeReactions[recipe.id] !== "not_again")
     .map((recipe) => {
       const ingredientNames = recipe.ingredients.map((ingredient) =>
         canonicalizeIngredientName(ingredient.canonicalName || ingredient.name, ingredientAliases).canonicalName
@@ -729,6 +733,7 @@ function suggestUseUpRecipes(
       (a, b) =>
         b.coveredIngredients.length - a.coveredIngredients.length ||
         a.extraIngredientCount - b.extraIngredientCount ||
+        (recipePreferenceScores[b.recipe.id] ?? 0) - (recipePreferenceScores[a.recipe.id] ?? 0) ||
         Number(b.recipe.favorite) - Number(a.recipe.favorite)
     )
     .slice(0, 80);
@@ -740,7 +745,8 @@ function suggestUseUpRecipes(
       .filter((target) => !match.coveredIngredients.includes(target.canonicalName))
       .map((target) => target.canonicalName),
     extraIngredientCount: match.extraIngredientCount,
-    favoriteCount: Number(match.recipe.favorite)
+    favoriteCount: Number(match.recipe.favorite),
+    preferenceScore: recipePreferenceScores[match.recipe.id] ?? 0
   }));
 
   for (let firstIndex = 0; firstIndex < recipeMatches.length; firstIndex += 1) {
@@ -758,7 +764,8 @@ function suggestUseUpRecipes(
           .filter((target) => !coveredIngredients.includes(target.canonicalName))
           .map((target) => target.canonicalName),
         extraIngredientCount: first.extraIngredientCount + second.extraIngredientCount,
-        favoriteCount: Number(first.recipe.favorite) + Number(second.recipe.favorite)
+        favoriteCount: Number(first.recipe.favorite) + Number(second.recipe.favorite),
+        preferenceScore: (recipePreferenceScores[first.recipe.id] ?? 0) + (recipePreferenceScores[second.recipe.id] ?? 0)
       });
     }
   }
@@ -771,6 +778,7 @@ function suggestUseUpRecipes(
       b.coveredIngredients.length - a.coveredIngredients.length ||
       a.recipeIds.length - b.recipeIds.length ||
       a.extraIngredientCount - b.extraIngredientCount ||
+      b.preferenceScore - a.preferenceScore ||
       b.favoriteCount - a.favoriteCount
     );
   });
@@ -1820,7 +1828,7 @@ export default function Home() {
     const { error } = await client.from("shared_recipe_catalog").upsert({
       source_household_id: householdId,
       source_recipe_id: recipe.id,
-      recipe_data: { ...recipeData, visibility: "global", catalogSourceHouseholdId: householdId },
+      recipe_data: { ...recipeData, favorite: false, visibility: "global", catalogSourceHouseholdId: householdId },
       active: true,
       updated_at: new Date().toISOString()
     }, { onConflict: "source_household_id,source_recipe_id" });
@@ -2732,7 +2740,7 @@ export default function Home() {
 
       if (existingIndex === undefined) {
         recipeIndex.set(catalogRecipe.id, recipes.length);
-        recipes.push(catalogRecipe);
+        recipes.push(catalogRecipeForHousehold(catalogRecipe));
         return;
       }
 
@@ -2741,7 +2749,7 @@ export default function Home() {
         existing.visibility === "global" &&
         (!existing.catalogSourceHouseholdId || existing.catalogSourceHouseholdId === catalogRecipe.catalogSourceHouseholdId);
       if (catalogOwnsExisting && shouldReplaceRecipeWithCatalog(existing, catalogRecipe, row.updated_at)) {
-        recipes[existingIndex] = catalogRecipe;
+        recipes[existingIndex] = catalogRecipeForHousehold(catalogRecipe, existing);
       }
     });
 
@@ -2764,7 +2772,7 @@ export default function Home() {
       return {
         source_household_id: householdId,
         source_recipe_id: recipe.id,
-        recipe_data: { ...recipeData, visibility: "global", catalogSourceHouseholdId: householdId },
+        recipe_data: { ...recipeData, favorite: false, visibility: "global", catalogSourceHouseholdId: householdId },
         active: true,
         updated_at: new Date().toISOString()
       };
@@ -3157,6 +3165,7 @@ export default function Home() {
             ingredientAliases={state.settings.ingredientAliases}
             defaultPeople={state.settings.defaultPeople}
             recipePreferenceScores={autoPlannerPreferenceScores}
+            recipeReactions={recipeReactions}
             onPlanSuggestedRecipes={planSuggestedRecipes}
             onApplyAutoDinnerPlan={applyAutoDinnerPlan}
             onMoveMeal={movePlannedMeal}
@@ -3663,6 +3672,7 @@ function PlannerView({
   ingredientAliases,
   defaultPeople,
   recipePreferenceScores,
+  recipeReactions,
   onPlanSuggestedRecipes,
   onApplyAutoDinnerPlan,
   onMoveMeal,
@@ -3693,6 +3703,7 @@ function PlannerView({
   ingredientAliases: Record<string, string>;
   defaultPeople: number;
   recipePreferenceScores: Record<string, number>;
+  recipeReactions: Record<string, RecipeReaction>;
   onPlanSuggestedRecipes: (recipeIds: string[]) => void;
   onApplyAutoDinnerPlan: (plan: AutoDinnerPlanResult) => void;
   onMoveMeal: (id: string, date: string, slot: MealSlot) => void;
@@ -3728,8 +3739,8 @@ function PlannerView({
   const endDate = formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount - 1));
   const useUpText = useUpIngredients.join("\n");
   const useUpRecommendations = useMemo(
-    () => suggestUseUpRecipes(recipes, useUpIngredients, ingredientAliases),
-    [ingredientAliases, recipes, useUpIngredients]
+    () => suggestUseUpRecipes(recipes, useUpIngredients, ingredientAliases, recipeReactions, recipePreferenceScores),
+    [ingredientAliases, recipes, useUpIngredients, recipeReactions, recipePreferenceScores]
   );
   const displayedDateKeys = new Set(days.map(formatDateKey));
   const dinnerPlanningAvailable = visibleSlots.includes("dinner");
@@ -3798,6 +3809,10 @@ function PlannerView({
   }, [plannerDayCount, weekStart]);
 
   useEffect(() => {
+    setAutoPlanPreview(null);
+  }, [recipes, recipeReactions, recipePreferenceScores]);
+
+  useEffect(() => {
     const displayedDates = days.map(formatDateKey);
     if (!displayedDates.includes(selectedMobileDate)) setSelectedMobileDate(displayedDates[0] ?? weekStart);
   }, [days, selectedMobileDate, weekStart]);
@@ -3834,6 +3849,7 @@ function PlannerView({
       dayNotes,
       peopleCount: defaultPeople,
       recipePreferenceScores,
+      recipeReactions,
       variationSeed: variation
     }));
   }
@@ -3901,6 +3917,7 @@ function PlannerView({
       excludedRecipeIds: autoPlanExcludedRecipeIds,
       peopleCount: defaultPeople,
       recipePreferenceScores,
+      recipeReactions,
       variationSeed: nextVariation
     });
     const previewMealIds = new Set(previewMeals.map((meal) => meal.id));

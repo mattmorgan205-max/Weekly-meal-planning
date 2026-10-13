@@ -7,7 +7,8 @@ import {
   totalRecipeMinutes,
   type Ingredient,
   type PlannedMeal,
-  type Recipe
+  type Recipe,
+  type RecipeReaction
 } from "./domain";
 
 export type AutoDinnerPlanMode = "fill" | "replace";
@@ -27,6 +28,7 @@ export type AutoDinnerPlanRequest = {
   excludedRecipeIds?: string[];
   peopleCount: number;
   recipePreferenceScores?: Record<string, number>;
+  recipeReactions?: Record<string, RecipeReaction>;
   variationSeed?: number;
 };
 
@@ -334,8 +336,8 @@ function selectUseUpCandidates(candidates: DinnerCandidate[], targets: UseUpTarg
       candidate.coveredUseUpIngredients.length,
       -1,
       -candidate.recipe.ingredients.length,
-      Number(candidate.favorite),
       candidate.preferenceScore,
+      Number(candidate.favorite),
       tieValue(candidate.key, seed)
     ]
   }));
@@ -353,8 +355,8 @@ function selectUseUpCandidates(candidates: DinnerCandidate[], targets: UseUpTarg
           coverage.length,
           -2,
           -(first.recipe.ingredients.length + second.recipe.ingredients.length),
-          Number(first.favorite) + Number(second.favorite),
           first.preferenceScore + second.preferenceScore,
+          Number(first.favorite) + Number(second.favorite),
           tieValue(`${first.key}:${second.key}`, seed)
         ]
       });
@@ -422,8 +424,8 @@ function stateScore(
     -Math.max(0, familiarTarget - familiarCount),
     familiarQuality,
     -varietyCost,
-    favoriteCount,
     preferenceScore,
+    favoriteCount,
     tie
   ];
 }
@@ -546,6 +548,7 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
   const eligibleRecipes = request.recipes.filter(
     (recipe) =>
       normalizeMealTypes(recipe.mealTypes).includes("dinner") &&
+      request.recipeReactions?.[recipe.id] !== "not_again" &&
       !previousRecipeIds.has(recipe.id) &&
       !existingRecipeIds.has(recipe.id) &&
       !excludedRecipeIds.has(recipe.id)

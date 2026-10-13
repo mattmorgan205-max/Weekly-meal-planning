@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Recipe } from "../lib/domain";
-import { shouldReplaceRecipeWithCatalog } from "../lib/recipe-sync";
+import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog } from "../lib/recipe-sync";
 
 function recipe(overrides: Partial<Recipe> = {}): Recipe {
   return {
@@ -54,4 +54,23 @@ test("does not replace a recipe owned by a different catalogue source", () => {
   const catalog = recipe({ catalogSourceHouseholdId: "household_two", updatedAt: "2026-09-30T10:00:00.000Z" });
 
   assert.equal(shouldReplaceRecipeWithCatalog(existing, catalog), false);
+});
+
+test("catalogue updates preserve both favourited and unfavourited household choices", () => {
+  for (const favorite of [true, false]) {
+    const existing = recipe({ favorite });
+    const catalog = recipe({ favorite: !favorite, title: "Updated title", updatedAt: "2026-10-13T10:00:00Z" });
+    assert.equal(shouldReplaceRecipeWithCatalog(existing, catalog), true);
+    const merged = catalogRecipeForHousehold(catalog, existing);
+    assert.equal(merged.favorite, favorite);
+    assert.equal(merged.title, "Updated title");
+    assert.equal(merged.updatedAt, catalog.updatedAt);
+    assert.equal(catalog.favorite, !favorite);
+  }
+});
+
+test("new catalogue imports do not inherit the publishing household's favourite", () => {
+  const catalog = recipe({ favorite: true });
+  assert.equal(catalogRecipeForHousehold(catalog).favorite, false);
+  assert.equal(catalog.favorite, true);
 });

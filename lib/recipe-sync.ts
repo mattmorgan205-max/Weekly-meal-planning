@@ -1,5 +1,9 @@
 import type { Recipe } from "./domain";
 
+export function catalogRecipeForHousehold(catalogRecipe: Recipe, existing?: Recipe): Recipe {
+  return { ...catalogRecipe, favorite: existing?.favorite ?? false };
+}
+
 function timestamp(value?: string) {
   if (!value) return 0;
   const parsed = Date.parse(value);
