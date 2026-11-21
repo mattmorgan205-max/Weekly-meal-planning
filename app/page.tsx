@@ -33,6 +33,7 @@ import {
   ShoppingCart,
   Sparkles,
   Star,
+  Tags,
   Trash2,
   Users,
   Wand2,
@@ -43,6 +44,7 @@ import {
   type DragEvent,
   type FormEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -66,6 +68,7 @@ import {
   inferCategory,
   inferAutomaticRecipeTags,
   inferRecipeMealTypes,
+  itemsForAsdaHelper,
   isAutomaticRecipeTag,
   labelMealSlot,
   mealSlots,
@@ -80,6 +83,8 @@ import {
   recordCompletedShoppingList,
   recipeToDraft,
   seedState,
+  shoppingItemCategoryKey,
+  shoppingListIncludesExtra,
   startOfWeek,
   standardIngredientUnits,
   standardizeIngredientQuantity,
@@ -115,6 +120,8 @@ import { installReviewedCookbookPack } from "@/lib/reviewed-cookbook-recipes";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
 import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
+import { RecipeFilterControls } from "@/components/recipe-filter-controls";
+import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type RecipeFilters } from "@/lib/recipe-filters";
 
 type View = "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
@@ -371,6 +378,7 @@ function hydrateState(value: unknown): AppState {
       ...parsed.settings,
       ingredientAliases: parsed.settings?.ingredientAliases ?? {},
       shoppingNameVariants: parsed.settings?.shoppingNameVariants ?? {},
+      shoppingCategoryOverrides: parsed.settings?.shoppingCategoryOverrides ?? {},
       commonExtraItems: Array.isArray(parsed.settings?.commonExtraItems) ? parsed.settings.commonExtraItems : [...defaultCommonExtraItems],
       commonExtraProfiles:
         parsed.settings?.commonExtraProfiles && typeof parsed.settings.commonExtraProfiles === "object"
@@ -831,7 +839,7 @@ function mergeManualShoppingItems(items: ShoppingListItem[]) {
 
   items.forEach((item) => {
     const canonicalName = canonicalizeIngredientName(item.canonicalName || item.name).canonicalName;
-    const key = [item.shoppingRangeKey ?? "legacy", canonicalName, item.category, item.displayQuantity.trim().toLowerCase()].join("::");
+    const key = [item.shoppingRangeKey ?? "legacy", canonicalName, item.category, item.displayQuantity.trim().toLowerCase(), item.additional ? item.id : ""].join("::");
     const existing = merged.get(key);
 
     if (existing) {
@@ -1126,6 +1134,7 @@ export default function Home() {
   const [shoppingEndDate, setShoppingEndDate] = useState(() => formatDateKey(addDays(startOfWeek(new Date()), 6)));
   const [recipeSearch, setRecipeSearch] = useState("");
   const [recipeGroupFilter, setRecipeGroupFilter] = useState<RecipeGroupFilter>("all");
+  const [recipeFilters, setRecipeFilters] = useState<RecipeFilters>(emptyRecipeFilters);
   const [mealPicker, setMealPicker] = useState<{ date: string; slot: MealSlot } | null>(null);
   const [mealPickerQuery, setMealPickerQuery] = useState("");
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
@@ -1240,6 +1249,7 @@ export default function Home() {
     return state.recipes
       .filter((recipe) => {
         if (recipeGroupFilter !== "all" && !recipe.mealTypes.includes(recipeGroupFilter)) return false;
+        if (!matchesRecipeFilters(recipe, recipeFilters)) return false;
         if (!query) return true;
         return (
           recipe.title.toLowerCase().includes(query) ||
@@ -1249,7 +1259,8 @@ export default function Home() {
         );
       })
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.title.localeCompare(b.title));
-  }, [recipeGroupFilter, recipeSearch, state.recipes]);
+  }, [recipeGroupFilter, recipeSearch, recipeFilters, state.recipes]);
+  const recipeTags = useMemo(() => Array.from(new Set(state.recipes.flatMap((recipe) => recipe.tags.map((tag) => tag.toLowerCase())))).sort(), [state.recipes]);
   const recipeFrequencies = useMemo(() => {
     return state.plannedMeals.reduce<Record<string, number>>((counts, meal) => {
       if (meal.recipeId) counts[meal.recipeId] = (counts[meal.recipeId] ?? 0) + 1;
@@ -2402,13 +2413,33 @@ export default function Home() {
     setManualBulkItems("");
   }
 
-  function addCommonManualShoppingItem(itemName: string) {
+  function addCommonManualShoppingItem(itemName: string, extraQuantity?: string) {
     const item = createManualShoppingItemFromLine(itemName, shoppingRangeKey);
     if (!item) return;
+    if (extraQuantity?.trim()) {
+      item.displayQuantity = extraQuantity.trim();
+      item.additional = true;
+    }
 
     updateState((current) => ({
       ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
+      manualShoppingItems: extraQuantity?.trim()
+        ? [...current.manualShoppingItems, item]
+        : mergeManualShoppingItems([...current.manualShoppingItems, item])
+    }));
+  }
+
+  function updateShoppingItemCategory(item: ShoppingListItem, category: GroceryCategory) {
+    updateState((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        shoppingCategoryOverrides: {
+          ...current.settings.shoppingCategoryOverrides,
+          [shoppingItemCategoryKey(item, current.settings.ingredientAliases)]: category
+        }
+      },
+      manualShoppingItems: current.manualShoppingItems.map((manual) => manual.id === item.id ? { ...manual, category } : manual)
     }));
   }
 
@@ -2507,6 +2538,9 @@ export default function Home() {
   function updateManualShoppingItem(id: string, patch: Partial<ShoppingListItem>) {
     updateState((current) => {
       const existingItem = current.manualShoppingItems.find((item) => item.id === id);
+      const updatedPatch = patch.name?.trim()
+        ? { ...patch, canonicalName: canonicalizeIngredientName(patch.name, current.settings.ingredientAliases).canonicalName }
+        : patch;
       const asdaProductLinks = { ...current.asdaProductLinks };
       const asdaProductSelections = { ...current.asdaProductSelections };
 
@@ -2527,9 +2561,16 @@ export default function Home() {
         ...current,
         asdaProductLinks,
         asdaProductSelections,
+        settings: existingItem && patch.category ? {
+          ...current.settings,
+          shoppingCategoryOverrides: {
+            ...current.settings.shoppingCategoryOverrides,
+            [shoppingItemCategoryKey({ ...existingItem, ...updatedPatch }, current.settings.ingredientAliases)]: patch.category
+          }
+        } : current.settings,
         manualShoppingItems: mergeManualShoppingItems(
           current.manualShoppingItems.map((item) =>
-            item.id === id ? { ...item, ...patch, manual: true } : item
+            item.id === id ? { ...item, ...updatedPatch, manual: true } : item
           )
         )
       };
@@ -3199,6 +3240,9 @@ export default function Home() {
             setRecipeSearch={setRecipeSearch}
             recipeGroupFilter={recipeGroupFilter}
             setRecipeGroupFilter={setRecipeGroupFilter}
+            recipeFilters={recipeFilters}
+            setRecipeFilters={setRecipeFilters}
+            recipeTags={recipeTags}
             plannedRecipeIds={plannedRecipeIds}
             recipeReactions={recipeReactions}
             recipePopularity={recipePopularity}
@@ -3305,6 +3349,7 @@ export default function Home() {
             onToggleItem={toggleShoppingItem}
             onUnselectAll={unselectAllShoppingItems}
             onUpdateManualItem={updateManualShoppingItem}
+            onUpdateCategory={updateShoppingItemCategory}
             onDeleteItem={deleteShoppingItem}
             onOpenRecipe={setSelectedRecipeId}
             onUpdateAsdaProductLink={updateAsdaProductLink}
@@ -3347,6 +3392,7 @@ export default function Home() {
           <MealPickerModal
             target={mealPicker}
             recipes={mealPickerRecipes}
+            recipeTags={recipeTags}
             recipeFrequencies={recipeFrequencies}
             query={mealPickerQuery}
             setQuery={setMealPickerQuery}
@@ -3723,6 +3769,13 @@ function PlannerView({
   onClearWeek: () => void;
 }) {
   const [dragOverSlot, setDragOverSlot] = useState<string | null>(null);
+  const [todayKey, setTodayKey] = useState(() => formatDateKey(new Date()));
+  useEffect(() => {
+    const refreshToday = () => setTodayKey(formatDateKey(new Date()));
+    const timer = setInterval(refreshToday, 60_000);
+    window.addEventListener("focus", refreshToday);
+    return () => { clearInterval(timer); window.removeEventListener("focus", refreshToday); };
+  }, []);
   const [mobilePlannerMode, setMobilePlannerMode] = useState<MobilePlannerMode>("overview");
   const [selectedMobileDate, setSelectedMobileDate] = useState(weekStart);
   const [mobilePlannerTool, setMobilePlannerTool] = useState<MobilePlannerTool | null>(null);
@@ -4091,7 +4144,8 @@ function PlannerView({
 
               return (
                 <button
-                  className={classNames("mobile-overview-day", index === 7 && "second-week")}
+                  className={classNames("mobile-overview-day", index === 7 && "second-week", dateKey === todayKey && "is-today")}
+                  aria-current={dateKey === todayKey ? "date" : undefined}
                   type="button"
                   key={dateKey}
                   onClick={() => {
@@ -4102,6 +4156,7 @@ function PlannerView({
                   <span className="mobile-overview-date">
                     <strong>{mobileWeekdayFormatter.format(date)}</strong>
                     <b>{mobileDayFormatter.format(date)}</b>
+                    {dateKey === todayKey ? <small className="today-label">Today</small> : null}
                   </span>
                   <span className="mobile-overview-content">
                     {note ? <small>{note}</small> : null}
@@ -4133,14 +4188,16 @@ function PlannerView({
                 const mealCount = plannedMeals.filter((meal) => meal.date === dateKey && visibleSlots.includes(meal.slot)).length;
                 return (
                   <button
-                    className={classNames(selectedMobileDate === dateKey && "active")}
+                    className={classNames(selectedMobileDate === dateKey && "active", dateKey === todayKey && "is-today")}
+                    aria-current={dateKey === todayKey ? "date" : undefined}
+                    title={dateKey === todayKey ? "Today" : undefined}
                     type="button"
                     key={dateKey}
                     onClick={() => setSelectedMobileDate(dateKey)}
                   >
                     <span>{mobileWeekdayFormatter.format(date)}</span>
                     <strong>{mobileDayFormatter.format(date)}</strong>
-                    <small>{mealCount || ""}</small>
+                    <small>{dateKey === todayKey ? "Today" : mealCount || ""}</small>
                   </button>
                 );
               })}
@@ -4460,9 +4517,10 @@ function PlannerView({
           const dateKey = formatDateKey(date);
 
           return (
-            <div className="day-column" key={dateKey}>
+            <div className={classNames("day-column", dateKey === todayKey && "is-today")} key={dateKey} aria-current={dateKey === todayKey ? "date" : undefined}>
               <div className="day-heading">
                 <strong>{dateFormatter.format(date)}</strong>
+                {dateKey === todayKey ? <small className="today-label">Today</small> : null}
               </div>
               <textarea
                 className="day-note-input"
@@ -4741,6 +4799,9 @@ function RecipeLibrary({
   setRecipeSearch,
   recipeGroupFilter,
   setRecipeGroupFilter,
+  recipeFilters,
+  setRecipeFilters,
+  recipeTags,
   plannedRecipeIds,
   recipeReactions,
   recipePopularity,
@@ -4758,6 +4819,9 @@ function RecipeLibrary({
   setRecipeSearch: (value: string) => void;
   recipeGroupFilter: RecipeGroupFilter;
   setRecipeGroupFilter: (value: RecipeGroupFilter) => void;
+  recipeFilters: RecipeFilters;
+  setRecipeFilters: (value: RecipeFilters) => void;
+  recipeTags: string[];
   plannedRecipeIds: Set<string>;
   recipeReactions: Record<string, RecipeReaction>;
   recipePopularity: Record<string, RecipePopularitySummary>;
@@ -4837,6 +4901,9 @@ function RecipeLibrary({
           </button>
         ))}
       </div>
+
+      <RecipeFilterControls value={recipeFilters} onChange={setRecipeFilters} tags={recipeTags} />
+      <p className="muted recipe-result-count" role="status">{recipes.length} matching {recipes.length === 1 ? "recipe" : "recipes"}</p>
 
       {batchTagMode ? (
         <form className="batch-tag-panel" onSubmit={applyBatchTags}>
@@ -4954,6 +5021,7 @@ function RecipeLibrary({
 function MealPickerModal({
   target,
   recipes,
+  recipeTags,
   recipeFrequencies,
   query,
   setQuery,
@@ -4963,6 +5031,7 @@ function MealPickerModal({
 }: {
   target: { date: string; slot: MealSlot };
   recipes: Recipe[];
+  recipeTags: string[];
   recipeFrequencies: Record<string, number>;
   query: string;
   setQuery: (value: string) => void;
@@ -4972,9 +5041,11 @@ function MealPickerModal({
 }) {
   const [selectedGroup, setSelectedGroup] = useState<MealPickerGroup>(target.slot);
   const [manualMealTitle, setManualMealTitle] = useState("");
-  const groupedRecipes = recipes.filter((recipe) => selectedGroup === "all" || recipe.mealTypes.includes(selectedGroup));
+  const [filters, setFilters] = useState<RecipeFilters>(emptyRecipeFilters);
+  const searching = Boolean(query.trim()) || hasRecipeFilters(filters);
+  const groupedRecipes = recipes.filter((recipe) => (selectedGroup === "all" || recipe.mealTypes.includes(selectedGroup)) && matchesRecipeFilters(recipe, filters));
   const frequentRecipes = groupedRecipes.filter((recipe) => (recipeFrequencies[recipe.id] ?? 0) > 0).slice(0, 5);
-  const mainRecipes = query.trim()
+  const mainRecipes = searching
     ? groupedRecipes
     : frequentRecipes.length > 0
       ? groupedRecipes.filter((recipe) => !frequentRecipes.some((frequent) => frequent.id === recipe.id)).slice(0, 10)
@@ -5017,6 +5088,9 @@ function MealPickerModal({
           </button>
         </div>
 
+        <RecipeFilterControls value={filters} onChange={setFilters} tags={recipeTags} />
+        <p className="muted recipe-result-count" role="status">{groupedRecipes.length} matching {groupedRecipes.length === 1 ? "recipe" : "recipes"}</p>
+
         <form
           className="manual-meal-form"
           onSubmit={(event) => {
@@ -5032,7 +5106,7 @@ function MealPickerModal({
         </form>
 
         <div className="picker-list">
-          {!query.trim() && frequentRecipes.length > 0 && (
+          {!searching && frequentRecipes.length > 0 && (
             <>
               <span className="picker-section-label">Most chosen {selectedGroupLabel.toLowerCase()}</span>
               {frequentRecipes.map((recipe) => (
@@ -5047,7 +5121,7 @@ function MealPickerModal({
           )}
 
           {(mainRecipes.length > 0 || groupedRecipes.length === 0) && (
-            <span className="picker-section-label">{query.trim() ? `Matching ${selectedGroupLabel.toLowerCase()}` : `${selectedGroupLabel} recipes`}</span>
+            <span className="picker-section-label">{searching ? `Matching ${selectedGroupLabel.toLowerCase()}` : `${selectedGroupLabel} recipes`}</span>
           )}
           {mainRecipes.map((recipe) => (
             <RecipePickerButton
@@ -5915,6 +5989,7 @@ function ShoppingView({
   onToggleItem,
   onUnselectAll,
   onUpdateManualItem,
+  onUpdateCategory,
   onDeleteItem,
   onOpenRecipe,
   onUpdateAsdaProductLink,
@@ -5948,7 +6023,7 @@ function ShoppingView({
   onToggleIncludeStaples: (value: boolean) => void;
   onAddManualItem: (event: FormEvent) => void;
   onAddBulkManualItems: (event: FormEvent) => void;
-  onAddCommonManualItem: (itemName: string) => void;
+  onAddCommonManualItem: (itemName: string, extraQuantity?: string) => void;
   onClearManualItems: () => void;
   onUpdateCommonExtras: (items: string[]) => void;
   onCompleteShop: () => void;
@@ -5956,6 +6031,7 @@ function ShoppingView({
   onToggleItem: (id: string, checked: boolean) => void;
   onUnselectAll: () => void;
   onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
+  onUpdateCategory: (item: ShoppingListItem, category: GroceryCategory) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
   onOpenRecipe: (recipeId: string) => void;
   onUpdateAsdaProductLink: (itemKey: string, value: string) => void;
@@ -5970,6 +6046,9 @@ function ShoppingView({
     [commonExtraProfileKey, settings]
   );
   const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
+  const [editingCategoryItemId, setEditingCategoryItemId] = useState<string | null>(null);
+  const [addingMoreExtra, setAddingMoreExtra] = useState<string | null>(null);
+  const [extraQuantity, setExtraQuantity] = useState("");
   const [editingCommonExtras, setEditingCommonExtras] = useState(false);
   const [commonExtrasDraft, setCommonExtrasDraft] = useState<string[]>(commonExtraItems);
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
@@ -5982,10 +6061,11 @@ function ShoppingView({
       const categoryDifference = groceryCategories.indexOf(first.category) - groceryCategories.indexOf(second.category);
       return categoryDifference || first.name.localeCompare(second.name);
     });
-  const manualItemKeys = new Set(manualItems.map((item) => shoppingPreferenceKey(item)));
+  const hasExtra = (name: string) => shoppingListIncludesExtra(items, name, settings.ingredientAliases);
   const manualItemCount = manualItems.length;
   const checkedItemCount = items.filter((item) => item.checked).length;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
+  const pendingAsdaItems = itemsForAsdaHelper(items, asdaShoppingStatus);
   const grouped = groceryCategories
     .map((category) => ({
       category,
@@ -6004,7 +6084,7 @@ function ShoppingView({
       sourceUrl: window.location.href,
       rangeStartDate,
       rangeEndDate,
-      items: items.map((item) => {
+      items: pendingAsdaItems.map((item) => {
         const shoppingKey = shoppingPreferenceKey(item);
         const canonicalName = item.canonicalName || shoppingKey;
         const savedProductSelection = asdaProductSelections[shoppingKey];
@@ -6051,7 +6131,7 @@ function ShoppingView({
       if (message.payload?.error) {
         setAsdaHelperMessage(message.payload.error);
       } else {
-        setAsdaHelperMessage(`Asda Helper imported ${message.payload?.itemCount ?? items.length} items.`);
+        setAsdaHelperMessage(`Asda Helper imported ${message.payload?.itemCount ?? pendingAsdaItems.length} items.`);
       }
     }
 
@@ -6060,7 +6140,7 @@ function ShoppingView({
       window.removeEventListener("message", handleAsdaHelperResult);
       if (asdaHelperTimerRef.current) clearTimeout(asdaHelperTimerRef.current);
     };
-  }, [items.length]);
+  }, [pendingAsdaItems.length]);
 
   function sendToAsdaHelper() {
     const queue = buildAsdaHelperQueue();
@@ -6232,7 +6312,7 @@ function ShoppingView({
             ) : (
               <div className="common-extra-list">
                 {commonExtraItems.map((itemName) => {
-                  const alreadyAdded = manualItemKeys.has(shoppingPreferenceKey({ name: itemName }));
+                  const alreadyAdded = hasExtra(itemName);
                   const count = commonExtraUsageForProfile(settings, commonExtraProfileKey, itemName)?.count ?? 0;
 
                   return (
@@ -6240,10 +6320,16 @@ function ShoppingView({
                       className={classNames("text-button", alreadyAdded && "active")}
                       type="button"
                       key={itemName}
-                      onClick={() => onAddCommonManualItem(itemName)}
+                      aria-label={alreadyAdded ? `${itemName}: already on list. Add more` : `Add ${itemName}`}
+                      title={alreadyAdded ? "Already on list. Add more" : `Add ${itemName}`}
+                      onClick={() => {
+                        if (alreadyAdded) { setAddingMoreExtra(itemName); setExtraQuantity(""); }
+                        else onAddCommonManualItem(itemName);
+                      }}
                     >
                       {alreadyAdded ? <Check size={15} /> : <Plus size={15} />}
                       {itemName}
+                      {alreadyAdded ? <Plus size={14} aria-hidden="true" /> : null}
                       <small className="extra-usage-count" title="Times included in a completed shopping list" aria-label={`${count} completed ${count === 1 ? "shop" : "shops"}`}>
                         {count}
                       </small>
@@ -6252,6 +6338,21 @@ function ShoppingView({
                 })}
               </div>
             )}
+            {addingMoreExtra ? (
+              <form className="extra-more-form" onSubmit={(event) => {
+                event.preventDefault();
+                if (!extraQuantity.trim()) return;
+                onAddCommonManualItem(addingMoreExtra, extraQuantity);
+                setAddingMoreExtra(null);
+              }}>
+                <label>More {addingMoreExtra}
+                  <input autoFocus aria-label={`Extra quantity of ${addingMoreExtra}`} value={extraQuantity}
+                    onChange={(event) => setExtraQuantity(event.target.value)} placeholder="e.g. 2 packs or 500 g" required />
+                </label>
+                <button className="icon-text-button" type="submit" disabled={!extraQuantity.trim()}><Plus size={16} />Add more</button>
+                <button className="icon-button" type="button" title="Cancel extra quantity" onClick={() => setAddingMoreExtra(null)}><X size={16} /></button>
+              </form>
+            ) : null}
           </section>
           <details className="occasional-extras">
             <summary>Occasional essentials <span>{dueEssentials.length} due</span></summary>
@@ -6262,7 +6363,7 @@ function ShoppingView({
             </div>
             <div className="common-extra-list">
               {dueEssentials.map(item => {
-                const added = manualItemKeys.has(shoppingPreferenceKey({ name: item.name }));
+                const added = hasExtra(item.name);
                 return (
                   <button className={classNames("text-button", added && "active")} type="button" key={item.id}
                     title={item.lastAddedAt ? `Last added ${item.lastAddedAt.slice(0, 10)}; every ${item.intervalDays} days` : `Every ${item.intervalDays} days; not yet recorded`}
@@ -6327,9 +6428,9 @@ function ShoppingView({
             </h3>
           </div>
           <div className="asda-shop-header-actions">
-            <button className="icon-text-button" type="button" onClick={sendToAsdaHelper} disabled={!items.length}>
+            <button className="icon-text-button" type="button" onClick={sendToAsdaHelper} disabled={!pendingAsdaItems.length}>
               <ShoppingCart size={18} />
-              Send to Asda Helper
+              Send to Asda Helper ({pendingAsdaItems.length})
             </button>
             <button className="text-button" type="button" onClick={onResetAsdaRun}>
               Reset run
@@ -6415,11 +6516,13 @@ function ShoppingView({
             <div className="shopping-list">
               {group.items.map((item) => {
                 const sourceRecipeId = item.sourceRecipeIds?.[0];
-                const itemIsClickable = item.manual || Boolean(sourceRecipeId);
+                const itemIsClickable = item.category === "Other" || item.manual || Boolean(sourceRecipeId);
                 const productSelection = asdaProductSelections[shoppingPreferenceKey(item)];
                 const purchaseSummary = asdaPurchaseSummary(item, productSelection);
                 const openItem = () => {
-                  if (item.manual) {
+                  if (item.category === "Other") {
+                    setEditingCategoryItemId(item.id);
+                  } else if (item.manual) {
                     setEditingManualItemId(item.id);
                   } else if (sourceRecipeId) {
                     onOpenRecipe(sourceRecipeId);
@@ -6427,7 +6530,7 @@ function ShoppingView({
                 };
 
                 return (
-                  <article className={classNames("shopping-item", item.checked && "checked")} key={item.id}>
+                  <article className={classNames("shopping-item", item.checked && "checked", editingCategoryItemId === item.id && "category-open")} key={item.id}>
                     <label className="check-control">
                       <input type="checkbox" checked={item.checked} onChange={(event) => onToggleItem(item.id, event.target.checked)} />
                       <Check size={16} />
@@ -6436,6 +6539,7 @@ function ShoppingView({
                     <div
                       className={classNames("shopping-text", itemIsClickable && "clickable")}
                       role={itemIsClickable ? "button" : undefined}
+                      aria-label={item.category === "Other" ? `Choose category for ${item.name}` : undefined}
                       tabIndex={itemIsClickable ? 0 : undefined}
                       onClick={itemIsClickable ? openItem : undefined}
                       onKeyDown={(event) => {
@@ -6462,9 +6566,15 @@ function ShoppingView({
                       {item.mergeWarnings?.length ? <small className="shopping-note">{item.mergeWarnings.join(" ")}</small> : null}
                     </div>
 
-                    <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
-                      <Trash2 size={16} />
-                    </button>
+                    <div className="shopping-item-actions">
+                      <ShoppingCategoryPicker item={item} open={editingCategoryItemId === item.id}
+                        onOpen={() => setEditingCategoryItemId(item.id)} onClose={() => setEditingCategoryItemId(null)}
+                        onDetails={item.manual ? () => setEditingManualItemId(item.id) : sourceRecipeId ? () => onOpenRecipe(sourceRecipeId) : undefined}
+                        onChange={(category) => { onUpdateCategory(item, category); setEditingCategoryItemId(null); }} />
+                      <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </article>
                 );
               })}
@@ -6488,6 +6598,78 @@ function ShoppingView({
           }}
         />
       )}
+    </div>
+  );
+}
+
+function ShoppingCategoryPicker({ item, open, onOpen, onClose, onChange, onDetails }: {
+  item: ShoppingListItem;
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  onChange: (category: GroceryCategory) => void;
+  onDetails?: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [placement, setPlacement] = useState({ above: false, maxHeight: 360 });
+  useLayoutEffect(() => {
+    if (!open) return;
+    function positionPopover() {
+      const row = containerRef.current?.closest(".shopping-item")?.getBoundingClientRect();
+      const popup = popoverRef.current;
+      if (!row || !popup) return;
+      const navigation = document.querySelector(".sidebar");
+      const bottom = navigation && getComputedStyle(navigation).position === "fixed"
+        ? navigation.getBoundingClientRect().top : window.innerHeight;
+      const below = Math.max(0, bottom - row.bottom - 8);
+      const above = Math.max(0, row.top - 64);
+      const placeAbove = below < popup.scrollHeight && above > below;
+      setPlacement({ above: placeAbove, maxHeight: Math.max(120, placeAbove ? above : below) });
+    }
+    positionPopover();
+    popoverRef.current?.querySelector<HTMLButtonElement>(".shopping-category-options button")?.focus({ preventScroll: true });
+    window.addEventListener("resize", positionPopover);
+    window.addEventListener("scroll", positionPopover, true);
+    return () => {
+      window.removeEventListener("resize", positionPopover);
+      window.removeEventListener("scroll", positionPopover, true);
+    };
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    function outside(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) onClose();
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key === "Escape") { event.stopPropagation(); onClose(); triggerRef.current?.focus(); }
+    }
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [open, onClose]);
+  return (
+    <div ref={containerRef} className="shopping-category-control">
+      <button ref={triggerRef} className="icon-button" type="button" title={`Change category for ${item.name}`}
+        aria-expanded={open} aria-haspopup="dialog" onClick={open ? onClose : onOpen}><Tags size={16} /></button>
+      {open ? (
+        <div ref={popoverRef} className={classNames("shopping-category-popover", placement.above && "above")}
+          style={{ maxHeight: placement.maxHeight }} role="dialog" aria-label={`Category for ${item.name}`}>
+          <div className="section-heading"><strong>{item.name}</strong><button className="icon-button" type="button" title="Close categories"
+            onClick={() => { onClose(); triggerRef.current?.focus(); }}><X size={16} /></button></div>
+          <div className="shopping-category-options">
+            {groceryCategories.map((category) => (
+              <button className={classNames("text-button", item.category === category && "active")}
+                type="button" key={category} aria-pressed={item.category === category}
+                onClick={() => onChange(category)}>{category}{item.category === category ? <Check size={14} /> : null}</button>
+            ))}
+          </div>
+          {onDetails ? <button className="text-button" type="button" onClick={() => { onClose(); onDetails(); }}>
+            <Eye size={15} />{item.manual ? "Edit item" : "View recipe"}
+          </button> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -714,6 +714,23 @@ h3 {
   color: #fff;
 }
 
+.day-column.is-today {
+  border-radius: 8px;
+  background: #e9f4ed;
+  box-shadow: inset 0 0 0 2px var(--green);
+}
+
+.day-column.is-today .day-heading {
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--green);
+}
+
+.today-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
 .day-note-input {
   min-height: 64px;
   resize: vertical;
@@ -1216,6 +1233,54 @@ h3 {
 .recipe-filter-tabs {
   width: min(720px, 100%);
 }
+
+.recipe-search-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+}
+
+.recipe-search-filters > label:not(.toggle-line) {
+  flex: 1 1 140px;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.recipe-search-filters select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  text-overflow: ellipsis;
+}
+
+.recipe-search-filters .toggle-line {
+  min-height: 40px;
+}
+
+.recipe-result-count {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.extra-more-form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.extra-more-form label {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.extra-more-form input { min-width: 0; width: 100%; }
 
 .manual-meal-form {
   display: grid;
@@ -2043,8 +2108,9 @@ h3 {
 }
 
 .shopping-item {
+  position: relative;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 42px;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 58px;
@@ -2052,6 +2118,29 @@ h3 {
   border-radius: 8px;
   background: #f6f0e6;
 }
+
+.shopping-item-actions { display: flex; gap: 2px; }
+.shopping-item-actions .icon-button { width: 32px; min-width: 32px; padding: 0; }
+.shopping-item.category-open { z-index: 3; opacity: 1; }
+.shopping-category-popover {
+  position: absolute;
+  z-index: 4;
+  right: 4px;
+  top: calc(100% - 4px);
+  width: min(300px, calc(100% - 8px));
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 8px 24px #0002;
+  color: var(--ink);
+}
+.shopping-category-popover { overflow-y: auto; }
+.shopping-category-popover.above { top: auto; bottom: calc(100% - 4px); }
+.shopping-category-popover strong { min-width: 0; overflow-wrap: anywhere; }
+.shopping-category-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.shopping-category-options button { justify-content: space-between; min-height: 40px; font-size: 0.85rem; padding: 6px; }
+.shopping-category-options .active { background: var(--mint); color: var(--green-dark); }
 
 .shopping-item.checked {
   opacity: 0.6;
@@ -2767,6 +2856,15 @@ h3 {
   .mobile-overview-day.second-week {
     margin-top: 8px;
     border-top: 3px solid #91bda2;
+  }
+
+  .mobile-overview-day.is-today {
+    background: var(--mint);
+    box-shadow: inset 3px 0 var(--green);
+  }
+
+  .mobile-date-strip button.is-today {
+    box-shadow: inset 0 0 0 2px var(--green);
   }
 
   .mobile-overview-date {

@@ -5,6 +5,56 @@ import type { Ingredient, PlannedMeal, Recipe } from "../lib/domain";
 
 const now = "2026-08-01T12:00:00.000Z";
 
+function variedRecipes() {
+  return [
+    ...Array.from({ length: 6 }, (_, i) => recipe(`veg_mix_${i}`, `Vegetable meal ${i}`, "beans", 20)),
+    ...Array.from({ length: 3 }, (_, i) => recipe(`chicken_mix_${i}`, `Chicken meal ${i}`, "chicken", 20)),
+    ...Array.from({ length: 3 }, (_, i) => recipe(`fish_mix_${i}`, `Fish meal ${i}`, "salmon", 20)),
+    ...Array.from({ length: 2 }, (_, i) => recipe(`beef_mix_${i}`, `Beef meal ${i}`, "beef", 20))
+  ];
+}
+
+test("spaces repeated proteins across seven and fourteen days for several variations", () => {
+  for (const endDate of ["2026-08-16", "2026-08-23"]) {
+    for (const variationSeed of [0, 1, 4, 10]) {
+      const plan = buildAutoDinnerPlan({ ...baseRequest(variedRecipes()), endDate, variationSeed });
+      for (let index = 1; index < plan.entries.length; index += 1) {
+        assert.notEqual(plan.entries[index].category, plan.entries[index - 1].category, `Adjacent ${plan.entries[index].category} on ${plan.entries[index].date}`);
+      }
+      assert.equal(new Set(plan.entries.map((entry) => entry.recipeId)).size, plan.entries.length);
+    }
+  }
+});
+
+test("spacing keeps fixed meals and nursery restrictions while filling gaps", () => {
+  const recipes = variedRecipes();
+  recipes.filter((meal) => meal.id.startsWith("chicken")).forEach((meal) => { meal.tags = ["Not Sophia friendly"]; });
+  const fixed = plannedMeal("fixed-spacing", "2026-08-13", recipes[0].id);
+  const request = { ...baseRequest(recipes, [fixed]), mode: "fill" as const,
+    dayNotes: { "2026-08-11": "Sophia nursery", "2026-08-15": "Sophia nursery" } };
+  const plan = buildAutoDinnerPlan(request);
+  assert.deepEqual(plan.preservedDinners.map((dinner) => dinner.meal), [fixed]);
+  assert.equal(plan.entries.length, 6);
+  assert.ok(plan.entries.filter((entry) => entry.category === "chicken").every((entry) => entry.date in request.dayNotes));
+  assert.ok(plan.entries.filter((entry) => ["2026-08-12", "2026-08-14"].includes(entry.date)).every((entry) => entry.category !== "vegetarian"));
+  assert.deepEqual(buildAutoDinnerPlan(request), plan);
+});
+
+test("spacing separates similar dishes even when every meal is vegetarian", () => {
+  const recipes = [recipe("pasta-a", "Tomato pasta", "tomato"), recipe("pasta-b", "Mushroom spaghetti", "mushroom"),
+    recipe("curry-a", "Chickpea curry", "chickpea"), recipe("curry-b", "Lentil dahl", "lentil")];
+  const plan = buildAutoDinnerPlan({ ...baseRequest(recipes), endDate: "2026-08-13" });
+  for (let index = 1; index < plan.entries.length; index += 1) {
+    assert.notEqual(plan.entries[index].recipeId.split("-")[0], plan.entries[index - 1].recipeId.split("-")[0]);
+  }
+});
+
+test("spacing considers a neighbouring dinner outside the requested range", () => {
+  const recipes = [recipe("veg", "Bean bake", "beans"), recipe("chicken", "Chicken roast", "chicken")];
+  const plan = buildAutoDinnerPlan({ ...baseRequest(recipes, [plannedMeal("next-day", "2026-08-12", "chicken")]), endDate: "2026-08-11" });
+  assert.equal(plan.entries[1].category, "vegetarian");
+});
+
 function ingredient(id: string, name: string, role: Ingredient["role"] = "required"): Ingredient {
   return { id, name, quantity: 1, unit: "item", category: "Produce", role };
 }

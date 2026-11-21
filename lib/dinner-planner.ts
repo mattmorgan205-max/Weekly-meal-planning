@@ -474,6 +474,98 @@ function assignUseUpCandidatesToDates(
   return selections.sort((left, right) => left.date.localeCompare(right.date));
 }
 
+function mealStyles(recipe: Recipe) {
+  return ["pasta|lasagne|lasagna|macaroni|spaghetti", "curry|dahl|dal", "soup", "risotto", "stir.fry|noodles", "pie", "tacos|fajitas|burritos", "burger"]
+    .flatMap((pattern, index) => new RegExp(`\\b(${pattern})\\b`, "i").test(recipe.title) ? [index] : []);
+}
+
+// Reorder only newly selected meals: quotas, ratings, sides and fixed dinners stay intact.
+function spaceSelectedDinners(selections: SelectedCandidate[], request: AutoDinnerPlanRequest) {
+  if (selections.length < 2) return selections;
+  const seed = request.variationSeed ?? 0;
+  const dates = selections.map((selection) => selection.date).sort();
+  const movingDates = new Set(dates);
+  const nearbyStart = formatDateKey(addDays(dateFromKey(dates[0])!, -2));
+  const nearbyEnd = formatDateKey(addDays(dateFromKey(dates[dates.length - 1])!, 2));
+  const recipeById = new Map(request.recipes.map((recipe) => [recipe.id, recipe]));
+  const fixed = request.plannedMeals.flatMap((meal) => {
+    if (meal.slot !== "dinner" || !meal.recipeId || movingDates.has(meal.date)) return [];
+    if (meal.date < nearbyStart || meal.date > nearbyEnd) return [];
+    if (request.mode === "replace" && meal.date >= request.startDate && meal.date <= request.endDate) return [];
+    const recipe = recipeById.get(meal.recipeId);
+    return recipe ? [{ date: meal.date, category: classifyPlannedMeal(recipe, meal), styles: mealStyles(recipe) }] : [];
+  });
+  const styles = new Map(selections.map(({ candidate }) => [candidate.key, mealStyles(candidate.recipe)]));
+  function score(order: SelectedCandidate[]) {
+    const dinners = [...fixed, ...order.map(({ date, candidate }) => ({ date, category: candidate.category, styles: styles.get(candidate.key)! }))];
+    let adjacentCategory = 0, adjacentStyle = 0, nearbyCategory = 0, nearbyStyle = 0;
+    for (const dinner of dinners) {
+      for (const distance of [1, 2]) {
+        const nextDate = formatDateKey(addDays(dateFromKey(dinner.date)!, distance));
+        for (const next of dinners.filter((other) => other.date === nextDate)) {
+          if (dinner.category === next.category) {
+            if (distance === 1) adjacentCategory += 1;
+            else nearbyCategory += 1;
+          }
+          if (dinner.styles.some((style) => next.styles.includes(style))) {
+            if (distance === 1) adjacentStyle += 1;
+            else nearbyStyle += 1;
+          }
+        }
+      }
+    }
+    return [
+      -adjacentCategory, -adjacentStyle, -nearbyCategory, -nearbyStyle,
+      -order.reduce((sum, selection, index) => sum + (selection.useUpChoice ? index : 0), 0),
+      order.reduce((sum, selection) => sum + tieValue(`${selection.date}:${selection.candidate.key}`, seed), 0)
+    ];
+  }
+  function swap(order: SelectedCandidate[], left: number, right: number) {
+    if (!candidateAllowedForDate(order[left].candidate, dates[right], request.dayNotes) ||
+        !candidateAllowedForDate(order[right].candidate, dates[left], request.dayNotes)) return null;
+    const next = [...order];
+    next[left] = { ...order[right], date: dates[left] };
+    next[right] = { ...order[left], date: dates[right] };
+    return next;
+  }
+  let best = [...selections].sort((left, right) => left.date.localeCompare(right.date));
+  let bestScore = score(best);
+  // A few seeded starting orders avoid getting stuck with a cluster that needs two swaps.
+  for (let restart = 0; restart < 4; restart += 1) {
+    let order = [...best];
+    if (restart) {
+      for (let index = 0; index < dates.length; index += 1) {
+        const other = Math.floor(tieValue(`spacing:${restart}:${index}`, seed) * dates.length) % dates.length;
+        order = swap(order, index, other) ?? order;
+      }
+    }
+    let currentScore = score(order);
+    for (let pass = 0; pass < dates.length * 2; pass += 1) {
+      let improved = order;
+      let improvedScore = currentScore;
+      for (let left = 0; left < dates.length; left += 1) {
+        for (let right = left + 1; right < dates.length; right += 1) {
+          const candidate = swap(order, left, right);
+          if (!candidate) continue;
+          const candidateScore = score(candidate);
+          if (compareScore(candidateScore, improvedScore) < 0) {
+            improved = candidate;
+            improvedScore = candidateScore;
+          }
+        }
+      }
+      if (improved === order) break;
+      order = improved;
+      currentScore = improvedScore;
+    }
+    if (compareScore(currentScore, bestScore) < 0) {
+      best = order;
+      bestScore = currentScore;
+    }
+  }
+  return best;
+}
+
 export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerPlanResult {
   const seed = request.variationSeed ?? 0;
   const dates = dateKeysBetween(request.startDate, request.endDate);
@@ -609,6 +701,7 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
   }
 
   const selectedState = beam[0] ?? { selections: pinnedSelections, usedRecipeIds: pinnedRecipeIds };
+  selectedState.selections = spaceSelectedDinners(selectedState.selections, request);
   const familiarOptions = [
     ...fixedRecipeDinners.map((dinner) => ({
       key: dinner.key,

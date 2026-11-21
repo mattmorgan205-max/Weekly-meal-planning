@@ -114,6 +114,7 @@ export type ShoppingListItem = {
   canRestoreMerge?: boolean;
   checked: boolean;
   manual?: boolean;
+  additional?: boolean;
   staple?: boolean;
   incompatible?: boolean;
 };
@@ -149,6 +150,7 @@ export type AppSettings = {
   includeStaples: boolean;
   ingredientAliases: Record<string, string>;
   shoppingNameVariants: Record<string, string[]>;
+  shoppingCategoryOverrides?: Record<string, GroceryCategory>;
   commonExtraItems: string[];
   commonExtraProfiles: Record<string, CommonExtraProfile>;
   splitShoppingItems: Record<string, boolean>;
@@ -1055,6 +1057,23 @@ export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMin
   return recipe.totalMinutes ?? ((recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0));
 }
 
+export function shoppingItemCategoryKey(item: Pick<ShoppingListItem, "name" | "canonicalName">, aliases: Record<string, string> = {}) {
+  return canonicalizeIngredientName(item.canonicalName || item.name, aliases).canonicalName;
+}
+
+export function shoppingListIncludesExtra(items: ShoppingListItem[], name: string, aliases: Record<string, string> = {}) {
+  const key = canonicalizeIngredientName(name, aliases).canonicalName;
+  return Boolean(key) && items.some((item) =>
+    [item.name, item.canonicalName, ...(item.sourceIngredients ?? [])].some((value) =>
+      value && canonicalizeIngredientName(value, aliases).canonicalName === key
+    )
+  );
+}
+
+export function itemsForAsdaHelper(items: ShoppingListItem[], statuses: Record<string, StoreShoppingStatus>) {
+  return items.filter((item) => !item.checked && statuses[item.id] !== "added");
+}
+
 export function inferCategory(name: string): GroceryCategory {
   const normal = normalizeIngredientName(name);
   const canonical = canonicalizeIngredientName(name).canonicalName;
@@ -1475,7 +1494,10 @@ export function generateShoppingList(
     };
   });
 
-  return [...generated.filter((item) => !hiddenShoppingItems[item.id]), ...manualItems].sort((a, b) => {
+  return [...generated.filter((item) => !hiddenShoppingItems[item.id]), ...manualItems].map((item) => {
+    const override = settings.shoppingCategoryOverrides?.[shoppingItemCategoryKey(item, settings.ingredientAliases)];
+    return override && groceryCategories.includes(override) ? { ...item, category: override } : item;
+  }).sort((a, b) => {
     const categorySort = groceryCategories.indexOf(a.category) - groceryCategories.indexOf(b.category);
     return categorySort || a.name.localeCompare(b.name);
   });
