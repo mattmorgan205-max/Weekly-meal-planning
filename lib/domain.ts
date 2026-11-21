@@ -77,6 +77,37 @@ export type PlannedMeal = {
   leftoverTargetDate?: string;
   selectedIngredientIds?: string[];
   extraSideIngredients?: Ingredient[];
+  sidePortions?: number;
+  portionSource?: "diners" | "manual";
+  extraPortions?: number;
+};
+
+export type HouseholdDiner = { id: string; name: string; portions: number; usual: boolean };
+export type DinnerAttendance = {
+  confirmed: boolean;
+  portions: Record<string, number>;
+  guests: number;
+  sophiaEating: boolean;
+  dinnerStatus?: "plan" | "out" | "none" | "leftovers";
+};
+export type SupplyCheck = {
+  status: "need" | "enough" | "some";
+  quantity?: number;
+  unit?: string;
+  requirement: string;
+};
+export type GuidedShop = {
+  id: string;
+  startDate: string;
+  endDate: string;
+  step: number;
+  method: "checklist" | "asda" | "tesco";
+  supplyChecks: Record<string, SupplyCheck>;
+  basketChecks: Record<string, string>;
+  excludedRecipeIds: string[];
+  finalizedSignature?: string;
+  finalizedAt?: string;
+  completedAt?: string;
 };
 
 export type AsdaProductSelection = {
@@ -131,7 +162,9 @@ export type CommonExtraProfile = {
   usage: Record<string, CommonExtraUsage>;
   pinnedItems: string[];
   hiddenItems: string[];
-  completedShops?: Record<string, { extraKeys: string[]; itemKeys: string[] }>;
+  completedShops?: Record<string, { extraKeys: string[]; itemKeys: string[]; includedAt?: string }>;
+  usageBaseline?: Record<string, CommonExtraUsage>;
+  occasionalBaseline?: Record<string, string | undefined>;
   occasionalItems?: OccasionalItem[];
 };
 
@@ -154,6 +187,7 @@ export type AppSettings = {
   commonExtraItems: string[];
   commonExtraProfiles: Record<string, CommonExtraProfile>;
   splitShoppingItems: Record<string, boolean>;
+  diners?: HouseholdDiner[];
 };
 
 export type ImportDraft = {
@@ -193,6 +227,8 @@ export type AppState = {
   asdaProductSelections: Record<string, AsdaProductSelection>;
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
   settings: AppSettings;
+  dinnerAttendance?: Record<string, DinnerAttendance>;
+  guidedShop?: GuidedShop;
 };
 
 export const mealSlots: MealSlot[] = ["breakfast", "lunch", "dinner", "snack"];
@@ -392,7 +428,7 @@ export function updateOccasionalItems(settings: AppSettings, profileKey: string,
   return { ...settings, commonExtraProfiles: { ...settings.commonExtraProfiles, [profileKey]: { ...profile, occasionalItems } } };
 }
 
-// Sending completes a shop. A retry can add newly included items but never count an item twice for that range.
+// One editable inclusion record per shop. Exports never call this function.
 export function recordCompletedShoppingList(
   settings: AppSettings,
   profileKey: string,
@@ -400,29 +436,39 @@ export function recordCompletedShoppingList(
   items: Pick<ShoppingListItem, "name" | "manual">[],
   completedAt = new Date().toISOString()
 ) {
-  if (!rangeKey || !items.length) return settings;
+  if (!rangeKey) return settings;
   const profile = commonExtraProfile(settings, profileKey);
   const previous = profile.completedShops?.[rangeKey];
-  const extraKeys = new Set(previous?.extraKeys ?? []);
-  const itemKeys = new Set(previous?.itemKeys ?? []);
-  const newExtras = uniqueCommonExtraItems(items.filter(item => item.manual).map(item => item.name))
-    .filter(name => !extraKeys.has(commonExtraKey(name)));
-  const newItemKeys = new Set(items.map(item => commonExtraKey(item.name)).filter(key => key && !itemKeys.has(key)));
-  if (!newExtras.length && !newItemKeys.size) return settings;
-  const next = recordManualExtraUsage(settings, profileKey, newExtras, completedAt);
-  newExtras.forEach(name => extraKeys.add(commonExtraKey(name)));
-  newItemKeys.forEach(key => itemKeys.add(key));
-  const occasionalItems = occasionalItemsForProfile(settings, profileKey).map(item =>
-    newItemKeys.has(commonExtraKey(item.name)) ? { ...item, lastAddedAt: completedAt } : item
-  );
+  const extraKeys = uniqueCommonExtraItems(items.filter(item => item.manual).map(item => item.name)).map(commonExtraKey).sort();
+  const itemKeys = uniqueCommonExtraItems(items.map(item => item.name)).map(commonExtraKey).sort();
+  if (previous && JSON.stringify([...previous.extraKeys].sort()) === JSON.stringify(extraKeys) && JSON.stringify([...previous.itemKeys].sort()) === JSON.stringify(itemKeys)) return settings;
+  const records = { ...profile.completedShops };
+  const baseline = profile.usageBaseline ?? Object.fromEntries(Object.entries(profile.usage).flatMap(([key, usage]) => {
+    const recorded = Object.values(records).filter(record => record.extraKeys.includes(key)).length;
+    return usage.count > recorded ? [[key, { ...usage, count: usage.count - recorded }]] : [];
+  }));
+  const occasional = occasionalItemsForProfile(settings, profileKey);
+  const occasionalBaseline = profile.occasionalBaseline ?? Object.fromEntries(occasional.map(item => [commonExtraKey(item.name),
+    Object.values(records).some(record => record.itemKeys.includes(commonExtraKey(item.name))) ? undefined : item.lastAddedAt]));
+  // Older completions had no timestamps; keep their known inclusion date and counts.
+  for (const [key, record] of Object.entries(records)) records[key] = { ...record, includedAt: record.includedAt ??
+    (record.itemKeys.map(itemKey => profile.usage[itemKey]?.lastAddedAt ?? occasional.find(item => commonExtraKey(item.name) === itemKey)?.lastAddedAt ?? "").sort().at(-1) || completedAt) };
+  records[rangeKey] = { extraKeys, itemKeys, includedAt: records[rangeKey]?.includedAt || completedAt };
+  const usage: Record<string, CommonExtraUsage> = Object.fromEntries(Object.entries(baseline).map(([key, value]) => [key, { ...value }]));
+  const names = Object.fromEntries(items.map(item => [commonExtraKey(item.name), item.name.trim()]));
+  for (const record of Object.values(records)) for (const key of record.extraKeys) {
+    const current = usage[key];
+    usage[key] = { name: names[key] || profile.usage[key]?.name || key, count: (current?.count ?? 0) + 1,
+      lastAddedAt: [current?.lastAddedAt ?? "", record.includedAt ?? ""].sort().at(-1)! };
+  }
+  const occasionalItems = occasional.map(item => ({ ...item, lastAddedAt: [occasionalBaseline[commonExtraKey(item.name)] ?? "",
+    ...Object.values(records).filter(record => record.itemKeys.includes(commonExtraKey(item.name))).map(record => record.includedAt ?? "")].sort().at(-1) || undefined }));
   return {
-    ...next,
+    ...settings,
     commonExtraProfiles: {
-      ...next.commonExtraProfiles,
+      ...settings.commonExtraProfiles,
       [profileKey]: {
-        ...next.commonExtraProfiles[profileKey],
-        occasionalItems,
-        completedShops: { ...profile.completedShops, [rangeKey]: { extraKeys: [...extraKeys], itemKeys: [...itemKeys] } }
+        ...profile, usage, usageBaseline: baseline, occasionalBaseline, occasionalItems, completedShops: records
       }
     }
   };
@@ -1308,7 +1354,7 @@ function formatNumber(value: number) {
   return `${Math.round(value)}`;
 }
 
-function displayQuantity(quantity?: number, unit?: string) {
+export function displayQuantity(quantity?: number, unit?: string) {
   if (typeof quantity !== "number") return unit ? unit : "";
   const normalUnit = normalizeUnit(unit);
 

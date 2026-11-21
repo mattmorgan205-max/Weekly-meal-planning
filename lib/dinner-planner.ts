@@ -10,6 +10,8 @@ import {
   type Recipe,
   type RecipeReaction
 } from "./domain";
+import type { DinnerAttendance } from "./domain";
+import { attendancePortions, dinnerNeedsMeal, recipeAllowedForDinner } from "./guided-shop";
 
 export type AutoDinnerPlanMode = "fill" | "replace";
 export type DinnerCategory = "vegetarian" | "chicken" | "fish" | "pork-beef" | "other";
@@ -25,6 +27,7 @@ export type AutoDinnerPlanRequest = {
   useUpIngredients: string[];
   ingredientAliases: Record<string, string>;
   dayNotes?: Record<string, string>;
+  dinnerAttendance?: Record<string, DinnerAttendance>;
   excludedRecipeIds?: string[];
   peopleCount: number;
   recipePreferenceScores?: Record<string, number>;
@@ -43,6 +46,7 @@ export type AutoDinnerPlanEntry = {
   lessUsed: boolean;
   coveredUseUpIngredients: string[];
   reasons: string[];
+  peopleCount?: number;
 };
 
 export type AutoDinnerPreservedDinner = {
@@ -441,22 +445,19 @@ function metricLabel(category: TargetDinnerCategory) {
   return categoryLabels[category].toLowerCase();
 }
 
-function isSophiaNurseryDay(date: string, dayNotes: Record<string, string> = {}) {
-  return /\bsophia\s+nursery\b/i.test(dayNotes[date] ?? "");
-}
-
 function isNotSophiaFriendly(recipe: Recipe) {
   return recipe.tags.some((tag) => tag.trim().toLowerCase() === "not sophia friendly");
 }
 
-function candidateAllowedForDate(candidate: DinnerCandidate, date: string, dayNotes: Record<string, string> = {}) {
-  return !isNotSophiaFriendly(candidate.recipe) || isSophiaNurseryDay(date, dayNotes);
+function candidateAllowedForDate(candidate: DinnerCandidate, date: string, dayNotes: Record<string, string> = {}, attendance: Record<string, DinnerAttendance> = {}) {
+  return recipeAllowedForDinner(candidate.recipe, date, attendance, dayNotes);
 }
 
 function assignUseUpCandidatesToDates(
   candidates: DinnerCandidate[],
   dates: string[],
-  dayNotes: Record<string, string> = {}
+  dayNotes: Record<string, string> = {},
+  attendance: Record<string, DinnerAttendance> = {}
 ) {
   const orderedCandidates = [...candidates].sort(
     (left, right) => Number(isNotSophiaFriendly(right.recipe)) - Number(isNotSophiaFriendly(left.recipe))
@@ -465,7 +466,7 @@ function assignUseUpCandidatesToDates(
   const selections: SelectedCandidate[] = [];
 
   orderedCandidates.forEach((candidate) => {
-    const dateIndex = availableDates.findIndex((date) => candidateAllowedForDate(candidate, date, dayNotes));
+    const dateIndex = availableDates.findIndex((date) => candidateAllowedForDate(candidate, date, dayNotes, attendance));
     if (dateIndex < 0) return;
     const [date] = availableDates.splice(dateIndex, 1);
     selections.push({ date, candidate, useUpChoice: true });
@@ -521,8 +522,8 @@ function spaceSelectedDinners(selections: SelectedCandidate[], request: AutoDinn
     ];
   }
   function swap(order: SelectedCandidate[], left: number, right: number) {
-    if (!candidateAllowedForDate(order[left].candidate, dates[right], request.dayNotes) ||
-        !candidateAllowedForDate(order[right].candidate, dates[left], request.dayNotes)) return null;
+    if (!candidateAllowedForDate(order[left].candidate, dates[right], request.dayNotes, request.dinnerAttendance) ||
+        !candidateAllowedForDate(order[right].candidate, dates[left], request.dayNotes, request.dinnerAttendance)) return null;
     const next = [...order];
     next[left] = { ...order[right], date: dates[left] };
     next[right] = { ...order[left], date: dates[right] };
@@ -609,9 +610,9 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
   }, {});
   const recipeById = new Map(request.recipes.map((recipe) => [recipe.id, recipe]));
   const rangeDinners = request.plannedMeals.filter((meal) => meal.slot === "dinner" && dateSet.has(meal.date));
-  const preservedMeals = request.mode === "fill" ? rangeDinners : [];
+  const preservedMeals = request.mode === "fill" ? rangeDinners : rangeDinners.filter(meal => !dinnerNeedsMeal(request.dinnerAttendance?.[meal.date]));
   const occupiedDates = new Set(preservedMeals.map((meal) => meal.date));
-  const openDates = dates.filter((date) => !occupiedDates.has(date));
+  const openDates = dates.filter((date) => !occupiedDates.has(date) && dinnerNeedsMeal(request.dinnerAttendance?.[date]));
   const existingRecipeIds = new Set(preservedMeals.map((meal) => meal.recipeId).filter((id): id is string => Boolean(id)));
   const fixedRecipeDinners: FixedRecipeDinner[] = preservedMeals.flatMap((meal) => {
     const recipe = meal.recipeId ? recipeById.get(meal.recipeId) : undefined;
@@ -656,10 +657,10 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
     )
   );
   const dateCompatibleCandidates = allCandidates.filter((candidate) =>
-    openDates.some((date) => candidateAllowedForDate(candidate, date, request.dayNotes))
+    openDates.some((date) => candidateAllowedForDate(candidate, date, request.dayNotes, request.dinnerAttendance))
   );
   const useUpCandidates = selectUseUpCandidates(dateCompatibleCandidates, targets, seed).slice(0, openDates.length);
-  const pinnedSelections = assignUseUpCandidatesToDates(useUpCandidates, openDates, request.dayNotes);
+  const pinnedSelections = assignUseUpCandidatesToDates(useUpCandidates, openDates, request.dayNotes, request.dinnerAttendance);
   const pinnedRecipeIds = new Set(pinnedSelections.map((selection) => selection.candidate.recipe.id));
   const pinnedDates = new Set(pinnedSelections.map((selection) => selection.date));
   const remainingDates = openDates.filter((date) => !pinnedDates.has(date));
@@ -677,7 +678,7 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
       const available = regularCandidates.filter(
         (candidate) =>
           !state.usedRecipeIds.has(candidate.recipe.id) &&
-          candidateAllowedForDate(candidate, date, request.dayNotes)
+          candidateAllowedForDate(candidate, date, request.dayNotes, request.dinnerAttendance)
       );
       if (available.length === 0) {
         expanded.push(state);
@@ -733,9 +734,11 @@ export function buildAutoDinnerPlan(request: AutoDinnerPlanRequest): AutoDinnerP
       ].filter(Boolean);
       return {
         date: selection.date,
+        peopleCount: attendancePortions(request.dinnerAttendance?.[selection.date], request.peopleCount),
         recipeId: selection.candidate.recipe.id,
         selectedIngredientIds: selection.candidate.selectedIngredientIds,
-        extraSideIngredients: selection.useUpChoice ? selection.candidate.extraSideIngredients : [],
+        extraSideIngredients: selection.useUpChoice ? selection.candidate.extraSideIngredients.map(ingredient => ({ ...ingredient,
+          quantity: typeof ingredient.quantity === "number" ? ingredient.quantity * attendancePortions(request.dinnerAttendance?.[selection.date], request.peopleCount) / Math.max(0.25, request.peopleCount) : undefined })) : [],
         category: selection.candidate.category,
         quick: selection.candidate.quick,
         familiar,

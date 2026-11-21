@@ -14,6 +14,7 @@
     "test:dinner-planner": "node scripts/test-dinner-planner.mjs",
     "test:recipe-sync": "node scripts/test-recipe-sync.mjs",
     "test:shopping-improvements": "node scripts/test-shopping-improvements.mjs",
+    "test:guided-shop": "node scripts/test-guided-shop.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.check.json"
   },
   "dependencies": {

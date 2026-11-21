@@ -122,8 +122,11 @@ import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog } from "@/lib
 import { getSupabaseClient } from "@/lib/supabase-client";
 import { RecipeFilterControls } from "@/components/recipe-filter-controls";
 import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type RecipeFilters } from "@/lib/recipe-filters";
+import { GuidedShopView, ShopDatesEditor, ShopReviewActions, SupplyCheckList, HouseholdDinersEditor } from "@/components/guided-shop";
+import { attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
+import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 
-type View = "planner" | "recipes" | "add" | "shopping" | "settings";
+type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
 type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error";
 type MealPickerGroup = MealSlot | "all";
@@ -363,7 +366,7 @@ function hydrateState(value: unknown): AppState {
     endDate: formatDateKey(addDays(new Date(`${currentWeekStart}T12:00:00`), 6))
   });
 
-  return {
+  return migrateGuidedState({
     ...seeded,
     ...parsed,
     recipes,
@@ -395,7 +398,7 @@ function hydrateState(value: unknown): AppState {
     asdaProductLinks: parsed.asdaProductLinks ?? {},
     asdaProductSelections: parsed.asdaProductSelections ?? {},
     asdaShoppingStatus: parsed.asdaShoppingStatus ?? {}
-  };
+  }, currentWeekStart, formatDateKey(addDays(new Date(`${currentWeekStart}T12:00:00`), 6)));
 }
 
 function loadState(): AppState {
@@ -531,6 +534,8 @@ function createManualShoppingItemFromLine(line: string, shoppingRangeKey: string
     name,
     canonicalName: canonicalizeIngredientName(name).canonicalName,
     displayQuantity: formatManualQuantity(parsed),
+    quantity: parsed.quantity,
+    unit: parsed.unit,
     category: parsed.category || inferCategory(name),
     sourceMeals: ["Manual"],
     checked: false,
@@ -1130,12 +1135,14 @@ export default function Home() {
   const [activeView, setActiveView] = useState<View>("planner");
   const [weekStart, setWeekStart] = useState(() => formatDateKey(startOfWeek(new Date())));
   const [plannerDayCount, setPlannerDayCount] = useState<7 | 14>(7);
-  const [shoppingStartDate, setShoppingStartDate] = useState(() => formatDateKey(startOfWeek(new Date())));
-  const [shoppingEndDate, setShoppingEndDate] = useState(() => formatDateKey(addDays(startOfWeek(new Date()), 6)));
+  const activeShop = state.guidedShop ?? createShop(formatDateKey(startOfWeek(new Date())), formatDateKey(addDays(startOfWeek(new Date()), 6)), "initial");
+  const shoppingStartDate = activeShop.startDate, shoppingEndDate = activeShop.endDate;
+  const [returnToGuided, setReturnToGuided] = useState(false);
+  const [guidedPlanMessage, setGuidedPlanMessage] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
   const [recipeGroupFilter, setRecipeGroupFilter] = useState<RecipeGroupFilter>("all");
   const [recipeFilters, setRecipeFilters] = useState<RecipeFilters>(emptyRecipeFilters);
-  const [mealPicker, setMealPicker] = useState<{ date: string; slot: MealSlot } | null>(null);
+  const [mealPicker, setMealPicker] = useState<{ date: string; slot: MealSlot; replaceMealId?: string } | null>(null);
   const [mealPickerQuery, setMealPickerQuery] = useState("");
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
   const [importMode, setImportMode] = useState<ImportMode>("manual");
@@ -1210,40 +1217,24 @@ export default function Home() {
     () => storeStatusPrefixForRange(shoppingDateRange),
     [shoppingDateRange.startDate, shoppingDateRange.endDate]
   );
-  const rangeHiddenShoppingItems = useMemo(() => {
-    const scopedHiddenItems: Record<string, boolean> = {};
-
-    Object.entries(state.hiddenShoppingItems).forEach(([key, hidden]) => {
-      if (hidden && key.startsWith(shoppingHiddenPrefix)) {
-        scopedHiddenItems[key.slice(shoppingHiddenPrefix.length)] = true;
-      }
-    });
-
-    return scopedHiddenItems;
-  }, [shoppingHiddenPrefix, state.hiddenShoppingItems]);
+  const requiredShoppingItems = useMemo(() => requiredShopItems(state, activeShop), [state, activeShop]);
+  const supplyResults = resolveShop(requiredShoppingItems, activeShop);
+  const buyItems = supplyResults.flatMap(row => row.buy ? [row.buy] : []);
+  const exportBlocked = supplyResults.some(row => row.reviewReason);
   const rangeAsdaShoppingStatus = useMemo(() => {
     const scopedStatus: Record<string, StoreShoppingStatus> = {};
 
     Object.entries(state.asdaShoppingStatus).forEach(([key, status]) => {
       if (key.startsWith(asdaStatusPrefix)) {
-        scopedStatus[key.slice(asdaStatusPrefix.length)] = status;
+        const id = key.slice(asdaStatusPrefix.length);
+        const item = requiredShoppingItems.find(row => row.id === id);
+        if (status !== "added" || (item && activeShop.basketChecks[id] === requirementSignature(item))) scopedStatus[id] = status;
       }
     });
 
     return scopedStatus;
-  }, [asdaStatusPrefix, state.asdaShoppingStatus]);
-  const shoppingList = useMemo(
-    () =>
-      generateShoppingList(
-        state.recipes,
-        state.plannedMeals.filter((meal) => meal.date >= shoppingDateRange.startDate && meal.date <= shoppingDateRange.endDate),
-        state.settings,
-        state.shoppingChecks,
-        rangeHiddenShoppingItems,
-        state.manualShoppingItems.filter((item) => item.shoppingRangeKey === shoppingRangeKey)
-      ),
-    [rangeHiddenShoppingItems, shoppingDateRange, shoppingRangeKey, state]
-  );
+  }, [asdaStatusPrefix, state.asdaShoppingStatus, activeShop, requiredShoppingItems]);
+  const shoppingList = buyItems.filter(item => state.settings.includeStaples || !item.staple);
   const filteredRecipes = useMemo(() => {
     const query = recipeSearch.toLowerCase().trim();
     return state.recipes
@@ -1390,7 +1381,11 @@ export default function Home() {
   }, [cloudLoaded, cloudUser, hasHydratedLocalState, state.recipes]);
 
   function updateState(updater: (current: AppState) => AppState) {
-    setState((current) => updater(current));
+    setState((current) => {
+      const next = updater(current);
+      if (next.guidedShop?.id !== current.guidedShop?.id && next.guidedShop) return migrateGuidedState(next, next.guidedShop.startDate, next.guidedShop.endDate);
+      return next;
+    });
   }
 
   async function createRecipeImageSignedUrl(path: string) {
@@ -1511,7 +1506,8 @@ export default function Home() {
         const asdaProductLinks = { ...current.asdaProductLinks };
         const asdaProductSelections = { ...current.asdaProductSelections };
         const asdaShoppingStatus = { ...current.asdaShoppingStatus };
-        const shoppingChecks = { ...current.shoppingChecks };
+        const shop = current.guidedShop;
+        const basketChecks = { ...shop?.basketChecks };
 
         if (shoppingKey && normalizedUrl) {
           asdaProductLinks[shoppingKey] = normalizedUrl;
@@ -1531,8 +1527,9 @@ export default function Home() {
           asdaShoppingStatus[statusKey] = validStatus;
         }
 
-        if (itemId && validStatus === "added") {
-          shoppingChecks[itemId] = true;
+        if (itemId && validStatus === "added" && shop && statusKey === storeStatusItemKey(shop, itemId)) {
+          const item = requiredShopItems(current, shop).find(row => row.id === itemId);
+          if (item) basketChecks[itemId] = requirementSignature(item);
         }
 
         return {
@@ -1540,11 +1537,7 @@ export default function Home() {
           asdaProductLinks,
           asdaProductSelections,
           asdaShoppingStatus,
-          shoppingChecks,
-          manualShoppingItems:
-            itemId && validStatus === "added"
-              ? current.manualShoppingItems.map((item) => (item.id === itemId ? { ...item, checked: true } : item))
-              : current.manualShoppingItems
+          guidedShop: shop ? { ...shop, basketChecks } : shop
         };
       });
     }
@@ -1580,6 +1573,7 @@ export default function Home() {
     if (!recipeId) return;
 
     updateState((current) => {
+      if (mealPicker?.replaceMealId) return { ...current, plannedMeals: current.plannedMeals.map(meal => meal.id === mealPicker.replaceMealId ? { ...meal, recipeId, manualTitle: undefined, selectedIngredientIds: [], extraSideIngredients: [] } : meal) };
       return {
         ...current,
         plannedMeals: [
@@ -1589,7 +1583,8 @@ export default function Home() {
             date,
             slot,
             recipeId,
-            peopleCount: current.settings.defaultPeople,
+            peopleCount: slot === "dinner" ? attendancePortions(current.dinnerAttendance?.[date] ?? defaultAttendance(current.settings.diners ?? []), current.settings.defaultPeople) : current.settings.defaultPeople,
+            portionSource: slot === "dinner" ? "diners" as const : "manual" as const,
             selectedIngredientIds: [],
             extraSideIngredients: []
           }
@@ -1623,21 +1618,22 @@ export default function Home() {
         let target: { date: string; slot: MealSlot } | null = null;
 
         for (const date of displayedDates) {
-          const availableSlot = candidateSlots.find((slot) => !occupiedSlots.has(`${date}:${slot}`));
+          const availableSlot = candidateSlots.find((slot) => !occupiedSlots.has(`${date}:${slot}`) && (slot !== "dinner" || recipeAllowedForDinner(recipe, date, current.dinnerAttendance, current.dayNotes)));
           if (availableSlot) {
             target = { date, slot: availableSlot };
             break;
           }
         }
 
-        const fallbackDate = displayedDates[plannedMeals.length % Math.max(1, displayedDates.length)] ?? formatDateKey(new Date());
-        const selectedTarget = target ?? { date: fallbackDate, slot: candidateSlots[0] };
+        if (!target) return;
+        const selectedTarget = target;
         plannedMeals.push({
           id: createId("meal"),
           date: selectedTarget.date,
           slot: selectedTarget.slot,
           recipeId,
-          peopleCount: current.settings.defaultPeople,
+          peopleCount: selectedTarget.slot === "dinner" ? attendancePortions(current.dinnerAttendance?.[selectedTarget.date], current.settings.defaultPeople) : current.settings.defaultPeople,
+          portionSource: selectedTarget.slot === "dinner" ? "diners" : "manual",
           notes: "Uses food already at home"
         });
         occupiedSlots.add(`${selectedTarget.date}:${selectedTarget.slot}`);
@@ -1652,7 +1648,7 @@ export default function Home() {
     updateState((current) => {
       const retainedMeals = plan.mode === "replace"
         ? current.plannedMeals.filter(
-            (meal) => !(meal.slot === "dinner" && meal.date >= plan.startDate && meal.date <= plan.endDate)
+            (meal) => !(meal.slot === "dinner" && meal.date >= plan.startDate && meal.date <= plan.endDate && dinnerNeedsMeal(current.dinnerAttendance?.[meal.date]))
           )
         : current.plannedMeals;
       const occupiedDinnerDates = new Set(
@@ -1662,16 +1658,18 @@ export default function Home() {
       );
       const generatedMeals = plan.entries
         .filter((entry) => plan.mode === "replace" || !occupiedDinnerDates.has(entry.date))
-        .filter((entry) => current.recipes.some((recipe) => recipe.id === entry.recipeId))
+        .filter((entry) => current.recipes.some((recipe) => recipe.id === entry.recipeId && recipeAllowedForDinner(recipe, entry.date, current.dinnerAttendance, current.dayNotes)))
         .map((entry) => ({
           id: createId("meal"),
           date: entry.date,
           slot: "dinner" as const,
           recipeId: entry.recipeId,
-          peopleCount: current.settings.defaultPeople,
+          peopleCount: attendancePortions(current.dinnerAttendance?.[entry.date], current.settings.defaultPeople),
+          portionSource: "diners" as const,
           selectedIngredientIds: [...entry.selectedIngredientIds],
           extraSideIngredients: entry.extraSideIngredients.map((ingredient) => ({
             ...ingredient,
+            quantity: typeof ingredient.quantity === "number" ? ingredient.quantity * attendancePortions(current.dinnerAttendance?.[entry.date], current.settings.defaultPeople) / Math.max(0.25, entry.peopleCount ?? current.settings.defaultPeople) : ingredient.quantity,
             id: createId("planned_side")
           })),
           notes: entry.coveredUseUpIngredients.length
@@ -1688,6 +1686,13 @@ export default function Home() {
     const manualTitle = title.trim();
     if (!manualTitle) return;
 
+    if (mealPicker?.replaceMealId) {
+      updateState(current => ({ ...current, plannedMeals: current.plannedMeals.map(meal => meal.id === mealPicker.replaceMealId
+        ? { ...meal, recipeId: undefined, manualTitle, selectedIngredientIds: [], extraSideIngredients: [], notes: undefined } : meal) }));
+      setMealPicker(null);
+      setMealPickerQuery("");
+      return;
+    }
     updateState((current) => ({
       ...current,
       plannedMeals: [
@@ -1708,7 +1713,7 @@ export default function Home() {
   function movePlannedMeal(id: string, date: string, slot: MealSlot) {
     updateState((current) => ({
       ...current,
-      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...meal, date, slot } : meal))
+      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...(meal.portionSource === "diners" && slot === "dinner" ? scaleMealPortions(meal, attendancePortions(current.dinnerAttendance?.[date], current.settings.defaultPeople) + (meal.extraPortions ?? 0)) : meal), date, slot } : meal))
     }));
   }
 
@@ -1718,15 +1723,12 @@ export default function Home() {
 
     updateState((current) => ({
       ...current,
-      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...meal, ...normalizedPatch } : meal))
+      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...(typeof normalizedPatch.peopleCount === "number" ? { ...scaleMealPortions(meal, normalizedPatch.peopleCount), portionSource: "manual" as const } : meal), ...normalizedPatch } : meal))
     }));
   }
 
   function removePlannedMeal(id: string) {
-    updateState((current) => ({
-      ...current,
-      plannedMeals: current.plannedMeals.filter((meal) => meal.id !== id)
-    }));
+    updateState(current => removeMealFromPlan(current, id));
   }
 
   function addLeftoverLunch(meal: (typeof state.plannedMeals)[number]) {
@@ -2383,6 +2385,8 @@ export default function Home() {
       name: manualItemName.trim(),
       canonicalName: canonicalizeIngredientName(manualItemName).canonicalName,
       displayQuantity: manualItemQuantity.trim(),
+      quantity: parseIngredientLine(`${manualItemQuantity} ${manualItemName}`, { strict: false }).quantity,
+      unit: parseIngredientLine(`${manualItemQuantity} ${manualItemName}`, { strict: false }).unit,
       category: manualItemCategory === "Auto" ? inferCategory(manualItemName) : manualItemCategory,
       sourceMeals: ["Manual"],
       checked: false,
@@ -2418,6 +2422,9 @@ export default function Home() {
     if (!item) return;
     if (extraQuantity?.trim()) {
       item.displayQuantity = extraQuantity.trim();
+      const parsed = parseIngredientLine(`${extraQuantity} ${itemName}`, { strict: false });
+      item.quantity = parsed.quantity;
+      item.unit = parsed.unit;
       item.additional = true;
     }
 
@@ -2452,10 +2459,38 @@ export default function Home() {
 
   function completeShoppingList() {
     const completedAt = new Date().toISOString();
-    updateState(current => ({
-      ...current,
-      settings: recordCompletedShoppingList(current.settings, commonExtraProfileKey, shoppingRangeKey, shoppingList, completedAt)
-    }));
+    updateState(current => {
+      const shop = current.guidedShop!;
+      const items = requiredShopItems(current, shop), resolved = resolveShop(items, shop);
+      if (resolved.some(row => row.reviewReason) || shopIsFinalized(items, shop)) return current;
+      return { ...current, guidedShop: { ...shop, finalizedSignature: shopSignature(items, shop), finalizedAt: shop.finalizedAt ?? completedAt, completedAt: undefined },
+        settings: recordCompletedShoppingList(current.settings, commonExtraProfileKey, shop.id, resolved.flatMap(row => row.buy ? [row.buy] : []), completedAt) };
+    });
+  }
+
+  function updateSupply(item: ShoppingListItem, check: SupplyCheck) {
+    updateState(current => {
+      const shop = current.guidedShop!;
+      const basketChecks = { ...shop.basketChecks }, asdaShoppingStatus = { ...current.asdaShoppingStatus };
+      delete basketChecks[item.id];
+      delete asdaShoppingStatus[storeStatusItemKey(shop, item.id)];
+      return { ...current, asdaShoppingStatus, guidedShop: { ...shop, supplyChecks: { ...shop.supplyChecks, [item.id]: check }, basketChecks } };
+    });
+  }
+
+  function applyShoppingDates(start: string, end: string) { updateState(current => changeShopDates(current, start, end)); }
+
+  function fillGuidedDinners() {
+    const plan = buildAutoDinnerPlan({ startDate: activeShop.startDate, endDate: activeShop.endDate, mode: "fill", recipes: state.recipes,
+      plannedMeals: state.plannedMeals, peopleCount: state.settings.defaultPeople, ingredientAliases: state.settings.ingredientAliases,
+      useUpIngredients: state.useUpIngredients, dayNotes: state.dayNotes, dinnerAttendance: state.dinnerAttendance,
+      recipePreferenceScores: autoPlannerPreferenceScores, recipeReactions, excludedRecipeIds: activeShop.excludedRecipeIds, variationSeed: Date.now() });
+    applyAutoDinnerPlan(plan);
+    setGuidedPlanMessage([`${plan.entries.length} dinners added.`, ...plan.warnings].join(" "));
+  }
+
+  function removeGuidedMeal(id: string) {
+    updateState(current => removeMealFromPlan(current, id, true));
   }
 
   function saveOccasionalItems(items: OccasionalItem[]) {
@@ -2487,6 +2522,8 @@ export default function Home() {
   function toggleShoppingItem(id: string, checked: boolean) {
     const statusKey = storeStatusItemKey(shoppingDateRange, id);
     updateState((current) => {
+      const item = requiredShopItems(current, current.guidedShop!).find(row => row.id === id);
+      if (!item) return current;
       const asdaShoppingStatus = { ...current.asdaShoppingStatus };
       if (checked) {
         asdaShoppingStatus[statusKey] = "added";
@@ -2496,8 +2533,7 @@ export default function Home() {
 
       return {
         ...current,
-        shoppingChecks: { ...current.shoppingChecks, [id]: checked },
-        manualShoppingItems: current.manualShoppingItems.map((item) => (item.id === id ? { ...item, checked } : item)),
+        guidedShop: { ...current.guidedShop!, basketChecks: { ...current.guidedShop!.basketChecks, [id]: checked ? requirementSignature(item) : "" } },
         asdaShoppingStatus
       };
     });
@@ -2505,7 +2541,7 @@ export default function Home() {
   }
 
   function unselectAllShoppingItems() {
-    const checkedItems = shoppingList.filter((item) => item.checked);
+    const checkedItems = buyItems.filter((item) => item.checked);
     if (!checkedItems.length) return;
     const checkedIds = new Set(checkedItems.map((item) => item.id));
     const statusKeys = new Map(
@@ -2513,18 +2549,18 @@ export default function Home() {
     );
 
     updateState((current) => {
-      const shoppingChecks = { ...current.shoppingChecks };
+      const basketChecks = { ...current.guidedShop!.basketChecks };
       const asdaShoppingStatus = { ...current.asdaShoppingStatus };
 
       checkedIds.forEach((itemId) => {
-        delete shoppingChecks[itemId];
+        delete basketChecks[itemId];
         const statusKey = statusKeys.get(itemId);
         if (statusKey && asdaShoppingStatus[statusKey] === "added") delete asdaShoppingStatus[statusKey];
       });
 
       return {
         ...current,
-        shoppingChecks,
+        guidedShop: { ...current.guidedShop!, basketChecks },
         asdaShoppingStatus,
         manualShoppingItems: current.manualShoppingItems.map((item) =>
           checkedIds.has(item.id) ? { ...item, checked: false } : item
@@ -2538,6 +2574,10 @@ export default function Home() {
   function updateManualShoppingItem(id: string, patch: Partial<ShoppingListItem>) {
     updateState((current) => {
       const existingItem = current.manualShoppingItems.find((item) => item.id === id);
+      if (typeof patch.displayQuantity === "string") {
+        const parsed = parseIngredientLine(`${patch.displayQuantity} ${patch.name ?? existingItem?.name ?? "item"}`, { strict: false });
+        patch = { ...patch, quantity: parsed.quantity, unit: parsed.unit };
+      }
       const updatedPatch = patch.name?.trim()
         ? { ...patch, canonicalName: canonicalizeIngredientName(patch.name, current.settings.ingredientAliases).canonicalName }
         : patch;
@@ -2595,54 +2635,6 @@ export default function Home() {
     });
   }
 
-  function forgetHiddenShoppingItems() {
-    updateState((current) => (Object.keys(current.hiddenShoppingItems).length ? { ...current, hiddenShoppingItems: {} } : current));
-  }
-
-  function moveManualShoppingItemsToRange(nextRange: ReturnType<typeof normalizeDateRange>) {
-    const previousRange = shoppingDateRange;
-    const previousRangeKey = shoppingRangeKeyForRange(previousRange);
-    const nextRangeKey = shoppingRangeKeyForRange(nextRange);
-    if (previousRangeKey === nextRangeKey) return;
-
-    updateState((current) => {
-      const movingItemIds = current.manualShoppingItems
-        .filter((item) => item.shoppingRangeKey === previousRangeKey)
-        .map((item) => item.id);
-      if (!movingItemIds.length) return current;
-
-      const asdaShoppingStatus = { ...current.asdaShoppingStatus };
-      movingItemIds.forEach((itemId) => {
-        const previousStatusKey = storeStatusItemKey(previousRange, itemId);
-        const nextStatusKey = storeStatusItemKey(nextRange, itemId);
-        if (asdaShoppingStatus[previousStatusKey]) {
-          asdaShoppingStatus[nextStatusKey] = asdaShoppingStatus[previousStatusKey];
-          delete asdaShoppingStatus[previousStatusKey];
-        }
-      });
-
-      return {
-        ...current,
-        asdaShoppingStatus,
-        manualShoppingItems: current.manualShoppingItems.map((item) =>
-          item.shoppingRangeKey === previousRangeKey ? { ...item, shoppingRangeKey: nextRangeKey } : item
-        )
-      };
-    });
-  }
-
-  function updateShoppingStartDate(value: string) {
-    moveManualShoppingItemsToRange(normalizeDateRange(value, shoppingEndDate));
-    setShoppingStartDate(value);
-    forgetHiddenShoppingItems();
-  }
-
-  function updateShoppingEndDate(value: string) {
-    moveManualShoppingItemsToRange(normalizeDateRange(shoppingStartDate, value));
-    setShoppingEndDate(value);
-    forgetHiddenShoppingItems();
-  }
-
   function restoreHiddenGeneratedShoppingItems() {
     updateState((current) => ({
       ...current,
@@ -2686,13 +2678,16 @@ export default function Home() {
         delete asdaShoppingStatus[statusKey];
       }
 
-      return { ...current, asdaShoppingStatus };
+      const basketChecks = { ...current.guidedShop!.basketChecks };
+      if (status !== "added") delete basketChecks[itemId];
+      return { ...current, asdaShoppingStatus, guidedShop: { ...current.guidedShop!, basketChecks } };
     });
   }
 
   function resetCurrentAsdaRun() {
     updateState((current) => ({
       ...current,
+      guidedShop: { ...current.guidedShop!, basketChecks: {} },
       asdaShoppingStatus: Object.fromEntries(
         Object.entries(current.asdaShoppingStatus).filter(([key]) => !key.startsWith(asdaStatusPrefix))
       )
@@ -2700,7 +2695,8 @@ export default function Home() {
   }
 
   async function copyShoppingList() {
-    const text = shoppingList
+    if (exportBlocked) return;
+    const text = buyItems.filter(item => !item.checked)
       .map((item) => {
         const conversion = item.conversionNotes?.length ? ` (${item.conversionNotes.join("; ")})` : "";
         return `${item.checked ? "[x]" : "[ ]"} ${item.displayQuantity ? `${item.displayQuantity} ` : ""}${item.name}${conversion}`;
@@ -3149,6 +3145,29 @@ export default function Home() {
     setCloudMessage("Signed out. This device will continue using its local backup.");
   }
 
+  const supplies = <SupplyCheckList items={requiredShoppingItems} shop={activeShop} onChange={updateSupply}
+    renderCategory={item => <SupplyCategoryControl item={item} onChange={category => updateShoppingItemCategory(item, category)} />} />;
+  const reviewActions = <ShopReviewActions items={requiredShoppingItems} shop={activeShop} onFinish={completeShoppingList}
+    onComplete={() => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, completedAt: new Date().toISOString() } }))}
+    onMethod={method => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, method } }))}
+    onCopy={copyShoppingList} onPrint={() => window.print()} />;
+  const renderShopping = (mode: "all" | "extras" | "review") => <ShoppingView mode={mode}
+    items={mode === "all" ? shoppingList : buyItems} requiredItems={requiredShoppingItems} shop={activeShop} exportBlocked={exportBlocked}
+    supplies={supplies} reviewActions={reviewActions} onApplyDates={applyShoppingDates}
+    settings={state.settings} commonExtraProfileKey={commonExtraProfileKey}
+    rangeStartDate={shoppingStartDate} rangeEndDate={shoppingEndDate}
+    manualItemName={manualItemName} manualItemQuantity={manualItemQuantity} manualItemCategory={manualItemCategory} manualBulkItems={manualBulkItems}
+    asdaProductLinks={state.asdaProductLinks} asdaProductSelections={state.asdaProductSelections} asdaShoppingStatus={rangeAsdaShoppingStatus}
+    setManualItemName={setManualItemName} setManualItemQuantity={setManualItemQuantity} setManualItemCategory={setManualItemCategory} setManualBulkItems={setManualBulkItems}
+    onToggleIncludeStaples={includeStaples => updateSettings({ includeStaples })}
+    onAddManualItem={addManualShoppingItem} onAddBulkManualItems={addBulkManualShoppingItems} onAddCommonManualItem={addCommonManualShoppingItem}
+    onClearManualItems={clearManualShoppingItemsForRange} onUpdateCommonExtras={updateCommonExtraItems}
+    onManageOccasionalItems={() => { setReturnToGuided(activeView === "guided"); setActiveView("settings"); }}
+    onToggleItem={toggleShoppingItem} onUnselectAll={unselectAllShoppingItems} onUpdateManualItem={updateManualShoppingItem}
+    onUpdateCategory={updateShoppingItemCategory} onDeleteItem={deleteShoppingItem} onOpenRecipe={setSelectedRecipeId}
+    onUpdateAsdaProductLink={updateAsdaProductLink} onUpdateAsdaShoppingStatus={updateAsdaShoppingStatus} onResetAsdaRun={resetCurrentAsdaRun}
+    onCopy={copyShoppingList} onPrint={() => window.print()} onRestoreGenerated={restoreHiddenGeneratedShoppingItems} />;
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -3163,6 +3182,7 @@ export default function Home() {
         </div>
 
         <nav className="nav-list" aria-label="Primary navigation">
+          <NavButton view="guided" activeView={activeView} setActiveView={setActiveView} icon={<ListChecks />} label="Guided shop" />
           <NavButton view="planner" activeView={activeView} setActiveView={setActiveView} icon={<CalendarDays />} label="Planner" />
           <NavButton view="recipes" activeView={activeView} setActiveView={setActiveView} icon={<ChefHat />} label="Recipes" />
           <NavButton view="add" activeView={activeView} setActiveView={setActiveView} icon={<Plus />} label="Add recipe" />
@@ -3192,12 +3212,26 @@ export default function Home() {
           </div>
         </header>
 
+        {activeView === "guided" && state.guidedShop && <>
+          {guidedPlanMessage && state.guidedShop.step === 1 && <p className="shop-notice" role="status">{guidedPlanMessage}</p>}
+          <GuidedShopView state={state} updateState={updateState} onDates={applyShoppingDates}
+            onOpenMeal={(date, slot) => { setMealPicker({ date, slot }); setMealPickerQuery(""); }}
+            onSwap={meal => { setMealPicker({ date: meal.date, slot: meal.slot, replaceMealId: meal.id }); setMealPickerQuery(""); }}
+            onGenerate={fillGuidedDinners} onRemove={removeGuidedMeal}
+            renderMeal={meal => <MobileMealCard key={meal.id} meal={meal} recipe={state.recipes.find(recipe => recipe.id === meal.recipeId)}
+              days={shopDates(shoppingStartDate, shoppingEndDate).map(date => new Date(`${date}T12:00:00`))} visibleSlots={mealSlots}
+              ingredientAliases={state.settings.ingredientAliases} recipeFrequency={recipeFrequencies[meal.recipeId ?? ""] ?? 0}
+              onMoveMeal={movePlannedMeal} onRemoveMeal={removeGuidedMeal} onUpdateMeal={updatePlannedMeal} onAddLeftovers={addLeftoverLunch} onOpenRecipe={setSelectedRecipeId} />}
+            extras={renderShopping("extras")} supplies={supplies} review={renderShopping("review")} />
+        </>}
+
         {activeView === "planner" && (
           <PlannerView
             days={days}
             weekStart={weekStart}
             plannerDayCount={plannerDayCount}
             dayNotes={state.dayNotes}
+            dinnerAttendance={state.dinnerAttendance ?? {}}
             recipes={state.recipes}
             plannedMeals={state.plannedMeals}
             visibleSlots={visibleSlots}
@@ -3310,58 +3344,12 @@ export default function Home() {
           />
         )}
 
-        {activeView === "shopping" && (
-          <ShoppingView
-            items={shoppingList}
-            settings={state.settings}
-            commonExtraProfileKey={commonExtraProfileKey}
-            startDate={shoppingStartDate}
-            endDate={shoppingEndDate}
-            rangeStartDate={shoppingDateRange.startDate}
-            rangeEndDate={shoppingDateRange.endDate}
-            manualItemName={manualItemName}
-            manualItemQuantity={manualItemQuantity}
-            manualItemCategory={manualItemCategory}
-            manualBulkItems={manualBulkItems}
-            asdaProductLinks={state.asdaProductLinks}
-            asdaProductSelections={state.asdaProductSelections}
-            asdaShoppingStatus={rangeAsdaShoppingStatus}
-            setStartDate={updateShoppingStartDate}
-            setEndDate={updateShoppingEndDate}
-            setManualItemName={setManualItemName}
-            setManualItemQuantity={setManualItemQuantity}
-            setManualItemCategory={setManualItemCategory}
-            setManualBulkItems={setManualBulkItems}
-            onResetDateRange={() => {
-              const currentWeekStart = startOfWeek(new Date());
-              setShoppingStartDate(formatDateKey(currentWeekStart));
-              setShoppingEndDate(formatDateKey(addDays(currentWeekStart, 6)));
-              forgetHiddenShoppingItems();
-            }}
-            onToggleIncludeStaples={(includeStaples) => updateSettings({ includeStaples })}
-            onAddManualItem={addManualShoppingItem}
-            onAddBulkManualItems={addBulkManualShoppingItems}
-            onAddCommonManualItem={addCommonManualShoppingItem}
-            onClearManualItems={clearManualShoppingItemsForRange}
-            onUpdateCommonExtras={updateCommonExtraItems}
-            onCompleteShop={completeShoppingList}
-            onManageOccasionalItems={() => setActiveView("settings")}
-            onToggleItem={toggleShoppingItem}
-            onUnselectAll={unselectAllShoppingItems}
-            onUpdateManualItem={updateManualShoppingItem}
-            onUpdateCategory={updateShoppingItemCategory}
-            onDeleteItem={deleteShoppingItem}
-            onOpenRecipe={setSelectedRecipeId}
-            onUpdateAsdaProductLink={updateAsdaProductLink}
-            onUpdateAsdaShoppingStatus={updateAsdaShoppingStatus}
-            onResetAsdaRun={resetCurrentAsdaRun}
-            onCopy={copyShoppingList}
-            onPrint={() => window.print()}
-            onRestoreGenerated={restoreHiddenGeneratedShoppingItems}
-          />
-        )}
+        {activeView === "shopping" && renderShopping("all")}
 
         {activeView === "settings" && (
+          <>
+          {returnToGuided && <button className="icon-text-button" onClick={() => { setActiveView("guided"); setReturnToGuided(false); }}><ChevronLeft size={16} />Return to guided shop</button>}
+          <HouseholdDinersEditor diners={state.settings.diners ?? []} onChange={diners => updateState(current => changeDiners(current, diners))} />
           <SettingsView
             settings={state.settings}
             commonExtraProfileKey={commonExtraProfileKey}
@@ -3386,6 +3374,7 @@ export default function Home() {
             onSignOut={signOutCloud}
             onResetDemo={() => setState(hydrateState(seedState()))}
           />
+          </>
         )}
 
         {mealPicker && (
@@ -3435,7 +3424,7 @@ function NavButton({
   label: string;
 }) {
   return (
-    <button className={classNames("nav-button", activeView === view && "active")} onClick={() => setActiveView(view)}>
+    <button data-view={view} className={classNames("nav-button", activeView === view && "active")} onClick={() => setActiveView(view)}>
       {icon}
       <span>{label}</span>
     </button>
@@ -3710,6 +3699,7 @@ function PlannerView({
   weekStart,
   plannerDayCount,
   dayNotes,
+  dinnerAttendance,
   recipes,
   plannedMeals,
   visibleSlots,
@@ -3741,6 +3731,7 @@ function PlannerView({
   weekStart: string;
   plannerDayCount: 7 | 14;
   dayNotes: Record<string, string>;
+  dinnerAttendance: Record<string, DinnerAttendance>;
   recipes: Recipe[];
   plannedMeals: AppState["plannedMeals"];
   visibleSlots: MealSlot[];
@@ -3839,7 +3830,7 @@ function PlannerView({
     const plannedDates = new Set(plannedRows.map((row) => row.date));
     const unfilledRows = dateRangeDates(autoPlanPreview.startDate, 14)
       .map(formatDateKey)
-      .filter((date) => date <= autoPlanPreview.endDate && !plannedDates.has(date))
+      .filter((date) => date <= autoPlanPreview.endDate && !plannedDates.has(date) && dinnerNeedsMeal(dinnerAttendance[date]))
       .map<AutoPlanPreviewRow>((date) => ({
         key: `unfilled:${date}`,
         date,
@@ -3850,7 +3841,7 @@ function PlannerView({
     return [...plannedRows, ...unfilledRows].sort(
       (left, right) => left.date.localeCompare(right.date) || Number(right.preserved) - Number(left.preserved)
     );
-  }, [autoPlanPreview, recipes]);
+  }, [autoPlanPreview, recipes, dinnerAttendance]);
   const autoPlanUnfilledCount = autoPlanPreviewRows.filter((row) => row.badges.includes("Unfilled")).length;
 
   useEffect(() => {
@@ -3863,7 +3854,7 @@ function PlannerView({
 
   useEffect(() => {
     setAutoPlanPreview(null);
-  }, [recipes, recipeReactions, recipePreferenceScores]);
+  }, [recipes, recipeReactions, recipePreferenceScores, dinnerAttendance, dayNotes]);
 
   useEffect(() => {
     const displayedDates = days.map(formatDateKey);
@@ -3900,6 +3891,7 @@ function PlannerView({
       useUpIngredients,
       ingredientAliases,
       dayNotes,
+      dinnerAttendance,
       peopleCount: defaultPeople,
       recipePreferenceScores,
       recipeReactions,
@@ -3922,7 +3914,7 @@ function PlannerView({
       ]);
       const missingCount = dateRangeDates(current.startDate, 14)
         .map(formatDateKey)
-        .filter((date) => date <= current.endDate && !plannedDates.has(date)).length;
+        .filter((date) => date <= current.endDate && !plannedDates.has(date) && dinnerNeedsMeal(dinnerAttendance[date])).length;
       const warnings = current.warnings.filter((warning) => !/dinner slots? ready to refill/i.test(warning));
       warnings.unshift(`${missingCount} dinner slot${missingCount === 1 ? " is" : "s are"} ready to refill.`);
 
@@ -3948,7 +3940,7 @@ function PlannerView({
       date: entry.date,
       slot: "dinner" as const,
       recipeId: entry.recipeId,
-      peopleCount: defaultPeople,
+      peopleCount: entry.peopleCount ?? defaultPeople,
       selectedIngredientIds: [...entry.selectedIngredientIds],
       extraSideIngredients: entry.extraSideIngredients.map((ingredient) => ({ ...ingredient }))
     }));
@@ -3967,6 +3959,7 @@ function PlannerView({
       useUpIngredients,
       ingredientAliases,
       dayNotes,
+      dinnerAttendance,
       excludedRecipeIds: autoPlanExcludedRecipeIds,
       peopleCount: defaultPeople,
       recipePreferenceScores,
@@ -5957,11 +5950,10 @@ function AddRecipeView({
 }
 
 function ShoppingView({
+  mode, requiredItems, shop, supplies, reviewActions, onApplyDates, exportBlocked,
   items,
   settings,
   commonExtraProfileKey,
-  startDate,
-  endDate,
   rangeStartDate,
   rangeEndDate,
   manualItemName,
@@ -5971,20 +5963,16 @@ function ShoppingView({
   asdaProductLinks,
   asdaProductSelections,
   asdaShoppingStatus,
-  setStartDate,
-  setEndDate,
   setManualItemName,
   setManualItemQuantity,
   setManualItemCategory,
   setManualBulkItems,
-  onResetDateRange,
   onToggleIncludeStaples,
   onAddManualItem,
   onAddBulkManualItems,
   onAddCommonManualItem,
   onClearManualItems,
   onUpdateCommonExtras,
-  onCompleteShop,
   onManageOccasionalItems,
   onToggleItem,
   onUnselectAll,
@@ -5999,11 +5987,16 @@ function ShoppingView({
   onPrint,
   onRestoreGenerated
 }: {
+  mode: "all" | "extras" | "review";
+  requiredItems: ShoppingListItem[];
+  shop: GuidedShop;
+  supplies: React.ReactNode;
+  reviewActions: React.ReactNode;
+  onApplyDates: (start: string, end: string) => void;
+  exportBlocked: boolean;
   items: ShoppingListItem[];
   settings: AppState["settings"];
   commonExtraProfileKey: string;
-  startDate: string;
-  endDate: string;
   rangeStartDate: string;
   rangeEndDate: string;
   manualItemName: string;
@@ -6013,20 +6006,16 @@ function ShoppingView({
   asdaProductLinks: Record<string, string>;
   asdaProductSelections: Record<string, AsdaProductSelection>;
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
-  setStartDate: (value: string) => void;
-  setEndDate: (value: string) => void;
   setManualItemName: (value: string) => void;
   setManualItemQuantity: (value: string) => void;
   setManualItemCategory: (value: ManualItemCategory) => void;
   setManualBulkItems: (value: string) => void;
-  onResetDateRange: () => void;
   onToggleIncludeStaples: (value: boolean) => void;
   onAddManualItem: (event: FormEvent) => void;
   onAddBulkManualItems: (event: FormEvent) => void;
   onAddCommonManualItem: (itemName: string, extraQuantity?: string) => void;
   onClearManualItems: () => void;
   onUpdateCommonExtras: (items: string[]) => void;
-  onCompleteShop: () => void;
   onManageOccasionalItems: () => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUnselectAll: () => void;
@@ -6054,18 +6043,18 @@ function ShoppingView({
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
   const dueEssentials = dueOccasionalItems(settings, commonExtraProfileKey, `${rangeEndDate}T12:00:00`);
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editingManualItem = items.find((item) => item.manual && item.id === editingManualItemId) ?? null;
-  const manualItems = items
+  const editingManualItem = requiredItems.find((item) => item.manual && item.id === editingManualItemId) ?? null;
+  const manualItems = requiredItems
     .filter((item) => item.manual)
     .sort((first, second) => {
       const categoryDifference = groceryCategories.indexOf(first.category) - groceryCategories.indexOf(second.category);
       return categoryDifference || first.name.localeCompare(second.name);
     });
-  const hasExtra = (name: string) => shoppingListIncludesExtra(items, name, settings.ingredientAliases);
+  const hasExtra = (name: string) => shoppingListIncludesExtra(requiredItems, name, settings.ingredientAliases);
   const manualItemCount = manualItems.length;
   const checkedItemCount = items.filter((item) => item.checked).length;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
-  const pendingAsdaItems = itemsForAsdaHelper(items, asdaShoppingStatus);
+  const pendingAsdaItems = exportBlocked ? [] : itemsForAsdaHelper(resolveShop(requiredItems, shop).flatMap(row => row.buy ? [row.buy] : []), asdaShoppingStatus);
   const grouped = groceryCategories
     .map((category) => ({
       category,
@@ -6145,7 +6134,7 @@ function ShoppingView({
   function sendToAsdaHelper() {
     const queue = buildAsdaHelperQueue();
 
-    onCompleteShop();
+    if (exportBlocked) return;
     publishAsdaHelperQueue(queue);
     window.postMessage({ source: asdaHelperAppSource, type: "ASDA_HELPER_IMPORT_QUEUE", payload: queue }, window.location.origin);
     setAsdaHelperMessage("Sending shopping queue to Asda Helper...");
@@ -6157,7 +6146,7 @@ function ShoppingView({
 
   return (
     <div className="view-stack">
-      <section className="toolbar-band">
+      {mode === "all" && <section className="toolbar-band">
         <div>
           <p className="eyebrow">Generated from selected dates</p>
           <h2>{items.length} shopping items</h2>
@@ -6166,17 +6155,7 @@ function ShoppingView({
           </p>
         </div>
         <div className="button-row">
-          <div className="date-range-controls">
-            <label>
-              From
-              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-            </label>
-            <label>
-              To
-              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
-            </label>
-          </div>
-          <button className="text-button" onClick={onResetDateRange}>This week</button>
+          <ShopDatesEditor key={`${shop.startDate}:${shop.endDate}`} shop={shop} extrasCount={manualItemCount} onApply={onApplyDates} />
           <label className="toggle-line">
             <input type="checkbox" checked={settings.includeStaples} onChange={(event) => onToggleIncludeStaples(event.target.checked)} />
             Include staples
@@ -6185,20 +6164,20 @@ function ShoppingView({
             <CircleOff size={18} />
             Unselect all
           </button>
-          <button className="icon-text-button" onClick={onCopy}>
+          <button className="icon-text-button" disabled={exportBlocked} onClick={onCopy}>
             <Download size={18} />
             Copy
           </button>
-          <button className="icon-button" title="Print" onClick={onPrint}>
+          <button className="icon-button" title="Print" disabled={exportBlocked} onClick={onPrint}>
             <Printer size={18} />
           </button>
           <button className="icon-button" title="Restore hidden generated items" onClick={onRestoreGenerated}>
             <RefreshCw size={18} />
           </button>
         </div>
-      </section>
+      </section>}
 
-      <div className="manual-items-heading">
+      {mode !== "review" && <><div className="manual-items-heading">
         <div>
           <p className="eyebrow">Extra items</p>
           <h3>{manualItemCount} added for this shop</h3>
@@ -6228,7 +6207,7 @@ function ShoppingView({
             </button>
           </form>
 
-          <form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
+          <details className="bulk-extras"><summary>Add several items</summary><form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
             <textarea
               value={manualBulkItems}
               onChange={(event) => setManualBulkItems(event.target.value)}
@@ -6239,7 +6218,7 @@ function ShoppingView({
               <Plus size={18} />
               Add list
             </button>
-          </form>
+          </form></details>
 
           <section className="common-extra-panel">
             <div className="section-heading">
@@ -6366,7 +6345,7 @@ function ShoppingView({
                 const added = hasExtra(item.name);
                 return (
                   <button className={classNames("text-button", added && "active")} type="button" key={item.id}
-                    title={item.lastAddedAt ? `Last added ${item.lastAddedAt.slice(0, 10)}; every ${item.intervalDays} days` : `Every ${item.intervalDays} days; not yet recorded`}
+                    title={item.lastAddedAt ? `Last included ${item.lastAddedAt.slice(0, 10)}; every ${item.intervalDays} days` : `Every ${item.intervalDays} days; not yet recorded`}
                     onClick={() => onAddCommonManualItem(item.name)} disabled={added}>
                     {added ? <Check size={15} /> : <Plus size={15} />}{item.name}
                   </button>
@@ -6419,7 +6398,12 @@ function ShoppingView({
         </section>
       </div>
 
-      <section className="asda-shop-panel">
+      </>}
+      {mode === "all" && <details className="shopping-supplies"><summary>Check supplies ({requiredItems.length} items, including staples)</summary>{supplies}</details>}
+      {mode !== "extras" && reviewActions}
+      {mode !== "extras" && <>
+      <h2 className="print-shop-heading">Shopping: {rangeStartDate} to {rangeEndDate}</h2>
+      {shop.method === "asda" && <section className="asda-shop-panel">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Asda shop</p>
@@ -6507,9 +6491,12 @@ function ShoppingView({
             );
           })}
         </div>
-      </section>
+      </section>}
 
       <section className="shopping-groups">
+        <div className="section-heading"><h3>Buy list</h3><span className="muted">Tick when added to basket</span>
+          {mode === "review" && <button type="button" className="icon-text-button" onClick={onUnselectAll} disabled={!checkedItemCount}><CircleOff size={16} />Unselect all</button>}
+        </div>
         {grouped.map((group) => (
           <div className="shopping-group" key={group.category}>
             <h2>{group.category}</h2>
@@ -6532,7 +6519,7 @@ function ShoppingView({
                 return (
                   <article className={classNames("shopping-item", item.checked && "checked", editingCategoryItemId === item.id && "category-open")} key={item.id}>
                     <label className="check-control">
-                      <input type="checkbox" checked={item.checked} onChange={(event) => onToggleItem(item.id, event.target.checked)} />
+                      <input type="checkbox" aria-label={`Added ${item.name} to basket`} checked={item.checked} onChange={(event) => onToggleItem(item.id, event.target.checked)} />
                       <Check size={16} />
                     </label>
 
@@ -6581,7 +6568,7 @@ function ShoppingView({
             </div>
           </div>
         ))}
-      </section>
+      </section></>}
 
       {editingManualItem && (
         <ManualShoppingItemModal
@@ -6602,6 +6589,12 @@ function ShoppingView({
   );
 }
 
+function SupplyCategoryControl({ item, onChange }: { item: ShoppingListItem; onChange: (category: GroceryCategory) => void }) {
+  const [open, setOpen] = useState(false);
+  return <ShoppingCategoryPicker item={item} open={open} onOpen={() => setOpen(true)} onClose={() => setOpen(false)}
+    onChange={category => { onChange(category); setOpen(false); }} />;
+}
+
 function ShoppingCategoryPicker({ item, open, onOpen, onClose, onChange, onDetails }: {
   item: ShoppingListItem;
   open: boolean;
@@ -6617,7 +6610,7 @@ function ShoppingCategoryPicker({ item, open, onOpen, onClose, onChange, onDetai
   useLayoutEffect(() => {
     if (!open) return;
     function positionPopover() {
-      const row = containerRef.current?.closest(".shopping-item")?.getBoundingClientRect();
+      const row = containerRef.current?.closest(".shopping-item, .supply-row")?.getBoundingClientRect();
       const popup = popoverRef.current;
       if (!row || !popup) return;
       const navigation = document.querySelector(".sidebar");
@@ -6781,7 +6774,7 @@ function OccasionalItemsSettings({ settings, profileKey, onSave }: {
                 Item
                 <input required aria-label={`Occasional item ${index + 1}`} value={item.name}
                   onChange={event => edit(items.map(entry => entry.id === item.id ? { ...entry, name: event.target.value } : entry))} />
-                <small className="muted">{item.lastAddedAt ? `Last added: ${item.lastAddedAt.slice(0, 10)}` : "Not yet recorded"}</small>
+                <small className="muted">{item.lastAddedAt ? `Last included: ${item.lastAddedAt.slice(0, 10)}` : "Not yet recorded"}</small>
               </label>
               <label>
                 Every (days)
@@ -7043,6 +7036,7 @@ function SettingsView({
 }
 
 const viewTitle: Record<View, string> = {
+  guided: "Guided shop",
   planner: "Weekly planner",
   recipes: "Recipe library",
   add: "Add recipe",
