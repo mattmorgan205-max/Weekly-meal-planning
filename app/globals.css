@@ -3396,6 +3396,143 @@ h3 {
   .shop-review-actions .button-row { gap: 6px; }
   .shop-review-actions button { min-height: 40px; font-size: 0.78rem; }
 }
+.guided-dates-workspace { display: grid; grid-template-columns: 284px minmax(0, 1fr); gap: 32px; align-items: start; }
+.guided-shop .guided-tool-heading, .calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.guided-tool-heading h3, .calendar-heading h3 { margin: 0; }
+.guided-tool-heading > span { color: var(--muted); font-size: 0.8rem; }
+.guided-diners-schedule, .guided-selected-days, .guided-tool-section { min-width: 0; }
+.shop-calendar { min-width: 0; position: sticky; top: 18px; }
+.calendar-heading h3 { display: flex; align-items: center; gap: 8px; }
+.calendar-heading .text-button { font-size: 0.8rem; padding: 6px; }
+.calendar-month { display: grid; grid-template-columns: 32px 1fr 32px; align-items: center; text-align: center; margin-bottom: 14px; }
+.calendar-month strong { font-size: 0.95rem; }
+.calendar-month .icon-button { width: 32px; height: 32px; min-height: 32px; padding: 0; border: 0; background: transparent; }
+.calendar-weekdays, .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calendar-weekdays span { text-align: center; padding-block: 8px; color: var(--muted); font-size: 0.75rem; }
+.calendar-grid { row-gap: 4px; }
+.calendar-grid button { min-width: 0; padding: 0; height: 38px; min-height: 38px; background: transparent; border: 0; border-radius: 0; color: var(--text); font-size: 0.9rem; display: grid; place-items: center; }
+.calendar-grid button span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 5px; }
+.calendar-grid button.outside-month { color: #929791; }
+.calendar-grid button.in-range { background: #e2eee7; color: #205640; }
+.calendar-grid button.range-start { border-radius: 6px 0 0 6px; }
+.calendar-grid button.range-end { border-radius: 0 6px 6px 0; }
+.calendar-grid button.range-start.range-end { border-radius: 6px; }
+.calendar-grid button.range-start span, .calendar-grid button.range-end span { background: #226b55; color: #fff; }
+.calendar-grid button.is-today span { outline: 2px solid #b27a1c; outline-offset: -2px; font-weight: 750; }
+.calendar-grid button:hover span { box-shadow: inset 0 0 0 1px #226b55; }
+.calendar-grid button:focus-visible { outline: 2px solid #226b55; outline-offset: 1px; position: relative; z-index: 1; }
+.calendar-range-summary { display: grid; gap: 4px; margin-block: 18px 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.calendar-range-summary small, .calendar-apply small { color: var(--muted); font-size: 0.8rem; }
+.calendar-range-summary strong { font-size: 0.9rem; }
+.shop-calendar .segmented-control { display: flex; width: 100%; }
+.shop-calendar .segmented-control button { flex: 1; font-size: 0.85rem; }
+.calendar-apply { display: grid; gap: 12px; margin-top: 14px; }
+.calendar-apply .primary-button { flex: 1; justify-content: center; }
+.diner-schedule-heading, .diner-schedule-row { display: grid; grid-template-columns: 94px minmax(110px, 1.15fr) minmax(120px, 1fr) 70px; align-items: center; gap: 10px; }
+.diner-schedule-heading { color: var(--muted); font-size: 0.75rem; padding-bottom: 10px; }
+.diner-schedule-day { border-top: 1px solid var(--line); }
+.diner-schedule-row { min-height: 70px; padding-block: 10px; }
+.diner-schedule-date { display: grid; gap: 3px; }
+.diner-schedule-date strong { font-size: 0.85rem; }
+.diner-schedule-date small { color: var(--guided-accent); font-size: 0.75rem; }
+.diner-schedule-day.is-today { background: #f0f6f2; box-shadow: -3px 0 #226b55; padding-inline: 8px; margin-inline: -8px; }
+.diner-schedule-people { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.diner-schedule-people label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+.diner-schedule-people label.selected { color: var(--text); }
+.diner-schedule-people input[type=checkbox] { width: 15px; height: 15px; min-height: 15px; flex-shrink: 0; accent-color: #226b55; }
+.diner-schedule-note { min-width: 0; min-height: 34px; font-size: 0.85rem; padding: 6px 8px; border-color: transparent; background: transparent; }
+.diner-schedule-note:hover, .diner-schedule-note:focus { border-color: var(--line); background: #fff; }
+.diner-schedule-portions { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.diner-schedule-portions > span { display: flex; gap: 3px; align-items: center; font-size: 0.85rem; }
+.diner-schedule-portions .icon-button { min-height: 30px; height: 30px; width: 28px; border: 0; background: transparent; padding: 0; }
+.diner-schedule-expanded { padding: 12px; background: #f0f4f2; border-block: 1px solid var(--line); }
+.guided-diners-schedule .shop-diners-settings { margin-top: 18px; border-bottom: 0; }
+.guided-meal-workspace { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 30px; align-items: start; }
+.guided-planning-tools { position: sticky; top: 16px; max-height: calc(100dvh - 120px); overflow-y: auto; scrollbar-width: thin; padding-right: 12px; border-right: 1px solid var(--line); }
+.guided-tool-section { padding-block: 18px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; }
+.guided-tool-section:first-child { padding-top: 0; }
+.guided-tool-section h3 { margin: 0; }
+.guided-tool-section .guided-tool-heading { margin-bottom: 0; }
+.guided-tool-section textarea { min-height: 78px; font-size: 0.9rem; padding: 10px; resize: vertical; }
+.guided-tool-section .primary-button { justify-content: center; width: 100%; font-size: 0.85rem; min-height: 38px; }
+.guided-auto-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.guided-auto-dates label { min-width: 0; font-size: 0.8rem; }
+.guided-auto-dates select { min-width: 0; width: 100%; min-height: 36px; padding: 6px; font-size: 0.8rem; }
+.guided-auto-plan .segmented-control { display: flex; }
+.guided-auto-plan .segmented-control button { min-width: 0; flex: 1; font-size: 0.8rem; padding: 7px 8px; }
+.guided-use-up-match { display: grid; gap: 5px; }
+.guided-use-up-match > small { color: var(--muted); font-size: 0.75rem; }
+.guided-recipe-option { display: flex; gap: 5px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--line); background: #fff; cursor: grab; min-width: 0; }
+.guided-option-title { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.guided-option-title > button { border: 0; background: transparent; text-align: left; padding: 0; font-size: 0.85rem; font-weight: 600; overflow-wrap: anywhere; }
+.guided-option-title > small { color: var(--muted); font-size: 0.72rem; }
+.guided-recipe-option .icon-button, .guided-drag-meal > .icon-button { width: 24px; min-height: 32px; height: 32px; padding: 0; border: 0; background: transparent; flex-shrink: 0; }
+.guided-recipe-thumb { width: 34px; height: 34px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.guided-shop .meal-drag-handle { cursor: grab; color: #7a877f; }
+.guided-shop .meal-drag-handle:active { cursor: grabbing; }
+.guided-plan-preview { display: grid; gap: 10px; }
+.guided-plan-details { font-size: 0.8rem; }
+.guided-plan-details summary { cursor: pointer; padding-block: 8px; color: var(--muted); }
+.guided-plan-details dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin: 8px 0; }
+.guided-plan-details dl > div { display: flex; justify-content: space-between; gap: 6px; }
+.guided-plan-details dt { text-transform: capitalize; }
+.guided-plan-details dd { margin: 0; font-weight: 600; }
+.guided-plan-details p { margin: 8px 0; color: var(--muted); }
+.guided-unscheduled { min-height: 100px; border-bottom: 0; }
+.guided-unscheduled h3 span { margin-left: 6px; color: var(--muted); font-weight: 400; font-size: 0.85rem; }
+.guided-unscheduled > p { font-size: 0.85rem; margin: 0; }
+.guided-selected-days > .guided-tool-heading { min-height: 32px; }
+.guided-selected-days .guided-days { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.guided-selected-days .guided-day { padding: 14px 0 12px; }
+.guided-selected-days .attendance-row { grid-template-columns: minmax(0, 1fr) minmax(140px, 0.85fr); gap: 5px 16px; align-items: start; }
+.guided-selected-days .attendance-heading { grid-column: 1 / -1; gap: 6px; }
+.guided-selected-days .attendance-heading > .icon-button { width: 28px; height: 28px; min-height: 28px; padding: 0; border: 0; background: transparent; }
+.guided-selected-days .attendance-details { padding-top: 7px; }
+.guided-selected-days .attendance-details summary { font-size: 0.8rem; }
+.guided-selected-days .attendance-note { font-size: 0; }
+.guided-selected-days .attendance-note input { font-size: 0.85rem; min-height: 30px; padding: 4px 6px; border-color: transparent; background: transparent; }
+.guided-selected-days .attendance-note input:hover, .guided-selected-days .attendance-note input:focus { border-color: var(--line); background: white; }
+.guided-selected-days .attendance-note input::placeholder { color: var(--muted); }
+.guided-selected-days .guided-planned-meal { border: 0; padding: 8px 0 0; }
+.guided-drag-meal { display: flex; gap: 6px; align-items: start; }
+.guided-drag-meal > .mobile-meal-card { flex: 1; }
+.guided-drag-meal > .icon-button { margin-top: 8px; }
+.guided-meal-options { font-size: 0.75rem; margin-left: 30px; }
+.guided-meal-options summary { cursor: pointer; color: var(--muted); padding-block: 5px; }
+.guided-selected-days .guided-other-meals { margin: 2px 0 0 30px; font-size: 0.75rem; }
+.guided-selected-days .guided-other-meals summary { padding: 3px 0; color: var(--muted); }
+.guided-empty-dinner { width: calc(100% - 30px); margin: 10px 0 6px 30px; min-height: 42px; border: 1px dashed #b8c9bf; background: #f7faf8; color: #226b55; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 5px; font-size: 0.85rem; }
+.guided-meal-workspace .is-drop-target { outline: 2px solid #226b55; outline-offset: -2px; background: #e9f4ee; }
+.guided-meal-workspace.is-dragging .guided-day { border-style: dashed; }
+.guided-place-dialog > strong { display: block; margin-bottom: 16px; }
+.guided-destination-list { display: grid; gap: 4px; max-height: 55dvh; overflow: auto; }
+.guided-destination-list button { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 10px; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 10px 4px; }
+.guided-destination-list small { overflow-wrap: anywhere; color: var(--muted); }
+.guided-destination-list button:hover:not(:disabled) { background: #e9f4ee; }
+@media (min-width: 1001px) and (max-width: 1250px) {
+  .guided-dates-workspace { grid-template-columns: 250px minmax(0, 1fr); gap: 22px; }
+  .guided-meal-workspace { grid-template-columns: 280px minmax(0, 1fr); gap: 22px; }
+  .diner-schedule-heading, .diner-schedule-row { grid-template-columns: 80px minmax(100px, 1fr) 64px; }
+  .diner-schedule-heading > span:nth-child(3) { display: none; }
+  .diner-schedule-note { grid-column: 2; grid-row: 2; }
+  .diner-schedule-portions { grid-column: 3; grid-row: 1; }
+  .guided-selected-days .attendance-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 1000px) {
+  .guided-dates-workspace, .guided-meal-workspace { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .shop-calendar { position: static; max-width: 340px; width: 100%; margin-inline: auto; }
+  .guided-planning-tools { position: static; max-height: none; overflow: visible; padding: 0; border: 0; }
+}
+@media (max-width: 600px) {
+  .diner-schedule-heading { display: none; }
+  .diner-schedule-row { grid-template-columns: minmax(0, 1fr) 68px; gap: 8px; }
+  .diner-schedule-date { grid-column: 1; grid-row: 1; }
+  .diner-schedule-portions { grid-column: 2; grid-row: 1; }
+  .diner-schedule-people, .diner-schedule-note { grid-column: 1 / -1; }
+  .guided-selected-days .attendance-row { grid-template-columns: minmax(0, 1fr); }
+  .guided-selected-days .attendance-note input { border-color: var(--line); }
+  .guided-tool-heading { flex-wrap: wrap; }
+}
 @media print {
   .guided-shop-heading, .guided-steps, .guided-footer, .shop-review-actions, .shopping-supplies, .bulk-extras { display: none !important; }
   .asda-shop-panel, .extra-items-layout, .manual-items-heading, .shopping-item.checked, .shopping-groups > .section-heading { display: none !important; }

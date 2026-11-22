@@ -3,6 +3,7 @@ import test from "node:test";
 import { commonExtraUsageForProfile, occasionalItemsForProfile, recordCompletedShoppingList, recordManualExtraUsage, seedState, type AppState, type DinnerAttendance, type PlannedMeal, type Recipe, type ShoppingListItem } from "../lib/domain";
 import { attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, resolveSupply, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, shopSignature } from "../lib/guided-shop";
 import { buildAutoDinnerPlan } from "../lib/dinner-planner";
+import { applyGuidedDinnerPreview, calendarDays, calendarRange, placeGuidedMeal } from "../lib/guided-planning";
 
 const start = "2026-11-23", end = "2026-11-29";
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
@@ -17,6 +18,72 @@ test("dates validate calendar days and allow 1 to 14 inclusive", () => {
   assert.equal(shopDates(start, "2026-12-06").length, 14);
   assert.equal(shopDates(start, "2026-12-07").length, 0);
   assert.equal(shopDates("2026-02-30", "2026-03-03").length, 0);
+});
+test("mini-month has six Monday-first weeks and supports ranges across months in either direction", () => {
+  const days = calendarDays("2026-11-01");
+  assert.equal(days.length, 42); assert.equal(days[0], "2026-10-26"); assert.equal(days[41], "2026-12-06");
+  assert.deepEqual(calendarRange("2026-12-06", "2026-11-23"), { start: "2026-11-23", end: "2026-12-06" });
+  assert.deepEqual(calendarRange(start, start), { start, end: start });
+  assert.equal(calendarRange(start, "2026-12-07"), null);
+});
+test("moving between occupied dinner days swaps meals and scales diner-controlled portions and sides", () => {
+  const current = state(), nextDay = "2026-11-24";
+  const first = { ...meal("first"), portionSource: "diners" as const, extraPortions: 1 };
+  current.plannedMeals = [first, { ...meal("second", 4), date: nextDay, portionSource: "diners" }];
+  current.dinnerAttendance![start] = attendance(true); current.dinnerAttendance![nextDay] = { ...attendance(false), guests: 2 };
+  const result = placeGuidedMeal(current, { kind: "planned", meal: first }, nextDay);
+  assert.equal(result.error, undefined);
+  assert.equal(result.state.plannedMeals.find(row => row.id === "first")?.peopleCount, 4);
+  assert.equal(result.state.plannedMeals.find(row => row.id === "first")?.extraSideIngredients?.[0].quantity, 400);
+  assert.equal(result.state.plannedMeals.find(row => row.id === "second")?.date, start);
+  assert.equal(result.state.plannedMeals.find(row => row.id === "second")?.peopleCount, 1.5);
+  assert.equal(result.state.guidedShop!.unplannedMeals!.length, 0);
+});
+test("new suggestions park displaced dinners and unscheduling removes ingredients without deleting the meal", () => {
+  const current = state(); current.plannedMeals = [meal("old")];
+  const result = placeGuidedMeal(current, { kind: "new", meal: meal("new") }, start).state;
+  assert.deepEqual(result.plannedMeals.map(row => row.id), ["new"]);
+  assert.deepEqual(result.guidedShop!.unplannedMeals!.map(row => row.id), ["old"]);
+  const parked = placeGuidedMeal(result, { kind: "planned", meal: result.plannedMeals[0] }, null).state;
+  assert.equal(requiredShopItems(parked, parked.guidedShop!).length, 0);
+  assert.equal(parked.guidedShop!.unplannedMeals!.length, 2);
+  const restored = placeGuidedMeal(parked, { kind: "parked", meal: meal("old") }, start).state;
+  assert.equal(restored.plannedMeals[0].id, "old"); assert.equal(restored.guidedShop!.unplannedMeals!.length, 1);
+  assert.equal(restored.plannedMeals[0].peopleCount, 2);
+});
+test("drops reject restricted diners, zero diners, blocked and outside dates without losing data", () => {
+  const current = state(); current.recipes = [recipe("r", true)]; current.dinnerAttendance![start] = attendance(true);
+  current.plannedMeals = [meal()];
+  const source = { kind: "new" as const, meal: meal("new") };
+  assert.equal(placeGuidedMeal(current, source, start).state, current);
+  current.dinnerAttendance![start] = { ...attendance(false), portions: {} };
+  assert.ok(placeGuidedMeal(current, source, start).error);
+  current.dinnerAttendance![start] = { ...attendance(false), dinnerStatus: "out" };
+  assert.ok(placeGuidedMeal(current, source, start).error);
+  assert.ok(placeGuidedMeal(current, source, "2026-12-31").error);
+});
+test("swaps check the displaced meal against the original day's diners", () => {
+  const current = state(), nextDay = "2026-11-24";
+  current.recipes = [recipe("safe"), recipe("restricted", true)];
+  current.dinnerAttendance![start] = attendance(true); current.dinnerAttendance![nextDay] = attendance(false);
+  current.plannedMeals = [{ ...meal("safe"), recipeId: "safe" }, { ...meal("restricted"), recipeId: "restricted", date: nextDay }];
+  const result = placeGuidedMeal(current, { kind: "planned", meal: current.plannedMeals[0] }, nextDay);
+  assert.match(result.error!, /Cannot swap/); assert.equal(result.state, current);
+});
+test("moving multiple dinners parks all displaced meals without deleting lunch or manual portion overrides", () => {
+  const current = state(); current.plannedMeals = [meal("a"), meal("b"), { ...meal("lunch"), slot: "lunch" }];
+  const result = placeGuidedMeal(current, { kind: "new", meal: meal("new", 6) }, start).state;
+  assert.equal(result.plannedMeals.length, 2); assert.equal(result.plannedMeals.find(row => row.id === "new")?.peopleCount, 6);
+  assert.deepEqual(result.guidedShop!.unplannedMeals!.map(row => row.id), ["a", "b"]);
+});
+test("applying dinner previews preserves manual meals in fill mode and parks them in replace mode", () => {
+  const current = state(); current.plannedMeals = [meal("old")]; current.dinnerAttendance![start] = attendance(true);
+  const preview = buildAutoDinnerPlan({ startDate: start, endDate: start, mode: "replace", recipes: current.recipes, plannedMeals: current.plannedMeals, peopleCount: 4, ingredientAliases: {}, useUpIngredients: [], dinnerAttendance: current.dinnerAttendance });
+  const filled = applyGuidedDinnerPreview(current, { ...preview, mode: "fill" });
+  assert.equal(filled.plannedMeals[0].id, "old");
+  const replaced = applyGuidedDinnerPreview(current, preview);
+  assert.equal(replaced.plannedMeals[0].peopleCount, 1.5);
+  assert.equal(replaced.guidedShop!.unplannedMeals![0].id, "old");
 });
 test("confirmed diners override nursery notes while unconfirmed dates keep the legacy rule", () => {
   const restricted = recipe("restricted", true);

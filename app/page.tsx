@@ -1138,7 +1138,6 @@ export default function Home() {
   const activeShop = state.guidedShop ?? createShop(formatDateKey(startOfWeek(new Date())), formatDateKey(addDays(startOfWeek(new Date()), 6)), "initial");
   const shoppingStartDate = activeShop.startDate, shoppingEndDate = activeShop.endDate;
   const [returnToGuided, setReturnToGuided] = useState(false);
-  const [guidedPlanMessage, setGuidedPlanMessage] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
   const [recipeGroupFilter, setRecipeGroupFilter] = useState<RecipeGroupFilter>("all");
   const [recipeFilters, setRecipeFilters] = useState<RecipeFilters>(emptyRecipeFilters);
@@ -2480,15 +2479,6 @@ export default function Home() {
 
   function applyShoppingDates(start: string, end: string) { updateState(current => changeShopDates(current, start, end)); }
 
-  function fillGuidedDinners() {
-    const plan = buildAutoDinnerPlan({ startDate: activeShop.startDate, endDate: activeShop.endDate, mode: "fill", recipes: state.recipes,
-      plannedMeals: state.plannedMeals, peopleCount: state.settings.defaultPeople, ingredientAliases: state.settings.ingredientAliases,
-      useUpIngredients: state.useUpIngredients, dayNotes: state.dayNotes, dinnerAttendance: state.dinnerAttendance,
-      recipePreferenceScores: autoPlannerPreferenceScores, recipeReactions, excludedRecipeIds: activeShop.excludedRecipeIds, variationSeed: Date.now() });
-    applyAutoDinnerPlan(plan);
-    setGuidedPlanMessage([`${plan.entries.length} dinners added.`, ...plan.warnings].join(" "));
-  }
-
   function removeGuidedMeal(id: string) {
     updateState(current => removeMealFromPlan(current, id, true));
   }
@@ -3213,11 +3203,11 @@ export default function Home() {
         </header>
 
         {activeView === "guided" && state.guidedShop && <>
-          {guidedPlanMessage && state.guidedShop.step === 1 && <p className="shop-notice" role="status">{guidedPlanMessage}</p>}
           <GuidedShopView state={state} updateState={updateState} onDates={applyShoppingDates}
             onOpenMeal={(date, slot) => { setMealPicker({ date, slot }); setMealPickerQuery(""); }}
             onSwap={meal => { setMealPicker({ date: meal.date, slot: meal.slot, replaceMealId: meal.id }); setMealPickerQuery(""); }}
-            onGenerate={fillGuidedDinners} onRemove={removeGuidedMeal}
+            onRemove={removeGuidedMeal} preferenceScores={autoPlannerPreferenceScores} reactions={recipeReactions} onOpenRecipe={setSelectedRecipeId}
+            suggestions={suggestUseUpRecipes(state.recipes.filter(recipe => recipe.mealTypes.includes("dinner")), state.useUpIngredients, state.settings.ingredientAliases, recipeReactions, autoPlannerPreferenceScores).suggestions}
             renderMeal={meal => <MobileMealCard key={meal.id} meal={meal} recipe={state.recipes.find(recipe => recipe.id === meal.recipeId)}
               days={shopDates(shoppingStartDate, shoppingEndDate).map(date => new Date(`${date}T12:00:00`))} visibleSlots={mealSlots}
               ingredientAliases={state.settings.ingredientAliases} recipeFrequency={recipeFrequencies[meal.recipeId ?? ""] ?? 0}

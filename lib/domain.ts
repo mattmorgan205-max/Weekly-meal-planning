@@ -105,6 +105,7 @@ export type GuidedShop = {
   supplyChecks: Record<string, SupplyCheck>;
   basketChecks: Record<string, string>;
   excludedRecipeIds: string[];
+  unplannedMeals?: PlannedMeal[];
   finalizedSignature?: string;
   finalizedAt?: string;
   completedAt?: string;

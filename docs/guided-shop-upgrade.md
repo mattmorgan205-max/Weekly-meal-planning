@@ -1,7 +1,7 @@
 # guided shop upgrade
 
 Status: Implemented locally on 21 November 2026; ready for deployment after verification.
-Updated: 21 November 2026.
+Updated: 22 November 2026.
 
 ## Purpose and confirmed decisions
 
@@ -130,3 +130,13 @@ Inspect the current code again before implementation because other app work will
 - The regression runner is `npm run test:guided-shop`; existing planner, common-extra and shopping-improvement suites remain applicable.
 
 Provide the exact commands needed to commit, push and deploy changes. Do not commit, push or deploy automatically without authorisation.
+
+## Desktop layout update
+
+- Dates and diners uses a Monday-first mini-month calendar with two-click range selection, month navigation, a persistent today marker, and 7/14-day presets. Apply dates retains the existing date-change safeguards; pending dates must be applied or cancelled before continuing.
+- A compact attendance schedule sits beside the calendar. Per-day diner checkboxes, comments and totals stay visible; portion overrides, guests and household settings expand on demand.
+- Meals uses a left-hand planning panel and a right-hand list of shopping days. The left panel includes use-up matches and the same engine/options as Planner: date range, fill or replace, preview, another mix, removal/refill, balance/warnings and apply.
+- Meal handles support dragging from suggestions or Unscheduled into days, between days, and back to Unscheduled. The handles also open a day chooser for keyboard and touch use.
+- Moving between two occupied days swaps meals after validating both destinations. New suggestions and multi-meal replacements park displaced dinners, rather than deleting them. Diner-controlled portions and sides rescale; manual overrides are retained.
+- After placing an individual preview suggestion, remaining preview meals are saved in Unscheduled. Unscheduled meals persist with the household snapshot, do not contribute shopping ingredients, and carry into the next shop.
+- Existing Planner and Shopping layouts, filters, extras and Asda behaviour are unchanged. No new database migration or dependency is required.
