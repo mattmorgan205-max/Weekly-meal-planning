@@ -1,5 +1,5 @@
 import { addDays, createId, formatDateKey, type AppState, type PlannedMeal, type Recipe } from "./domain";
-import { attendancePortions, dinnerNeedsMeal, recipeAllowedForDinner, scaleMealPortions, shopDates } from "./guided-shop";
+import { attendanceForSlot, attendancePortions, dinnerNeedsMeal, recipeAllowedForDinner, scaleMealPortions, shopDates } from "./guided-shop";
 import type { AutoDinnerPlanEntry, AutoDinnerPlanResult } from "./dinner-planner";
 
 export function calendarDays(month: string) {
@@ -56,7 +56,7 @@ export function mealFromDinnerEntry(entry: AutoDinnerPlanEntry, fallback: number
 function destinationError(state: AppState, meal: PlannedMeal, date: string, slot: GuidedMealSlot) {
   const shop = state.guidedShop;
   if (!shop || !shopDates(shop.startDate, shop.endDate).includes(date)) return "Choose a day in this shop.";
-  if (slot === "dinner" && !dinnerNeedsMeal(state.dinnerAttendance?.[date])) return "This day is marked as no dinner needed.";
+  if (!dinnerNeedsMeal(attendanceForSlot(state, date, slot))) return `No ${slot} diners selected. Choose diners first.`;
   const recipe = state.recipes.find(row => row.id === meal.recipeId);
   if (meal.recipeId && !recipe) return "This recipe is no longer available.";
   if (slot === "dinner" && recipe && !recipeAllowedForDinner(recipe, date, state.dinnerAttendance, state.dayNotes)) return "This meal does not match the diners on that day.";
@@ -85,9 +85,8 @@ export function placeGuidedMeal(state: AppState, source: GuidedMealSource, date:
   }
   const move = (row: PlannedMeal, day: string, destinationSlot: GuidedMealSlot): PlannedMeal => {
     const leftover = row.notes === "Leftovers" && row.peopleCount === 0;
-    const dinerPortions = !leftover && destinationSlot === "dinner" && (row.portionSource === "diners" || row.slot !== "dinner");
-    const portions = dinerPortions ? attendancePortions(state.dinnerAttendance?.[day], state.settings.defaultPeople) + (row.extraPortions ?? 0)
-      : destinationSlot === "lunch" && source.kind === "new" && row.id === meal.id ? state.settings.defaultPeople : row.peopleCount;
+    const dinerPortions = !leftover && (row.portionSource === "diners" || (destinationSlot === "dinner" && row.slot !== "dinner" && row.portionSource !== "manual"));
+    const portions = dinerPortions ? attendancePortions(attendanceForSlot(state, day, destinationSlot), state.settings.defaultPeople) + (row.extraPortions ?? 0) : row.peopleCount;
     return { ...scaleMealPortions(row, portions), date: day, slot: destinationSlot,
       portionSource: dinerPortions ? "diners" : "manual" };
   };

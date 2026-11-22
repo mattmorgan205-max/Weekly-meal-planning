@@ -233,6 +233,7 @@ export type AppState = {
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
   settings: AppSettings;
   dinnerAttendance?: Record<string, DinnerAttendance>;
+  lunchAttendance?: Record<string, DinnerAttendance>;
   guidedShop?: GuidedShop;
 };
 

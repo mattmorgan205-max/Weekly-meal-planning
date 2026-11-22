@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Check, X } from "lucide-react";
 import { addDays, formatDateKey, type GuidedShop, type PlannedMeal } from "@/lib/domain";
-import { shopDates } from "@/lib/guided-shop";
 import { calendarDays, calendarRange } from "@/lib/guided-planning";
 
 const label = (date: string) => new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${date}T12:00:00`));
@@ -55,7 +54,7 @@ export function ShopCalendar({ shop, plannedMeals, extrasCount, onApply, onPendi
         <span className="calendar-day-number">{Number(date.slice(-2))}</span><span className="calendar-meal-dots" aria-hidden="true">{mealsOn(date).map(slot => <i key={slot} className={`meal-dot ${slot}`} />)}</span></button>)}
     </div>
     <div className="calendar-meal-legend"><span><i className="meal-dot lunch" />Lunch</span><span><i className="meal-dot dinner" />Dinner</span></div>
-    <div className="calendar-range-summary" aria-live="polite"><small>{anchor ? "End date" : `${shopDates(start, end).length} shopping days`}</small><strong>{label(start)}{end !== start ? ` - ${label(end)}` : ""}</strong></div>
+    {anchor && <p className="muted" role="status">Select the end date</p>}
     {error && <p className="shop-warning" role="alert">{error}</p>}
     {pending && <div className="calendar-apply"><small>{extrasCount} extras kept. Meals and notes stay on their dates.</small><div className="button-row">
       <button type="button" className="primary-button" disabled={Boolean(anchor)} onClick={() => { onApply(start, end); onPending?.(false); }}><Check size={16} />Apply dates</button>

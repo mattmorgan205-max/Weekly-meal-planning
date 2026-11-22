@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Check, Copy, Plus, Settings, Trash2, Undo2, UserMinus } from "lucide-react";
-import { addDays, createId, formatDateKey, groceryCategories, type AppState, type DinnerAttendance, type GuidedShop, type HouseholdDiner, type MealSlot, type PlannedMeal, type RecipeReaction, type ShoppingListItem, type SupplyCheck } from "@/lib/domain";
-import { attendancePortions, changeDiners as updateDiners, createShop, defaultAttendance, guidedSteps, requiredShopItems, requirementSignature, resolveShop, setAttendance, shopDates, shopIsFinalized, type SupplyResult } from "@/lib/guided-shop";
+import { ArrowLeft, ArrowRight, Check, Copy, Plus, Settings, Trash2 } from "lucide-react";
+import { addDays, createId, formatDateKey, groceryCategories, type AppState, type GuidedShop, type HouseholdDiner, type MealSlot, type PlannedMeal, type RecipeReaction, type ShoppingListItem, type SupplyCheck } from "@/lib/domain";
+import { changeDiners as updateDiners, createShop, guidedSteps, requiredShopItems, requirementSignature, resolveShop, shopDates, shopIsFinalized, type SupplyResult } from "@/lib/guided-shop";
 import { ShopCalendar } from "./shop-calendar";
 import { GuidedMealWorkspace } from "./guided-meal-workspace";
 import { GuidedMealCalendar } from "./guided-meal-calendar";
+import { DinerCalendar } from "./diner-calendar";
 
 type UpdateState = (updater: (current: AppState) => AppState) => void;
 const dateLabel = (date: string) => new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
@@ -44,36 +45,6 @@ export function HouseholdDinersEditor({ diners, onChange }: { diners: HouseholdD
   </details>;
 }
 
-function AttendanceRow({ date, diners, attendance, note, onChange, onNote, onApplyAll, compact = false }: {
-  date: string; diners: HouseholdDiner[]; attendance: DinnerAttendance; note: string;
-  onChange: (value: DinnerAttendance) => void; onNote: (value: string) => void; onApplyAll: () => void;
-  compact?: boolean;
-}) {
-  const update = (patch: Partial<DinnerAttendance>) => {
-    const next = { ...attendance, ...patch, confirmed: true };
-    next.sophiaEating = diners.some(diner => diner.name.trim().toLowerCase() === "sophia" && (next.portions[diner.id] ?? 0) > 0);
-    onChange(next);
-  };
-  return <div className="attendance-row">
-    <div className="attendance-heading"><strong>{dateLabel(date)}</strong><span>{attendancePortions(attendance, 0)} portions</span>
-      {!attendance.confirmed && <button className="text-button" type="button" onClick={() => update({})}><Check size={14} />Confirm diners</button>}
-      <button type="button" className="icon-button" title={`Apply ${dateLabel(date)} diners to all days`} onClick={onApplyAll}><Copy size={15} /></button>
-    </div>
-    <details className={compact ? "attendance-details" : "attendance-details expanded"} open={!compact}>
-    <summary>{diners.filter(diner => (attendance.portions[diner.id] ?? 0) > 0).map(diner => diner.name).join(", ") || "No household diners"}{attendance.guests > 0 ? ` + ${attendance.guests} guest portions` : ""}</summary>
-    <div className="attendance-people">{diners.map(diner => <div className="attendance-person" key={diner.id}>
-      <label className="toggle-line"><input type="checkbox" checked={Object.hasOwn(attendance.portions, diner.id)} onChange={event => {
-        const portions = { ...attendance.portions }; if (event.target.checked) portions[diner.id] = diner.portions; else delete portions[diner.id]; update({ portions });
-      }} />{diner.name || "Unnamed diner"}</label>
-      {Object.hasOwn(attendance.portions, diner.id) && <input type="number" min="0" max="20" step="0.25" aria-label={`${diner.name} portions on ${date}`} value={attendance.portions[diner.id]}
-        onChange={event => update({ portions: { ...attendance.portions, [diner.id]: Math.max(0, Number(event.target.value)) } })} />}
-    </div>)}
-      <label className="guest-portions">Guest portions<input type="number" min="0" max="50" step="0.5" value={attendance.guests} onChange={event => update({ guests: Math.max(0, Number(event.target.value)) })} /></label>
-    </div></details>
-    <label className="attendance-note">Day comment<input value={note} placeholder="Add comment" aria-label={`Day comment for ${date}`} onChange={event => onNote(event.target.value)} /></label>
-  </div>;
-}
-
 export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onRemove, onAddLeftovers, extras, supplies, review, suggestions, preferenceScores, reactions, onOpenRecipe }: {
   state: AppState; updateState: UpdateState; onDates: (start: string, end: string) => void;
   onOpenMeal: (date: string, slot: MealSlot) => void; onAddLeftovers: (meal: PlannedMeal) => void;
@@ -83,23 +54,14 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onRemo
   preferenceScores: Record<string, number>; reactions: Record<string, RecipeReaction>; onOpenRecipe: (id: string) => void;
 }) {
   const shop = state.guidedShop!, diners = state.settings.diners ?? [], dates = shopDates(shop.startDate, shop.endDate);
-  const [applyAllDate, setApplyAllDate] = useState<string | null>(null);
   const [newShop, setNewShop] = useState(false);
   const [pendingDates, setPendingDates] = useState(false);
-  const [expandedDate, setExpandedDate] = useState<string | null>(null);
-  const [clearedDiners, setClearedDiners] = useState<Record<string, DinnerAttendance>>({});
   const step = Math.min(4, Math.max(0, shop.step));
   const finalised = shopIsFinalized(requiredShopItems(state, shop), shop);
-  const today = formatDateKey(new Date());
-  const attendanceFor = (date: string) => state.dinnerAttendance?.[date] ?? defaultAttendance(diners);
   const setStep = (value: number) => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, step: value } }));
   function changeDiners(next: HouseholdDiner[]) {
     updateState(current => updateDiners(current, next));
   }
-  const renderAttendance = (date: string) => <AttendanceRow date={date} diners={diners} attendance={attendanceFor(date)} note={state.dayNotes[date] ?? ""} compact={step === 1}
-    onChange={value => updateState(current => setAttendance(current, date, value))}
-    onNote={value => updateState(current => ({ ...current, dayNotes: { ...current.dayNotes, [date]: value } }))}
-    onApplyAll={() => setApplyAllDate(date)} />;
   return <div className="guided-shop view-stack">
     <div className="guided-shop-heading"><div><strong>{dateLabel(shop.startDate)} to {dateLabel(shop.endDate)}</strong><span className="muted">{shop.completedAt && finalised ? "Shopping complete" : finalised ? "List prepared" : shop.finalizedAt ? "List needs updating" : "Shop in progress"}</span></div>
       <button className="text-button" type="button" onClick={() => setNewShop(true)}><Plus size={16} />New shop</button></div>
@@ -111,39 +73,12 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onRemo
     {step > 1 && <h2 tabIndex={-1}>{guidedSteps[step]}</h2>}
     {step === 0 && <div className="guided-dates-workspace">
       <ShopCalendar key={`${shop.startDate}:${shop.endDate}`} shop={shop} plannedMeals={state.plannedMeals} extrasCount={state.manualShoppingItems.filter(item => item.shoppingRangeKey === `${shop.startDate}__${shop.endDate}`).length} onApply={onDates} onPending={setPendingDates} />
-      <section className="guided-diners-schedule" aria-label="Dinner attendance">
-        <div className="guided-tool-heading"><h3>Who is eating?</h3><button type="button" className="text-button" onClick={() => updateState(current => dates.reduce((next, date) => setAttendance(next, date, { ...(next.dinnerAttendance?.[date] ?? defaultAttendance(diners)), confirmed: true }), current))}><Check size={15} />Confirm all</button></div>
-        <div className="diner-schedule-heading" aria-hidden="true"><span>Dinner</span><span>Diners</span><span>Day comment</span><span>Portions</span></div>
-        {dates.map(date => { const attendance = attendanceFor(date); return <div key={date} className={`diner-schedule-day ${date === today ? "is-today" : ""}`} aria-current={date === today ? "date" : undefined}>
-          <div className="diner-schedule-row"><div className="diner-schedule-date"><strong>{dateLabel(date)}</strong>{date === today && <small>Today</small>}</div>
-            <div className="diner-schedule-people">{diners.map(diner => <label key={diner.id} className={Object.hasOwn(attendance.portions, diner.id) ? "selected" : ""}><input type="checkbox" aria-label={`${diner.name} eating on ${date}`} checked={Object.hasOwn(attendance.portions, diner.id)} onChange={event => {
-              const portions = { ...attendance.portions }; if (event.target.checked) portions[diner.id] = diner.portions; else delete portions[diner.id];
-              updateState(current => setAttendance(current, date, { ...attendance, portions, confirmed: true, sophiaEating: diners.some(row => row.name.trim().toLowerCase() === "sophia" && (portions[row.id] ?? 0) > 0) }));
-            }} />{diner.name}</label>)}</div>
-            <input className="diner-schedule-note" aria-label={`Day comment for ${date}`} placeholder="Add comment" value={state.dayNotes[date] ?? ""} onChange={event => updateState(current => ({ ...current, dayNotes: { ...current.dayNotes, [date]: event.target.value } }))} />
-            <div className="diner-schedule-portions"><span title={attendance.confirmed ? "Diners confirmed" : "Diners not yet confirmed"}>{attendance.confirmed && <Check size={13} />}{attendancePortions(attendance, 0)}</span>
-              {clearedDiners[date] && attendancePortions(attendance, 0) === 0 ? <button className="icon-button" type="button" title={`Undo clear diners for ${dateLabel(date)}`} onClick={() => {
-                updateState(current => setAttendance(current, date, clearedDiners[date]));
-                setClearedDiners(current => { const next = { ...current }; delete next[date]; return next; });
-              }}><Undo2 size={15} /></button> : <button className="icon-button" type="button" title={`Clear all diners for ${dateLabel(date)}`} disabled={!Object.keys(attendance.portions).length && attendance.guests === 0} onClick={() => {
-                setClearedDiners(current => ({ ...current, [date]: attendance }));
-                updateState(current => setAttendance(current, date, { ...attendance, portions: {}, guests: 0, sophiaEating: false, confirmed: true }));
-              }}><UserMinus size={15} /></button>}
-              <button className="icon-button" type="button" title={`Edit portions and guests for ${dateLabel(date)}`} aria-expanded={expandedDate === date} onClick={() => setExpandedDate(expandedDate === date ? null : date)}><Settings size={15} /></button></div>
-          </div>{expandedDate === date && <div className="diner-schedule-expanded">{renderAttendance(date)}</div>}
-        </div>; })}
-        <HouseholdDinersEditor diners={diners} onChange={changeDiners} />
-      </section>
+      {!pendingDates && dates.length > 0 && <DinerCalendar key={shop.startDate + ":" + shop.endDate} state={state} updateState={updateState}><HouseholdDinersEditor diners={diners} onChange={changeDiners} /></DinerCalendar>}
     </div>}
     {step === 1 && <GuidedMealWorkspace key={`${shop.id}:${shop.startDate}:${shop.endDate}`} state={state} updateState={updateState} suggestions={suggestions} preferenceScores={preferenceScores} reactions={reactions} onOpenRecipe={onOpenRecipe}>
       {controls => <GuidedMealCalendar state={state} updateState={updateState} controls={controls} onOpenMeal={onOpenMeal} onOpenRecipe={onOpenRecipe} onRemove={onRemove} onAddLeftovers={onAddLeftovers} />}
     </GuidedMealWorkspace>}
     {step === 2 && extras}{step === 3 && supplies}{step === 4 && review}
-    {applyAllDate && <div className="modal-backdrop"><section className="modal small-modal" role="dialog" aria-modal="true" aria-label="Apply diners to all days">
-      <h2>Use these diners for every dinner?</h2><p>Individual day selections in this shop will be replaced. Comments stay unchanged.</p>
-      <div className="button-row"><button className="primary-button" type="button" onClick={() => { const source = attendanceFor(applyAllDate); updateState(current => dates.reduce((next, date) => setAttendance(next, date, { ...source, confirmed: true, dinnerStatus: next.dinnerAttendance?.[date]?.dinnerStatus }), current)); setApplyAllDate(null); }}>Apply to all days</button>
-        <button className="text-button" type="button" onClick={() => setApplyAllDate(null)}>Cancel</button></div>
-    </section></div>}
     <footer className="guided-footer"><button type="button" className="icon-text-button" disabled={step === 0} onClick={() => setStep(step - 1)}><ArrowLeft size={16} />Back</button>
       {step < 4 && <button type="button" className="primary-button" disabled={pendingDates} onClick={() => setStep(step + 1)}>{guidedSteps[step + 1]}<ArrowRight size={16} /></button>}
     </footer>

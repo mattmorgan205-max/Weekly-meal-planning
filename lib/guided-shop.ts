@@ -47,9 +47,18 @@ export function scaleMealPortions(meal: PlannedMeal, portions: number): PlannedM
     ...ingredient, quantity: typeof ingredient.quantity === "number" && previous && next > 0 ? ingredient.quantity * next / previous : ingredient.quantity
   })) };
 }
-export function setAttendance(state: AppState, date: string, attendance: DinnerAttendance): AppState {
-  return { ...state, dinnerAttendance: { ...state.dinnerAttendance, [date]: attendance }, plannedMeals: state.plannedMeals.map(meal =>
-    meal.date === date && meal.slot === "dinner" && meal.portionSource === "diners"
+export function attendanceForSlot(state: AppState, date: string, slot: "lunch" | "dinner"): DinnerAttendance {
+  const saved = (slot === "lunch" ? state.lunchAttendance : state.dinnerAttendance)?.[date];
+  if (saved) return saved;
+  // Older planned lunches keep their requirements until attendance is explicitly changed.
+  if (slot === "dinner" || state.plannedMeals.some(meal => meal.date === date && meal.slot === "lunch")) return defaultAttendance(state.settings.diners ?? defaultDiners(state.settings.defaultPeople));
+  return { confirmed: true, portions: {}, guests: 0, sophiaEating: false };
+}
+
+export function setAttendance(state: AppState, date: string, attendance: DinnerAttendance, slot: "lunch" | "dinner" = "dinner"): AppState {
+  const key = slot === "lunch" ? "lunchAttendance" : "dinnerAttendance";
+  return { ...state, [key]: { ...state[key], [date]: { ...attendance, portions: { ...attendance.portions } } }, plannedMeals: state.plannedMeals.map(meal =>
+    meal.date === date && meal.slot === slot && meal.portionSource === "diners" && meal.notes !== "Leftovers"
       ? scaleMealPortions(meal, dinnerNeedsMeal(attendance) ? attendancePortions(attendance, state.settings.defaultPeople) + (meal.extraPortions ?? 0) : 0) : meal) };
 }
 
@@ -63,6 +72,14 @@ export function removeMealFromPlan(state: AppState, id: string, excludeRecipe = 
   return { ...state, dinnerAttendance, plannedMeals: state.plannedMeals.filter(row => row.id !== id),
     guidedShop: excludeRecipe && meal.recipeId && state.guidedShop ? { ...state.guidedShop,
       excludedRecipeIds: Array.from(new Set([...state.guidedShop.excludedRecipeIds, meal.recipeId])) } : state.guidedShop };
+}
+
+export function copyAttendanceToDates(state: AppState, sourceDate: string, slot: "lunch" | "dinner", targets: string[]): AppState {
+  const source = attendanceForSlot(state, sourceDate, slot);
+  const allowed = state.guidedShop ? shopDates(state.guidedShop.startDate, state.guidedShop.endDate) : [];
+  return [...new Set(targets)].filter(date => allowed.includes(date)).reduce((next, date) => setAttendance(next, date, {
+    ...source, confirmed: true, dinnerStatus: attendanceForSlot(next, date, slot).dinnerStatus
+  }, slot), state);
 }
 
 export function createShop(startDate: string, endDate: string, id = createId("shop")): GuidedShop {
@@ -79,7 +96,7 @@ function shoppingItemsForMeals(state: AppState, shop: GuidedShop, meals: Planned
 
 export function requiredShopItems(state: AppState, shop: GuidedShop) {
   const dinnersIncluded = state.plannedMeals.filter(meal => meal.date >= shop.startDate && meal.date <= shop.endDate
-    && (meal.slot !== "dinner" || dinnerNeedsMeal(state.dinnerAttendance?.[meal.date])));
+    && ((meal.slot !== "dinner" && meal.slot !== "lunch") || dinnerNeedsMeal(attendanceForSlot(state, meal.date, meal.slot))));
   return shoppingItemsForMeals(state, shop, [...dinnersIncluded, ...snackShoppingMeals(shop)]);
 }
 
@@ -136,11 +153,11 @@ export function shopIsFinalized(items: ShoppingListItem[], shop: GuidedShop) { r
 
 export function changeDiners(state: AppState, diners: HouseholdDiner[]): AppState {
   let next: AppState = { ...state, settings: { ...state.settings, diners } };
-  for (const [date, attendance] of Object.entries(state.dinnerAttendance ?? {})) {
+  for (const slot of ["lunch", "dinner"] as const) for (const [date, attendance] of Object.entries((slot === "lunch" ? state.lunchAttendance : state.dinnerAttendance) ?? {})) {
     const portions = Object.fromEntries(Object.entries(attendance.portions).filter(([id]) => diners.some(diner => diner.id === id)));
     const updated = attendance.confirmed ? { ...attendance, portions } : { ...defaultAttendance(diners), dinnerStatus: attendance.dinnerStatus };
     updated.sophiaEating = diners.some(diner => diner.name.trim().toLowerCase() === "sophia" && (updated.portions[diner.id] ?? 0) > 0);
-    next = setAttendance(next, date, updated);
+    next = setAttendance(next, date, updated, slot);
   }
   return next;
 }

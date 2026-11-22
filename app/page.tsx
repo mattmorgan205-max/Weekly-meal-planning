@@ -129,7 +129,7 @@ import { assignSnackGroup, defaultSnackGroups, snackColumn } from "@/lib/snacks"
 import { BatchRecipeGroups } from "@/components/batch-recipe-groups";
 import { BatchExtras } from "@/components/batch-extras";
 import { createManualShoppingItemFromLine, oldestShoppingAddFirst } from "@/lib/shopping-extras";
-import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
+import { addedShopExtras, attendanceForSlot, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -1543,8 +1543,8 @@ export default function Home() {
             date,
             slot,
             recipeId,
-            peopleCount: slot === "dinner" ? attendancePortions(current.dinnerAttendance?.[date] ?? defaultAttendance(current.settings.diners ?? []), current.settings.defaultPeople) : current.settings.defaultPeople,
-            portionSource: slot === "dinner" ? "diners" as const : "manual" as const,
+            peopleCount: slot === "dinner" || (slot === "lunch" && current.lunchAttendance?.[date]) ? attendancePortions(attendanceForSlot(current, date, slot), current.settings.defaultPeople) : current.settings.defaultPeople,
+            portionSource: slot === "dinner" || slot === "lunch" ? "diners" as const : "manual" as const,
             selectedIngredientIds: [],
             extraSideIngredients: []
           }
@@ -1578,7 +1578,11 @@ export default function Home() {
         let target: { date: string; slot: MealSlot } | null = null;
 
         for (const date of displayedDates) {
-          const availableSlot = candidateSlots.find((slot) => !occupiedSlots.has(`${date}:${slot}`) && (slot !== "dinner" || recipeAllowedForDinner(recipe, date, current.dinnerAttendance, current.dayNotes)));
+          const availableSlot = candidateSlots.find((slot) =>
+            !occupiedSlots.has(`${date}:${slot}`) &&
+            (slot !== "dinner" || recipeAllowedForDinner(recipe, date, current.dinnerAttendance, current.dayNotes)) &&
+            (slot !== "lunch" || dinnerNeedsMeal(current.lunchAttendance?.[date]))
+          );
           if (availableSlot) {
             target = { date, slot: availableSlot };
             break;
@@ -1592,8 +1596,12 @@ export default function Home() {
           date: selectedTarget.date,
           slot: selectedTarget.slot,
           recipeId,
-          peopleCount: selectedTarget.slot === "dinner" ? attendancePortions(current.dinnerAttendance?.[selectedTarget.date], current.settings.defaultPeople) : current.settings.defaultPeople,
-          portionSource: selectedTarget.slot === "dinner" ? "diners" : "manual",
+          peopleCount: selectedTarget.slot === "dinner"
+            ? attendancePortions(attendanceForSlot(current, selectedTarget.date, "dinner"), current.settings.defaultPeople)
+            : selectedTarget.slot === "lunch"
+              ? attendancePortions(current.lunchAttendance?.[selectedTarget.date], current.settings.defaultPeople)
+              : current.settings.defaultPeople,
+          portionSource: selectedTarget.slot === "dinner" || selectedTarget.slot === "lunch" ? "diners" : "manual",
           notes: "Uses food already at home"
         });
         occupiedSlots.add(`${selectedTarget.date}:${selectedTarget.slot}`);
@@ -1673,7 +1681,7 @@ export default function Home() {
   function movePlannedMeal(id: string, date: string, slot: MealSlot) {
     updateState((current) => ({
       ...current,
-      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...(meal.portionSource === "diners" && slot === "dinner" ? scaleMealPortions(meal, attendancePortions(current.dinnerAttendance?.[date], current.settings.defaultPeople) + (meal.extraPortions ?? 0)) : meal), date, slot } : meal))
+      plannedMeals: current.plannedMeals.map((meal) => (meal.id === id ? { ...(meal.portionSource === "diners" && meal.notes !== "Leftovers" && (slot === "dinner" || slot === "lunch") ? scaleMealPortions(meal, dinnerNeedsMeal(attendanceForSlot(current, date, slot)) ? attendancePortions(attendanceForSlot(current, date, slot), current.settings.defaultPeople) + (meal.extraPortions ?? 0) : 0) : meal), date, slot } : meal))
     }));
   }
 

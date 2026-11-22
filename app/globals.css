@@ -3451,7 +3451,7 @@ h3 {
   .snack-choice { padding-inline: 0; }
   .snack-selections .section-heading .icon-text-button { min-height: 36px; font-size: 0.85rem; }
 }
-.guided-dates-workspace { display: grid; grid-template-columns: 264px minmax(0, 740px); gap: 24px; align-items: start; }
+.guided-dates-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: 24px; align-items: start; }
 .guided-shop .guided-tool-heading, .calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
 .guided-tool-heading h3, .calendar-heading h3 { margin: 0; }
 .guided-tool-heading > span { color: var(--muted); font-size: 0.8rem; }
@@ -3508,7 +3508,7 @@ h3 {
 .diner-schedule-portions .icon-button { min-height: 30px; height: 30px; width: 28px; border: 0; background: transparent; padding: 0; }
 .diner-schedule-expanded { padding: 12px; background: #f0f4f2; border-block: 1px solid var(--line); }
 .guided-diners-schedule .shop-diners-settings { margin-top: 18px; border-bottom: 0; }
-.guided-meal-workspace { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 18px; align-items: start; }
+.guided-meal-workspace { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: 24px; align-items: start; }
 .guided-selected-days { min-width: 0; }
 .guided-unscheduled > summary { font-weight: 650; cursor: pointer; }
 .modal-backdrop:has(.batch-groups-dialog), .modal-backdrop:has(.guided-place-dialog) { z-index: 60; }
@@ -3537,13 +3537,31 @@ h3 {
 }
 .meal-calendar-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; font-size: 0.85rem; }
 .meal-calendar-scroll { overflow-x: auto; padding: 2px; scrollbar-width: thin; }
-.meal-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 700px; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+.meal-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 672px; gap: 1px; background: var(--line); border: 1px solid var(--line); }
 .meal-calendar-weekday { background: #fff; padding: 8px 4px; text-align: center; font-size: 0.8rem; font-weight: 650; }
 .meal-calendar-day { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; background: #f4f5f3; min-width: 0; padding: 6px; }
 .meal-calendar-day.is-shopping-day { background: #edf5ef; }
 .meal-calendar-day.is-today { outline: 2px solid #ae741b; outline-offset: -2px; }
 .meal-calendar-day > header { display: flex; justify-content: space-between; align-items: center; gap: 3px; min-height: 22px; font-size: 0.8rem; font-weight: 650; }
 .meal-calendar-day > header > span { color: #85560c; font-size: 0.72rem; }
+.diner-calendar-day > header { flex-wrap: wrap; }
+.diner-calendar-day .icon-button { min-height: 24px; height: 24px; width: 24px; padding: 0; border: 0; background: transparent; }
+.diner-calendar-day > header .icon-button { margin-left: auto; }
+.diner-calendar-slot { padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.diner-calendar-slot.lunch { background: #f4f7fb; }
+.diner-calendar-slot-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 3px; font-size: 0.75rem; margin-bottom: 5px; }
+.diner-calendar-slot-heading span, .diner-calendar-slot > small { font-size: 0.68rem; color: var(--muted); }
+.diner-calendar-people { display: grid; gap: 4px; }
+.diner-calendar-people label { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-wrap: anywhere; font-size: 0.75rem; line-height: 1.2; }
+.diner-calendar-people input, .diner-copy-days input { width: 14px; height: 14px; min-height: 0; flex-shrink: 0; margin: 0; accent-color: #226b55; }
+.diner-calendar-actions { display: flex; justify-content: flex-end; gap: 0; margin-top: 3px; }
+.diner-calendar-comment textarea { width: 100%; min-width: 0; min-height: 42px; resize: vertical; padding: 5px 3px; font-size: 0.72rem; background: transparent; border-color: transparent; }
+.diner-calendar-comment textarea:focus { background: white; border-color: var(--line); }
+.diner-dialog-backdrop { z-index: 60; }
+.diner-copy-dialog { width: min(480px, 100%); }
+.diner-copy-days { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.diner-copy-days label { display: flex; align-items: center; gap: 6px; }
+.meal-slot-diners { display: block; color: #53665a; font-size: 0.68rem; line-height: 1.25; overflow-wrap: anywhere; margin-bottom: 5px; }
 .meal-calendar-day-meta { min-height: 34px; margin: 3px 0 6px; }
 .meal-calendar-day-meta small, .meal-calendar-day-meta p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 0.72rem; line-height: 1.3; margin: 0; overflow-wrap: anywhere; }
 .meal-calendar-day-meta small { color: #53665a; }
@@ -3630,7 +3648,7 @@ h3 {
 .guided-destination-list button:hover:not(:disabled) { background: #e9f4ee; }
 @media (min-width: 1001px) and (max-width: 1250px) {
   .guided-dates-workspace { grid-template-columns: 250px minmax(0, 1fr); gap: 22px; }
-  .guided-meal-workspace { grid-template-columns: 210px minmax(0, 1fr); gap: 14px; }
+  .guided-meal-workspace { grid-template-columns: 250px minmax(0, 1fr); gap: 22px; }
   .diner-schedule-heading, .diner-schedule-row { grid-template-columns: 70px minmax(90px, 1fr) minmax(80px, 0.8fr) 90px; gap: 6px; }
   .guided-selected-days .attendance-row { grid-template-columns: 1fr; }
 }
