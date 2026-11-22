@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Minus, Plus, Search } from "lucide-react";
+import { Check, Minus, Plus, Search, Settings } from "lucide-react";
 import { displayQuantity, type AppState } from "@/lib/domain";
 import { defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "@/lib/snacks";
 
-export function SnackSelections({ state, updateState, onAddRecipe, onOpenRecipe }: {
+export function SnackSelections({ state, updateState, onAddRecipe, onOpenRecipe, onManageGroups }: {
   state: AppState; updateState: (updater: (state: AppState) => AppState) => void;
   onAddRecipe: (group: string) => void; onOpenRecipe: (id: string) => void;
+  onManageGroups: () => void;
 }) {
   const [searches, setSearches] = useState<Record<string, string>>({});
   const [activeGroup, setActiveGroup] = useState(defaultSnackGroups[0]);
@@ -16,7 +17,7 @@ export function SnackSelections({ state, updateState, onAddRecipe, onOpenRecipe 
   const unassigned = state.recipes.filter(recipe => !snackColumn(recipe.snackGroup) && (recipe.snackGroup?.trim() || recipe.mealTypes.includes("snack") || selections.some(row => row.recipeId === recipe.id)));
   const update = (recipeId: string, servings: number, ingredientIds?: string[]) => updateState(current => setSnackSelection(current, recipeId, servings, ingredientIds));
   return <section className="snack-selections" aria-label="Snack selections">
-    <div className="section-heading"><span className="muted" role="status">{selections.length} selected for this shop</span></div>
+    <div className="section-heading"><span className="muted" role="status">{selections.length} selected for this shop</span><button className="icon-text-button" type="button" onClick={onManageGroups}><Settings size={16} />Assign columns</button></div>
     <div className="snack-column-tabs" role="tablist" aria-label="Snack columns">{groups.map((group, index) => <button type="button" role="tab" id={`snack-tab-${index}`} aria-controls={`snack-column-${index}`} aria-selected={activeGroup === group.name} tabIndex={activeGroup === group.name ? 0 : -1} key={group.name}
       onKeyDown={event => { const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0; if (!delta) return; event.preventDefault(); const next = (index + delta + groups.length) % groups.length; setActiveGroup(groups[next].name); document.getElementById(`snack-tab-${next}`)?.focus(); }}
       onClick={() => setActiveGroup(group.name)}>{group.name}<small>{selections.filter(row => group.recipes.some(recipe => recipe.id === row.recipeId)).length}</small></button>)}</div>

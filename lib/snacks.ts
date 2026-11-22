@@ -1,12 +1,20 @@
 import type { AppState, GuidedShop, PlannedMeal, Recipe } from "./domain";
 
-export const defaultSnackGroups = ["Snacks", "Sophia lunches", "Puddings & sweet treats", "Smoothies"];
+export const defaultSnackGroups = ["Snacks and smoothies", "Sophia lunches", "Puddings", "Breakfast"];
 
 export function snackColumn(value?: string) {
   const key = value?.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-GB");
   // Preserve assignments made before the four-column picker was introduced.
-  if (key === "puddings") return "Puddings & sweet treats";
+  if (key === "puddings & sweet treats") return "Puddings";
+  if (key === "snacks" || key === "smoothies") return "Snacks and smoothies";
   return defaultSnackGroups.find(name => name.toLocaleLowerCase("en-GB") === key);
+}
+
+export function assignSnackGroup(recipes: Recipe[], ids: string[], group: string, updatedAt = new Date().toISOString()) {
+  const normalized = snackColumn(group);
+  if (group && !normalized) return recipes;
+  const selected = new Set(ids);
+  return recipes.map(recipe => selected.has(recipe.id) ? { ...recipe, snackGroup: normalized, updatedAt } : recipe);
 }
 
 export function snackRecipeGroups(recipes: Recipe[]) {

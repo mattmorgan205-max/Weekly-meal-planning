@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { batchExtraDuplicates, createManualShoppingItemFromLine, oldestShoppingAddFirst, splitManualShoppingLines } from "../lib/shopping-extras";
 import { generateShoppingList, itemsForAsdaHelper, seedState, shoppingItemCategoryKey, shoppingListIncludesExtra, type Recipe, type ShoppingListItem } from "../lib/domain";
 import { emptyRecipeFilters, matchesRecipeFilters } from "../lib/recipe-filters";
+
+test("batch extras preserve quantities and identify existing and repeated items", () => {
+  const lines = splitManualShoppingLines("Milk\n2 onions\n500 g carrots\nMilk");
+  const items = lines.map(line => createManualShoppingItemFromLine(line, "shop")!);
+  assert.equal(items.length, 4); assert.equal(items[1].quantity, 2);
+  assert.equal(items[2].quantity, 500); assert.equal(items[2].unit, "g");
+  assert.ok(items.every(item => item.manual && item.shoppingRangeKey === "shop"));
+  assert.deepEqual(batchExtraDuplicates(items, [createManualShoppingItemFromLine("1 onion", "shop")!], {}), [false, true, false, true]);
+  assert.equal(createManualShoppingItemFromLine("  ", "shop"), null);
+  assert.deepEqual(splitManualShoppingLines("\r\n\n"), []);
+});
+
+test("occasional extras sort never recorded first then oldest shopping date", () => {
+  const rows = [{ id: "recent", name: "Bags", intervalDays: 5, lastAddedAt: "2026-11-20" }, { id: "never", name: "Wipes", intervalDays: 28 }, { id: "old", name: "Soap", intervalDays: 100, lastAddedAt: "2026-08-01" }];
+  assert.deepEqual(oldestShoppingAddFirst(rows).map(row => row.id), ["never", "old", "recent"]);
+  assert.equal(rows[0].id, "recent");
+});
 
 function item(name: string, extra: Partial<ShoppingListItem> = {}): ShoppingListItem {
   return { id: name, name, category: "Other", displayQuantity: "", sourceMeals: [], checked: false, ...extra };

@@ -105,3 +105,9 @@ export function applyGuidedDinnerPreview(state: AppState, plan: AutoDinnerPlanRe
     return placeGuidedMeal(current, { kind: "new", meal: mealFromDinnerEntry(entry, current.settings.defaultPeople) }, entry.date).state;
   }, state);
 }
+
+export function removeDinnerPreviewEntry(plan: AutoDinnerPlanResult, entry: AutoDinnerPlanEntry) {
+  return { ...plan, entries: plan.entries.filter(row => row !== entry), summary: { ...plan.summary,
+    categoryCounts: { ...plan.summary.categoryCounts, [entry.category]: Math.max(0, plan.summary.categoryCounts[entry.category] - 1) },
+    quickCount: plan.summary.quickCount - Number(entry.quick), familiarCount: plan.summary.familiarCount - Number(entry.familiar), recipeDinnerCount: plan.summary.recipeDinnerCount - 1 } };
+}

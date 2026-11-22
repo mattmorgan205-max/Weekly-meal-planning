@@ -125,7 +125,10 @@ import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type Recipe
 import { GuidedShopView, ShopDatesEditor, ShopReviewActions, SupplyCheckList, HouseholdDinersEditor } from "@/components/guided-shop";
 import { SnackSelections } from "@/components/snack-selections";
 import { addLeftoverMeal } from "@/lib/guided-planning";
-import { defaultSnackGroups, snackColumn } from "@/lib/snacks";
+import { assignSnackGroup, defaultSnackGroups, snackColumn } from "@/lib/snacks";
+import { BatchRecipeGroups } from "@/components/batch-recipe-groups";
+import { BatchExtras } from "@/components/batch-extras";
+import { createManualShoppingItemFromLine, oldestShoppingAddFirst } from "@/lib/shopping-extras";
 import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 
@@ -135,7 +138,6 @@ type SyncStatus = "local" | "loading" | "saving" | "saved" | "offline" | "error"
 type MealPickerGroup = MealSlot | "all";
 type RecipeGroupFilter = MealSlot | "all";
 type PhotoCropMode = "whole" | "ingredients" | "method";
-type ManualItemCategory = GroceryCategory | "Auto";
 type MobilePlannerMode = "overview" | "day";
 type MobilePlannerTool = "use-up" | "auto-plan";
 type CloudHouseholdRole = "owner" | "editor" | "viewer";
@@ -501,50 +503,6 @@ function parseNumberInput(value: string) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function splitManualShoppingLines(value: string) {
-  const normalized = value.replace(/\r/g, "\n").trim();
-  if (!normalized) return [];
-
-  const primaryLines = normalized.split(/\n+/);
-  const lines = primaryLines.length === 1 ? primaryLines[0].split(/;|,(?=\s*[A-Za-z])/g) : primaryLines;
-
-  return lines
-    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)]|\[[ x]\])\s*/i, "").trim())
-    .filter(Boolean);
-}
-
-function formatManualQuantity(ingredient: Ingredient) {
-  const quantity =
-    typeof ingredient.quantity === "number"
-      ? Number.isInteger(ingredient.quantity)
-        ? ingredient.quantity.toString()
-        : ingredient.quantity.toFixed(2).replace(/\.?0+$/, "")
-      : "";
-
-  return [quantity, ingredient.unit].filter(Boolean).join(" ");
-}
-
-function createManualShoppingItemFromLine(line: string, shoppingRangeKey: string): ShoppingListItem | null {
-  const cleanedLine = line.trim();
-  if (!cleanedLine) return null;
-
-  const parsed = parseIngredientLine(cleanedLine, { strict: false });
-  const name = parsed.name.trim() || cleanedLine;
-
-  return {
-    id: createId("manual"),
-    shoppingRangeKey,
-    name,
-    canonicalName: canonicalizeIngredientName(name).canonicalName,
-    displayQuantity: formatManualQuantity(parsed),
-    quantity: parsed.quantity,
-    unit: parsed.unit,
-    category: parsed.category || inferCategory(name),
-    sourceMeals: ["Manual"],
-    checked: false,
-    manual: true
-  };
-}
 
 function shoppingPreferenceKey(item: Pick<ShoppingListItem, "name">) {
   return item.name
@@ -1142,6 +1100,7 @@ export default function Home() {
   const shoppingStartDate = activeShop.startDate, shoppingEndDate = activeShop.endDate;
   const [returnToGuided, setReturnToGuided] = useState(false);
   const [returnFromSnackRecipe, setReturnFromSnackRecipe] = useState(false);
+  const [assigningRecipeGroups, setAssigningRecipeGroups] = useState(false);
   useEffect(() => { if (activeView !== "add") setReturnFromSnackRecipe(false); }, [activeView]);
   const [recipeSearch, setRecipeSearch] = useState("");
   const [recipeGroupFilter, setRecipeGroupFilter] = useState<RecipeGroupFilter>("all");
@@ -1162,9 +1121,6 @@ export default function Home() {
   const [tagInput, setTagInput] = useState("");
   const [editingRecipeId, setEditingRecipeId] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState("");
-  const [manualItemName, setManualItemName] = useState("");
-  const [manualItemQuantity, setManualItemQuantity] = useState("");
-  const [manualItemCategory, setManualItemCategory] = useState<ManualItemCategory>("Auto");
   const [manualBulkItems, setManualBulkItems] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
   const [cloudUser, setCloudUser] = useState<string | null>(null);
@@ -2038,6 +1994,15 @@ export default function Home() {
     });
   }
 
+  function batchAssignRecipeGroups(ids: string[], group: string) {
+    const updatedAt = new Date().toISOString();
+    updateState(current => ({ ...current, recipes: assignSnackGroup(current.recipes, ids, group, updatedAt) }));
+    const selected = new Set(ids);
+    void Promise.all(assignSnackGroup(state.recipes, ids, group, updatedAt).filter(recipe => selected.has(recipe.id)).map(syncPublishedRecipe)).catch(error => {
+      setCloudMessage(error instanceof Error ? error.message : "The shared recipe columns could not be updated.");
+    });
+  }
+
   function updateDraftIngredient(id: string, patch: Partial<Ingredient>) {
     const hasCanonicalNamePatch = Object.prototype.hasOwnProperty.call(patch, "canonicalName");
 
@@ -2362,46 +2327,8 @@ export default function Home() {
     }));
   }
 
-  function addManualShoppingItem(event: FormEvent) {
-    event.preventDefault();
-    if (!manualItemName.trim()) return;
-
-    const item: ShoppingListItem = {
-      id: createId("manual"),
-      shoppingRangeKey,
-      name: manualItemName.trim(),
-      canonicalName: canonicalizeIngredientName(manualItemName).canonicalName,
-      displayQuantity: manualItemQuantity.trim(),
-      quantity: parseIngredientLine(`${manualItemQuantity} ${manualItemName}`, { strict: false }).quantity,
-      unit: parseIngredientLine(`${manualItemQuantity} ${manualItemName}`, { strict: false }).unit,
-      category: manualItemCategory === "Auto" ? inferCategory(manualItemName) : manualItemCategory,
-      sourceMeals: ["Manual"],
-      checked: false,
-      manual: true
-    };
-
-    updateState((current) => ({
-      ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, item])
-    }));
-    setManualItemName("");
-    setManualItemQuantity("");
-    setManualItemCategory("Auto");
-  }
-
-  function addBulkManualShoppingItems(event: FormEvent) {
-    event.preventDefault();
-    const newItems = splitManualShoppingLines(manualBulkItems)
-      .map((line) => createManualShoppingItemFromLine(line, shoppingRangeKey))
-      .filter((item): item is ShoppingListItem => Boolean(item));
-
-    if (!newItems.length) return;
-
-    updateState((current) => ({
-      ...current,
-      manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...newItems])
-    }));
-    setManualBulkItems("");
+  function addBulkManualShoppingItems(items: ShoppingListItem[]) {
+    updateState(current => ({ ...current, manualShoppingItems: mergeManualShoppingItems([...current.manualShoppingItems, ...items]) }));
   }
 
   function addCommonManualShoppingItem(itemName: string, extraQuantity?: string) {
@@ -3135,11 +3062,11 @@ export default function Home() {
     supplies={supplies} reviewActions={reviewActions} onApplyDates={applyShoppingDates}
     settings={state.settings} commonExtraProfileKey={commonExtraProfileKey}
     rangeStartDate={shoppingStartDate} rangeEndDate={shoppingEndDate}
-    manualItemName={manualItemName} manualItemQuantity={manualItemQuantity} manualItemCategory={manualItemCategory} manualBulkItems={manualBulkItems}
+    manualBulkItems={manualBulkItems}
     asdaProductLinks={state.asdaProductLinks} asdaProductSelections={state.asdaProductSelections} asdaShoppingStatus={rangeAsdaShoppingStatus}
-    setManualItemName={setManualItemName} setManualItemQuantity={setManualItemQuantity} setManualItemCategory={setManualItemCategory} setManualBulkItems={setManualBulkItems}
+    setManualBulkItems={setManualBulkItems}
     onToggleIncludeStaples={includeStaples => updateSettings({ includeStaples })}
-    onAddManualItem={addManualShoppingItem} onAddBulkManualItems={addBulkManualShoppingItems} onAddCommonManualItem={addCommonManualShoppingItem}
+    onAddBulkManualItems={addBulkManualShoppingItems} onAddCommonManualItem={addCommonManualShoppingItem}
     onClearManualItems={clearManualShoppingItemsForRange} onUpdateCommonExtras={updateCommonExtraItems}
     onManageOccasionalItems={() => { setReturnToGuided(activeView === "guided"); setActiveView("settings"); }}
     onToggleItem={toggleShoppingItem} onUnselectAll={unselectAllShoppingItems} onUpdateManualItem={updateManualShoppingItem}
@@ -3149,6 +3076,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
+      {assigningRecipeGroups && <BatchRecipeGroups recipes={state.recipes} onAssign={batchAssignRecipeGroups} onClose={() => setAssigningRecipeGroups(false)} />}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -3197,8 +3125,8 @@ export default function Home() {
             onRemove={removeGuidedMeal} preferenceScores={autoPlannerPreferenceScores} reactions={recipeReactions} onOpenRecipe={setSelectedRecipeId}
             suggestions={suggestUseUpRecipes(state.recipes.filter(recipe => recipe.mealTypes.includes("dinner")), state.useUpIngredients, state.settings.ingredientAliases, recipeReactions, autoPlannerPreferenceScores).suggestions}
             onAddLeftovers={addLeftoverLunch}
-            extras={<><SnackSelections state={state} updateState={updateState} onOpenRecipe={setSelectedRecipeId} onAddRecipe={group => {
-              applyDraft({ ...emptyDraft(), mealTypes: ["snack"], snackGroup: group });
+            extras={<><SnackSelections state={state} updateState={updateState} onOpenRecipe={setSelectedRecipeId} onManageGroups={() => setAssigningRecipeGroups(true)} onAddRecipe={group => {
+              applyDraft({ ...emptyDraft(), mealTypes: [group === "Breakfast" ? "breakfast" : "snack"], snackGroup: group });
               setEditingRecipeId(null); setImportMode("manual"); setReturnFromSnackRecipe(true); setActiveView("add");
             }} />{renderShopping("extras")}</>} supplies={supplies} review={renderShopping("review")} />
         </>}
@@ -3269,6 +3197,7 @@ export default function Home() {
             onDeleteRecipe={deleteRecipe}
             onToggleFavorite={toggleFavorite}
             onBatchAddTags={batchAddRecipeTags}
+            onManageGroups={() => setAssigningRecipeGroups(true)}
             onOpenRecipe={setSelectedRecipeId}
           />
         )}
@@ -4785,6 +4714,7 @@ function RecipeLibrary({
   onDeleteRecipe,
   onToggleFavorite,
   onBatchAddTags,
+  onManageGroups,
   onOpenRecipe
 }: {
   recipes: Recipe[];
@@ -4805,6 +4735,7 @@ function RecipeLibrary({
   onDeleteRecipe: (recipeId: string) => void;
   onToggleFavorite: (recipeId: string) => void;
   onBatchAddTags: (recipeIds: string[], tags: string[]) => void;
+  onManageGroups: () => void;
   onOpenRecipe: (recipeId: string) => void;
 }) {
   const [batchTagMode, setBatchTagMode] = useState(false);
@@ -4853,6 +4784,7 @@ function RecipeLibrary({
             <Check size={18} />
             {batchTagMode ? "Done tagging" : "Batch tags"}
           </button>
+          <button className="icon-text-button" type="button" onClick={onManageGroups}><Settings size={17} />Assign columns</button>
           <button className="primary-button" onClick={onAddRecipe}>
             <Plus size={18} />
             New recipe
@@ -5945,19 +5877,12 @@ function ShoppingView({
   commonExtraProfileKey,
   rangeStartDate,
   rangeEndDate,
-  manualItemName,
-  manualItemQuantity,
-  manualItemCategory,
   manualBulkItems,
   asdaProductLinks,
   asdaProductSelections,
   asdaShoppingStatus,
-  setManualItemName,
-  setManualItemQuantity,
-  setManualItemCategory,
   setManualBulkItems,
   onToggleIncludeStaples,
-  onAddManualItem,
   onAddBulkManualItems,
   onAddCommonManualItem,
   onClearManualItems,
@@ -5989,20 +5914,13 @@ function ShoppingView({
   commonExtraProfileKey: string;
   rangeStartDate: string;
   rangeEndDate: string;
-  manualItemName: string;
-  manualItemQuantity: string;
-  manualItemCategory: ManualItemCategory;
   manualBulkItems: string;
   asdaProductLinks: Record<string, string>;
   asdaProductSelections: Record<string, AsdaProductSelection>;
   asdaShoppingStatus: Record<string, StoreShoppingStatus>;
-  setManualItemName: (value: string) => void;
-  setManualItemQuantity: (value: string) => void;
-  setManualItemCategory: (value: ManualItemCategory) => void;
   setManualBulkItems: (value: string) => void;
   onToggleIncludeStaples: (value: boolean) => void;
-  onAddManualItem: (event: FormEvent) => void;
-  onAddBulkManualItems: (event: FormEvent) => void;
+  onAddBulkManualItems: (items: ShoppingListItem[]) => void;
   onAddCommonManualItem: (itemName: string, extraQuantity?: string) => void;
   onClearManualItems: () => void;
   onUpdateCommonExtras: (items: string[]) => void;
@@ -6031,7 +5949,10 @@ function ShoppingView({
   const [editingCommonExtras, setEditingCommonExtras] = useState(false);
   const [commonExtrasDraft, setCommonExtrasDraft] = useState<string[]>(commonExtraItems);
   const [asdaHelperMessage, setAsdaHelperMessage] = useState("");
-  const dueEssentials = dueOccasionalItems(settings, commonExtraProfileKey, `${rangeEndDate}T12:00:00`);
+  const [showAllEssentials, setShowAllEssentials] = useState(false);
+  const dueEssentials = oldestShoppingAddFirst(dueOccasionalItems(settings, commonExtraProfileKey, `${rangeEndDate}T12:00:00`));
+  const dueIds = new Set(dueEssentials.map(item => item.id));
+  const visibleEssentials = showAllEssentials ? [...dueEssentials, ...oldestShoppingAddFirst(occasionalItemsForProfile(settings, commonExtraProfileKey).filter(item => !dueIds.has(item.id)))] : dueEssentials;
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editingManualItem = requiredItems.find((item) => item.manual && item.id === editingManualItemId) ?? null;
   const manualItems = requiredItems
@@ -6180,35 +6101,7 @@ function ShoppingView({
 
       <div className="extra-items-layout">
         <div className="extra-items-entry">
-          <form className="manual-add single-manual-add" onSubmit={onAddManualItem}>
-            <input value={manualItemName} onChange={(event) => setManualItemName(event.target.value)} placeholder="Add extra item" />
-            <input value={manualItemQuantity} onChange={(event) => setManualItemQuantity(event.target.value)} placeholder="Quantity" />
-            <select value={manualItemCategory} onChange={(event) => setManualItemCategory(event.target.value as ManualItemCategory)}>
-              <option value="Auto">Auto category</option>
-              {groceryCategories.map((category) => (
-                <option key={category} value={category}>
-                  {category}
-                </option>
-              ))}
-            </select>
-            <button className="primary-button" type="submit">
-              <Plus size={18} />
-              Add
-            </button>
-          </form>
-
-          <details className="bulk-extras"><summary>Add several items</summary><form className="manual-add bulk-manual-add" onSubmit={onAddBulkManualItems}>
-            <textarea
-              value={manualBulkItems}
-              onChange={(event) => setManualBulkItems(event.target.value)}
-              placeholder={"Milk\n2 onions\nBread"}
-              rows={3}
-            />
-            <button className="primary-button" type="submit">
-              <Plus size={18} />
-              Add list
-            </button>
-          </form></details>
+          <BatchExtras value={manualBulkItems} onChange={setManualBulkItems} rangeKey={`${rangeStartDate}__${rangeEndDate}`} existing={requiredItems} aliases={settings.ingredientAliases} onAdd={onAddBulkManualItems} />
 
           <section className="common-extra-panel">
             <div className="section-heading">
@@ -6323,27 +6216,28 @@ function ShoppingView({
               </form>
             ) : null}
           </section>
-          <details className="occasional-extras">
-            <summary>Occasional essentials <span>{dueEssentials.length} due</span></summary>
+          <section className="occasional-extras">
+            <div className="section-heading"><h3>Occasional extras</h3><span>{dueEssentials.length} due</span></div>
             <div className="occasional-extras-heading">
+              <button className="text-button" type="button" aria-pressed={showAllEssentials} onClick={() => setShowAllEssentials(value => !value)}>{showAllEssentials ? "Show due only" : "Show all"}</button>
               <button className="icon-text-button" type="button" onClick={onManageOccasionalItems}>
                 <Settings size={16} /> Manage intervals
               </button>
             </div>
             <div className="common-extra-list">
-              {dueEssentials.map(item => {
+              {visibleEssentials.map(item => {
                 const added = hasExtra(item.name);
                 return (
                   <button className={classNames("text-button", added && "active")} type="button" key={item.id}
                     title={item.lastAddedAt ? `Last included ${item.lastAddedAt.slice(0, 10)}; every ${item.intervalDays} days` : `Every ${item.intervalDays} days; not yet recorded`}
                     onClick={() => onAddCommonManualItem(item.name)} disabled={added}>
-                    {added ? <Check size={15} /> : <Plus size={15} />}{item.name}
+                    {added ? <Check size={15} /> : <Plus size={15} />}<span>{item.name}<small className="occasional-last-shop">{item.lastAddedAt ? `Last shop: ${new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(new Date(item.lastAddedAt))}` : "Not recorded yet"}{showAllEssentials && !dueIds.has(item.id) ? " · Not due" : ""}</small></span>
                   </button>
                 );
               })}
             </div>
-            {!dueEssentials.length ? <p className="muted">Nothing due for this shop.</p> : null}
-          </details>
+            {!visibleEssentials.length ? <p className="muted">Nothing due for this shop.</p> : null}
+          </section>
         </div>
 
         <section className="added-extra-panel" aria-live="polite">

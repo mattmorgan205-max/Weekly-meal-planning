@@ -3,8 +3,8 @@ import test from "node:test";
 import { commonExtraUsageForProfile, draftToRecipe, recipeToDraft, occasionalItemsForProfile, recordCompletedShoppingList, recordManualExtraUsage, seedState, type AppState, type DinnerAttendance, type PlannedMeal, type Recipe, type ShoppingListItem } from "../lib/domain";
 import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, resolveSupply, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, shopSignature } from "../lib/guided-shop";
 import { buildAutoDinnerPlan } from "../lib/dinner-planner";
-import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange, mealCalendarDays, mealSource, placeGuidedMeal } from "../lib/guided-planning";
-import { defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
+import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange, mealCalendarDays, mealFromDinnerEntry, mealSource, placeGuidedMeal, removeDinnerPreviewEntry } from "../lib/guided-planning";
+import { assignSnackGroup, defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 
 const start = "2026-11-23", end = "2026-11-29";
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
@@ -229,9 +229,9 @@ test("snack groups survive recipe editing and combine case and whitespace varian
   const groups = snackRecipeGroups([saved, { ...recipe("Wraps"), snackGroup: "sophia lunches" }, { ...recipe("Fruit"), mealTypes: ["snack"] }, recipe("Dinner")]);
   assert.deepEqual(groups.map(group => group.name), defaultSnackGroups);
   assert.equal(groups.find(group => group.name === "Sophia lunches")?.recipes.length, 2);
-  assert.equal(groups.find(group => group.name === "Snacks")?.recipes.length, 0);
-  assert.equal(snackColumn(" Puddings "), "Puddings & sweet treats");
-  assert.equal(snackColumn("Breakfast"), undefined);
+  assert.equal(groups.find(group => group.name === "Snacks and smoothies")?.recipes.length, 0);
+  assert.equal(snackColumn(" Puddings & sweet treats "), "Puddings");
+  assert.equal(snackColumn("Breakfast"), "Breakfast");
   assert.equal(draftToRecipe({ ...recipeToDraft(lunch), snackGroup: " " }).snackGroup, undefined);
 });
 test("all four columns require an explicit assignment, independent of meal type", () => {
@@ -240,6 +240,33 @@ test("all four columns require an explicit assignment, independent of meal type"
   assert.deepEqual(groups.map(group => group.recipes.length), [1, 1, 1, 1]);
   assert.deepEqual(snackRecipeGroups([]).map(group => group.name), defaultSnackGroups);
   assert.equal(snackRecipeGroups([{ ...recipe("legacy"), snackGroup: "Puddings" }])[2].recipes[0].id, "legacy");
+});
+
+test("legacy snack and smoothie columns combine without changing selections or ingredients", () => {
+  const current = state(); current.recipes = [{ ...recipe("snack"), snackGroup: "Snacks" }, { ...recipe("smoothie"), snackGroup: " Smoothies " }];
+  const selected = setSnackSelection(setSnackSelection(current, "snack", 2), "smoothie", 3);
+  const before = requiredShopItems(selected, selected.guidedShop!);
+  assert.deepEqual(snackRecipeGroups(selected.recipes)[0].recipes.map(row => row.id), ["smoothie", "snack"]);
+  const updated = { ...selected, recipes: assignSnackGroup(selected.recipes, ["snack", "smoothie"], "Breakfast", "2026-11-22") };
+  assert.deepEqual(requiredShopItems(updated, updated.guidedShop!), before);
+  assert.deepEqual(updated.guidedShop!.snackSelections, selected.guidedShop!.snackSelections);
+  assert.deepEqual(updated.recipes[0].mealTypes, ["dinner"]);
+  assert.equal(updated.recipes[0].updatedAt, "2026-11-22");
+  assert.equal(assignSnackGroup(updated.recipes, ["snack"], "")[0].snackGroup, undefined);
+  assert.equal(assignSnackGroup(updated.recipes, ["snack"], "unknown"), updated.recipes);
+});
+
+test("placing one preview leaves remaining suggestions out of Meals to place", () => {
+  const current = state(); current.recipes.push(recipe("second"));
+  const preview = buildAutoDinnerPlan({ startDate: start, endDate: "2026-11-24", mode: "fill", recipes: current.recipes, plannedMeals: [], peopleCount: 4, ingredientAliases: {}, useUpIngredients: [] });
+  const entry = preview.entries[0];
+  const placed = placeGuidedMeal(current, { kind: "new", meal: mealFromDinnerEntry(entry, 4) }, entry.date).state;
+  const remaining = removeDinnerPreviewEntry(preview, entry);
+  assert.equal(placed.guidedShop!.unplannedMeals?.length ?? 0, 0);
+  assert.equal(remaining.entries.length, preview.entries.length - 1);
+  assert.equal(remaining.summary.recipeDinnerCount, preview.summary.recipeDinnerCount - 1);
+  assert.equal(preview.entries.length, 2);
+  assert.equal(applyGuidedDinnerPreview(placed, remaining).plannedMeals.length, 2);
 });
 test("clearing diners excludes manual and diner-sized dinners, including sides, without deleting meals", () => {
   let current = state();

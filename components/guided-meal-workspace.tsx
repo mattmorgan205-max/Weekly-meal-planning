@@ -5,7 +5,7 @@ import { CalendarPlus, Check, GripVertical, Plus, RefreshCw, Trash2, Wand2, X } 
 import { createId, type AppState, type PlannedMeal, type RecipeReaction } from "@/lib/domain";
 import { buildAutoDinnerPlan, type AutoDinnerPlanEntry, type AutoDinnerPlanMode, type AutoDinnerPlanResult } from "@/lib/dinner-planner";
 import { dinnerNeedsMeal, recipeAllowedForDinner, shopDates } from "@/lib/guided-shop";
-import { applyGuidedDinnerPreview, mealFromDinnerEntry, placeGuidedMeal, type GuidedMealSource, type GuidedMealSlot } from "@/lib/guided-planning";
+import { applyGuidedDinnerPreview, mealFromDinnerEntry, placeGuidedMeal, removeDinnerPreviewEntry, type GuidedMealSource, type GuidedMealSlot } from "@/lib/guided-planning";
 
 type Payload = { kind: "planned" | "parked" | "recipe" | "preview"; id: string };
 type Suggestion = { recipeIds: string[]; coveredIngredients: string[]; missingIngredients: string[] };
@@ -34,7 +34,8 @@ export function GuidedMealWorkspace({ state, updateState, suggestions, preferenc
   const context = JSON.stringify([state.recipes, state.dinnerAttendance, state.dayNotes, state.useUpIngredients, state.settings.ingredientAliases, preferenceScores, reactions]);
   useEffect(() => { setPreview(null); setExcluded([]); }, [context]);
   const previewDates = shopDates(start, end);
-  const missingDates = preview ? previewDates.filter(date => dinnerNeedsMeal(state.dinnerAttendance?.[date]) && !preview.entries.some(entry => entry.date === date) && !preview.preservedDinners.some(row => row.meal.date === date)) : [];
+  const missingDates = preview ? previewDates.filter(date => dinnerNeedsMeal(state.dinnerAttendance?.[date]) && !preview.entries.some(entry => entry.date === date) && !preview.preservedDinners.some(row => row.meal.date === date)
+    && !(mode === "fill" && state.plannedMeals.some(meal => meal.date === date && meal.slot === "dinner"))) : [];
   const enabled = !state.settings.hiddenSlots.includes("dinner") && previewDates.length > 0;
   const request = { startDate: start, endDate: end, mode, recipes: state.recipes, plannedMeals: state.plannedMeals,
     peopleCount: state.settings.defaultPeople, ingredientAliases: state.settings.ingredientAliases, useUpIngredients: state.useUpIngredients,
@@ -45,9 +46,7 @@ export function GuidedMealWorkspace({ state, updateState, suggestions, preferenc
   }
   function removeEntry(entry: AutoDinnerPlanEntry) {
     setExcluded(current => [...new Set([...current, entry.recipeId])]);
-    setPreview(current => current && ({ ...current, entries: current.entries.filter(row => row !== entry), summary: { ...current.summary,
-      categoryCounts: { ...current.summary.categoryCounts, [entry.category]: Math.max(0, current.summary.categoryCounts[entry.category] - 1) },
-      quickCount: current.summary.quickCount - Number(entry.quick), familiarCount: current.summary.familiarCount - Number(entry.familiar), recipeDinnerCount: current.summary.recipeDinnerCount - 1 } }));
+    setPreview(current => current && removeDinnerPreviewEntry(current, entry));
   }
   function refill() {
     if (!preview) return;
@@ -75,17 +74,19 @@ export function GuidedMealWorkspace({ state, updateState, suggestions, preferenc
     const result = placeGuidedMeal(state, source, date, slot, targetMealId);
     if (result.error) { setMessage(result.error); return; }
     if (result.state === state) { setPlacement(null); return; }
-    // Keep the rest of a preview as saved, unassigned meals after an individual placement.
-    const remaining = (preview?.entries ?? []).filter(entry => payload.kind !== "preview" || `${entry.date}:${entry.recipeId}` !== payload.id).map(entry => mealFromDinnerEntry(entry, state.settings.defaultPeople));
     updateState(current => {
       const freshSource = payload.kind === "planned" || payload.kind === "parked" ? sourceFor(payload, current) : source;
       if (!freshSource) return current;
       const next = placeGuidedMeal(current, freshSource, date, slot, targetMealId);
       if (next.error) return current;
-      return { ...next.state, guidedShop: { ...next.state.guidedShop!, unplannedMeals: [...(next.state.guidedShop!.unplannedMeals ?? []), ...remaining] } };
+      return next.state;
     });
-    setPreview(null); setPlacement(null); setDragging(null); setOver(null);
-    setMessage(`${date ? `Meal scheduled for ${dayLabel(date)}, ${slot}.` : "Meal moved to Unscheduled."}${remaining.length ? ` ${remaining.length} remaining suggestions kept in Unscheduled.` : ""}`);
+    setPreview(current => {
+      const entry = payload.kind === "preview" ? current?.entries.find(row => `${row.date}:${row.recipeId}` === payload.id) : undefined;
+      return current && entry ? removeDinnerPreviewEntry(current, entry) : current;
+    });
+    setPlacement(null); setDragging(null); setOver(null);
+    setMessage(date ? `Meal scheduled for ${dayLabel(date)}, ${slot}.` : "Meal moved to Meals to place.");
   }
   function dragProps(payload: Payload): HTMLAttributes<HTMLElement> {
     return { draggable: true, onDragStart: event => { event.dataTransfer.setData(dragType, JSON.stringify(payload)); event.dataTransfer.effectAllowed = payload.kind === "recipe" ? "copy" : "move"; setDragging(payload); }, onDragEnd: () => { setDragging(null); setOver(null); } };
@@ -142,21 +143,22 @@ export function GuidedMealWorkspace({ state, updateState, suggestions, preferenc
             {preview.warnings.map(warning => <p key={warning}>{warning}</p>)}
           </details>
           <button type="button" className="primary-button" disabled={!preview.entries.length} onClick={() => { updateState(current => applyGuidedDinnerPreview(current, preview)); setPreview(null); setMessage("Dinner plan applied."); }}><Check size={16} />Apply dinner plan</button>
+          <button type="button" className="text-button" onClick={() => { setPreview(null); setExcluded([]); }}><X size={15} />Discard suggestions</button>
         </div>}
       </section>
-      <section {...dropProps(null)} className={`guided-unscheduled guided-tool-section ${over === "parked" ? "is-drop-target" : ""}`} aria-label="Unscheduled meals">
-        <h3>Unscheduled <span>{shop.unplannedMeals?.length ?? 0}</span></h3>
-        {!shop.unplannedMeals?.length && <p className="muted">No unscheduled meals</p>}
+      <details open={Boolean(shop.unplannedMeals?.length) || Boolean(dragging)} {...dropProps(null)} className={`guided-unscheduled guided-tool-section ${over === "parked" ? "is-drop-target" : ""}`} aria-label="Meals to place">
+        <summary>Meals to place <span>{shop.unplannedMeals?.length ?? 0}</span></summary>
+        {!shop.unplannedMeals?.length && <p className="muted">No meals waiting</p>}
         {shop.unplannedMeals?.map(meal => recipeRow({ kind: "parked", id: meal.id }, meal.recipeId, state.recipes.find(row => row.id === meal.recipeId)?.title ?? meal.manualTitle ?? "Dinner", undefined,
           () => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, unplannedMeals: current.guidedShop!.unplannedMeals?.filter(row => row.id !== meal.id),
             excludedRecipeIds: [...new Set([...current.guidedShop!.excludedRecipeIds, ...(meal.recipeId ? [meal.recipeId] : [])])] } }))))}
-      </section>
+      </details>
     </aside>
     <div className="guided-selected-days"><div className="guided-tool-heading"><h3>Selected days</h3><span>{dates.length} days</span></div>
       {message && <p role="status" className="shop-notice">{message}</p>}
       {children({ dropProps, mealDragProps: meal => dragProps({ kind: "planned", id: meal.id }), moveControl: meal => handle({ kind: "planned", id: meal.id }, state.recipes.find(row => row.id === meal.recipeId)?.title ?? meal.manualTitle ?? "Meal"), parkMeal: meal => place({ kind: "planned", id: meal.id }, null) })}
     </div>
-    {placement && selectedSource && <div className="modal-backdrop"><section className="modal small-modal guided-place-dialog" role="dialog" aria-modal="true" aria-label="Choose meal slot" onKeyDown={event => { if (event.key === "Escape") setPlacement(null); }}>
+    {placement && selectedSource && <div className="modal-backdrop"><section className="modal-panel guided-place-dialog" role="dialog" aria-modal="true" aria-label="Choose meal slot" onKeyDown={event => { if (event.key === "Escape") setPlacement(null); }}>
       <div className="section-heading"><h2>Choose meal slot</h2><button autoFocus className="icon-button" type="button" title="Close day chooser" onClick={() => setPlacement(null)}><X size={18} /></button></div>
       <strong>{state.recipes.find(row => row.id === selectedSource.meal.recipeId)?.title ?? selectedSource.meal.manualTitle}</strong>
       {message && <p role="status">{message}</p>}
@@ -168,7 +170,7 @@ export function GuidedMealWorkspace({ state, updateState, suggestions, preferenc
           return <button type="button" disabled={Boolean(error)} title={error ?? undefined} key={`${date}:${slot}:${target?.id ?? ""}`} onClick={() => place(placement, date, slot, target?.id)}><strong>{dayLabel(date)}<br />{slot === "lunch" ? "Lunch" : "Dinner"}</strong><small>{error ?? title}</small></button>;
         });
       }))}</div>
-      <button className="text-button" type="button" onClick={() => place(placement, null)}>Keep unscheduled</button>
+      <button className="text-button" type="button" onClick={() => place(placement, null)}>Keep in Meals to place</button>
     </section></div>}
   </div>;
 }

@@ -3510,6 +3510,31 @@ h3 {
 .guided-diners-schedule .shop-diners-settings { margin-top: 18px; border-bottom: 0; }
 .guided-meal-workspace { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 18px; align-items: start; }
 .guided-selected-days { min-width: 0; }
+.guided-unscheduled > summary { font-weight: 650; cursor: pointer; }
+.modal-backdrop:has(.batch-groups-dialog), .modal-backdrop:has(.guided-place-dialog) { z-index: 60; }
+.batch-groups-dialog { width: min(900px, 100%); display: grid; gap: 14px; }
+.batch-group-filters, .batch-group-apply { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.batch-group-filters label, .batch-group-apply label { display: grid; gap: 5px; min-width: 160px; }
+.batch-group-recipes { max-height: 35vh; overflow-y: auto; border-block: 1px solid var(--line); }
+.batch-group-recipes label { display: grid; grid-template-columns: 20px minmax(0, 1fr) minmax(110px, auto); gap: 10px; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+.batch-group-recipes input, .batch-extra-row > input[type=checkbox] { width: 16px; height: 16px; min-height: 0; }
+.batch-group-recipes small { color: var(--muted); font-size: 0.8rem; }
+.batch-extras form, .batch-extras label { display: grid; gap: 10px; }
+.batch-extras textarea { width: 100%; resize: vertical; }
+.batch-extras .primary-button { justify-self: start; }
+.batch-extra-rows { max-height: 340px; overflow-y: auto; }
+.batch-extra-row { display: grid; grid-template-columns: 20px minmax(100px, 1fr) 85px minmax(110px, 0.7fr); gap: 6px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.batch-extra-row input, .batch-extra-row select { min-width: 0; width: 100%; }
+.batch-extra-warning { grid-column: 2 / -1; color: #8c551b; font-size: 0.8rem; }
+.occasional-last-shop { display: block; margin-top: 2px; color: var(--muted); font-size: 0.75rem; font-weight: 400; }
+.occasional-extras .common-extra-list button { text-align: left; }
+@media (max-width: 600px) {
+  .batch-group-recipes label { grid-template-columns: 20px minmax(0, 1fr); }
+  .batch-group-recipes small { grid-column: 2; }
+  .batch-extra-row { grid-template-columns: 20px minmax(0, 1fr) 80px; }
+  .batch-extra-row select { grid-column: 2 / -1; }
+  .batch-group-apply label, .batch-group-apply button { width: 100%; }
+}
 .meal-calendar-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; font-size: 0.85rem; }
 .meal-calendar-scroll { overflow-x: auto; padding: 2px; scrollbar-width: thin; }
 .meal-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); min-width: 700px; gap: 1px; background: var(--line); border: 1px solid var(--line); }
@@ -3572,7 +3597,8 @@ h3 {
 .guided-plan-details dd { margin: 0; font-weight: 600; }
 .guided-plan-details p { margin: 8px 0; color: var(--muted); }
 .guided-unscheduled { min-height: 100px; border-bottom: 0; }
-.guided-unscheduled h3 span { margin-left: 6px; color: var(--muted); font-weight: 400; font-size: 0.85rem; }
+.guided-unscheduled:not([open]) { min-height: 0; }
+.guided-unscheduled > summary span { margin-left: 6px; color: var(--muted); font-weight: 400; font-size: 0.85rem; }
 .guided-unscheduled > p { font-size: 0.85rem; margin: 0; }
 .guided-selected-days > .guided-tool-heading { min-height: 32px; }
 .guided-selected-days .guided-days { grid-template-columns: minmax(0, 1fr); gap: 0; }
