@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Check, Copy, Plus, RefreshCw, Settings, Trash2, Undo2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Plus, RefreshCw, Settings, Trash2, Undo2, UserMinus } from "lucide-react";
 import { addDays, createId, formatDateKey, groceryCategories, type AppState, type DinnerAttendance, type GuidedShop, type HouseholdDiner, type MealSlot, type PlannedMeal, type RecipeReaction, type ShoppingListItem, type SupplyCheck } from "@/lib/domain";
 import { attendancePortions, changeDiners as updateDiners, createShop, defaultAttendance, dinnerNeedsMeal, guidedSteps, recipeAllowedForDinner, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, type SupplyResult } from "@/lib/guided-shop";
 import { ShopCalendar } from "./shop-calendar";
@@ -86,6 +86,7 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap
   const [newShop, setNewShop] = useState(false);
   const [pendingDates, setPendingDates] = useState(false);
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const [clearedDiners, setClearedDiners] = useState<Record<string, DinnerAttendance>>({});
   const step = Math.min(4, Math.max(0, shop.step));
   const finalised = shopIsFinalized(requiredShopItems(state, shop), shop);
   const today = formatDateKey(new Date());
@@ -116,7 +117,7 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap
       disabled={pendingDates && index !== 0} onClick={() => setStep(index)}><span>{index + 1}</span>{label}</button>)}</nav>
     {step > 1 && <h2 tabIndex={-1}>{guidedSteps[step]}</h2>}
     {step === 0 && <div className="guided-dates-workspace">
-      <ShopCalendar key={`${shop.startDate}:${shop.endDate}`} shop={shop} extrasCount={state.manualShoppingItems.filter(item => item.shoppingRangeKey === `${shop.startDate}__${shop.endDate}`).length} onApply={onDates} onPending={setPendingDates} />
+      <ShopCalendar key={`${shop.startDate}:${shop.endDate}`} shop={shop} plannedMeals={state.plannedMeals} extrasCount={state.manualShoppingItems.filter(item => item.shoppingRangeKey === `${shop.startDate}__${shop.endDate}`).length} onApply={onDates} onPending={setPendingDates} />
       <section className="guided-diners-schedule" aria-label="Dinner attendance">
         <div className="guided-tool-heading"><h3>Who is eating?</h3><button type="button" className="text-button" onClick={() => updateState(current => dates.reduce((next, date) => setAttendance(next, date, { ...(next.dinnerAttendance?.[date] ?? defaultAttendance(diners)), confirmed: true }), current))}><Check size={15} />Confirm all</button></div>
         <div className="diner-schedule-heading" aria-hidden="true"><span>Dinner</span><span>Diners</span><span>Day comment</span><span>Portions</span></div>
@@ -127,7 +128,15 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap
               updateState(current => setAttendance(current, date, { ...attendance, portions, confirmed: true, sophiaEating: diners.some(row => row.name.trim().toLowerCase() === "sophia" && (portions[row.id] ?? 0) > 0) }));
             }} />{diner.name}</label>)}</div>
             <input className="diner-schedule-note" aria-label={`Day comment for ${date}`} placeholder="Add comment" value={state.dayNotes[date] ?? ""} onChange={event => updateState(current => ({ ...current, dayNotes: { ...current.dayNotes, [date]: event.target.value } }))} />
-            <div className="diner-schedule-portions"><span title={attendance.confirmed ? "Diners confirmed" : "Diners not yet confirmed"}>{attendance.confirmed && <Check size={13} />}{attendancePortions(attendance, 0)}</span><button className="icon-button" type="button" title={`Edit portions and guests for ${dateLabel(date)}`} aria-expanded={expandedDate === date} onClick={() => setExpandedDate(expandedDate === date ? null : date)}><Settings size={15} /></button></div>
+            <div className="diner-schedule-portions"><span title={attendance.confirmed ? "Diners confirmed" : "Diners not yet confirmed"}>{attendance.confirmed && <Check size={13} />}{attendancePortions(attendance, 0)}</span>
+              {clearedDiners[date] && attendancePortions(attendance, 0) === 0 ? <button className="icon-button" type="button" title={`Undo clear diners for ${dateLabel(date)}`} onClick={() => {
+                updateState(current => setAttendance(current, date, clearedDiners[date]));
+                setClearedDiners(current => { const next = { ...current }; delete next[date]; return next; });
+              }}><Undo2 size={15} /></button> : <button className="icon-button" type="button" title={`Clear all diners for ${dateLabel(date)}`} disabled={!Object.keys(attendance.portions).length && attendance.guests === 0} onClick={() => {
+                setClearedDiners(current => ({ ...current, [date]: attendance }));
+                updateState(current => setAttendance(current, date, { ...attendance, portions: {}, guests: 0, sophiaEating: false, confirmed: true }));
+              }}><UserMinus size={15} /></button>}
+              <button className="icon-button" type="button" title={`Edit portions and guests for ${dateLabel(date)}`} aria-expanded={expandedDate === date} onClick={() => setExpandedDate(expandedDate === date ? null : date)}><Settings size={15} /></button></div>
           </div>{expandedDate === date && <div className="diner-schedule-expanded">{renderAttendance(date)}</div>}
         </div>; })}
         <HouseholdDinersEditor diners={diners} onChange={changeDiners} />
@@ -184,11 +193,20 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap
 export function SupplyCheckList({ items, shop, onChange, renderCategory }: {
   items: ShoppingListItem[]; shop: GuidedShop; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; renderCategory: (item: ShoppingListItem) => ReactNode;
 }) {
+  const [hideCovered, setHideCovered] = useState(false);
   const results = resolveShop(items, shop);
-  return <div className="supply-check-list"><p className="muted" role="status">{results.filter(row => !row.buy).length} already got · {results.filter(row => row.buy).length} to buy</p>{groceryCategories.map(category => {
-    const rows = results.filter(row => row.required.category === category);
-    return rows.length ? <section className="supply-category" key={category}><h3>{category}</h3>{rows.map(row => <SupplyRow key={row.required.id} row={row} onChange={onChange} category={renderCategory(row.required)} />)}</section> : null;
-  })}{!items.length && <p className="muted">No ingredients or extras for these dates.</p>}</div>;
+  const groups = groceryCategories.map(category => ({ category, rows: results.filter(row => row.required.category === category) })).filter(group => group.rows.length);
+  const columns = Array.from({ length: 5 }, () => ({ weight: 0, groups: [] as typeof groups }));
+  for (const group of groups) {
+    const column = columns.reduce((shortest, next) => next.weight < shortest.weight ? next : shortest);
+    column.groups.push(group);
+    column.weight += group.rows.length + 1;
+  }
+  return <div className="supply-check-list"><div className="supply-list-heading"><p className="muted" role="status">{results.filter(row => !row.buy).length} already got · {results.filter(row => row.buy).length} to buy</p>
+    <label className="toggle-line"><input type="checkbox" checked={hideCovered} onChange={event => setHideCovered(event.target.checked)} />Hide already got</label></div><div className="supply-category-columns">{columns.map((column, index) => <div className="supply-category-column" key={index}>{column.groups.map(({ category, rows: allRows }) => {
+      const rows = allRows.filter(row => !hideCovered || row.buy || row.reviewReason);
+      return rows.length ? <section className="supply-category" key={category}><h3>{category}</h3>{rows.map(row => <SupplyRow key={row.required.id} row={row} onChange={onChange} category={renderCategory(row.required)} />)}</section> : null;
+    })}</div>)}</div>{!items.length ? <p className="muted">No ingredients or extras for these dates.</p> : hideCovered && !results.some(row => row.buy || row.reviewReason) && <p className="muted">All supplies already covered.</p>}</div>;
 }
 
 function SupplyRow({ row, onChange, category }: { row: SupplyResult; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; category: ReactNode }) {
@@ -196,7 +214,8 @@ function SupplyRow({ row, onChange, category }: { row: SupplyResult; onChange: (
   const save = (status: "need" | "enough") => onChange(item, { status, requirement: requirementSignature(item) });
   return <article className={`supply-row ${covered ? "is-covered" : ""} ${row.reviewReason ? "needs-review" : ""}`}>
     <button type="button" className="supply-toggle" aria-label={`Already got ${item.name}`} aria-pressed={covered} title={covered ? "Need to buy" : "Already got"} onClick={() => save(covered ? "need" : "enough")}><Check size={17} /></button>
-    <div className="supply-item-name"><strong>{item.name}</strong>{item.staple && <small>Staple</small>}</div>
+    <div className="supply-item-name"><strong>{item.name}</strong>{item.staple && <small>Staple</small>}
+      <small className="supply-meal-sources">{item.manual ? "Manual extra" : item.sourceMeals.join(", ")}</small></div>
     <span className="supply-quantity">{item.displayQuantity || "As needed"}</span>{category}
     {row.reviewReason && <div className="shop-warning" role="alert">{row.reviewReason}<button className="text-button" type="button" onClick={() => save("need")}>Need to buy</button></div>}
   </article>;

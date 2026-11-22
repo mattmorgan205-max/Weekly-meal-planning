@@ -124,8 +124,8 @@ import { RecipeFilterControls } from "@/components/recipe-filter-controls";
 import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type RecipeFilters } from "@/lib/recipe-filters";
 import { GuidedShopView, ShopDatesEditor, ShopReviewActions, SupplyCheckList, HouseholdDinersEditor } from "@/components/guided-shop";
 import { SnackSelections } from "@/components/snack-selections";
-import { defaultSnackGroups, snackRecipeGroups } from "@/lib/snacks";
-import { attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
+import { defaultSnackGroups, snackColumn } from "@/lib/snacks";
+import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -3146,6 +3146,7 @@ export default function Home() {
     onMethod={method => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, method } }))}
     onCopy={copyShoppingList} onPrint={() => window.print()} />;
   const renderShopping = (mode: "all" | "extras" | "review") => <ShoppingView mode={mode}
+    addedExtras={addedShopExtras(state, activeShop)}
     items={mode === "all" ? shoppingList : buyItems} requiredItems={requiredShoppingItems} shop={activeShop} exportBlocked={exportBlocked}
     supplies={supplies} reviewActions={reviewActions} onApplyDates={applyShoppingDates}
     settings={state.settings} commonExtraProfileKey={commonExtraProfileKey}
@@ -3216,8 +3217,8 @@ export default function Home() {
               days={shopDates(shoppingStartDate, shoppingEndDate).map(date => new Date(`${date}T12:00:00`))} visibleSlots={mealSlots}
               ingredientAliases={state.settings.ingredientAliases} recipeFrequency={recipeFrequencies[meal.recipeId ?? ""] ?? 0}
               onMoveMeal={movePlannedMeal} onRemoveMeal={removeGuidedMeal} onUpdateMeal={updatePlannedMeal} onAddLeftovers={addLeftoverLunch} onOpenRecipe={setSelectedRecipeId} />}
-            extras={<><SnackSelections state={state} updateState={updateState} onOpenRecipe={setSelectedRecipeId} onAddRecipe={() => {
-              applyDraft({ ...emptyDraft(), mealTypes: ["snack"], snackGroup: "Snacks" });
+            extras={<><SnackSelections state={state} updateState={updateState} onOpenRecipe={setSelectedRecipeId} onAddRecipe={group => {
+              applyDraft({ ...emptyDraft(), mealTypes: ["snack"], snackGroup: group });
               setEditingRecipeId(null); setImportMode("manual"); setReturnFromSnackRecipe(true); setActiveView("add");
             }} />{renderShopping("extras")}</>} supplies={supplies} review={renderShopping("review")} />
         </>}
@@ -3312,7 +3313,6 @@ export default function Home() {
 	            setPhotoRawText={setPhotoRawText}
 	            onPhotoChange={handlePhotoChange}
             draft={draft}
-            snackGroups={Array.from(new Set([...defaultSnackGroups, ...snackRecipeGroups(state.recipes).map(group => group.name)]))}
             setDraft={setDraft}
             storedMealImageUrl={editingRecipeId ? recipeImageUrls[editingRecipeId] : undefined}
             ingredientAliases={state.settings.ingredientAliases}
@@ -5302,7 +5302,6 @@ function AddRecipeView({
   setPhotoRawText,
   onPhotoChange,
   draft,
-  snackGroups,
   setDraft,
   storedMealImageUrl,
   ingredientAliases,
@@ -5344,7 +5343,6 @@ function AddRecipeView({
   setPhotoRawText: (value: string) => void;
   onPhotoChange: (file: File | null) => void;
   draft: ImportDraft;
-  snackGroups: string[];
   setDraft: (draft: ImportDraft | ((current: ImportDraft) => ImportDraft)) => void;
   storedMealImageUrl?: string;
   ingredientAliases: Record<string, string>;
@@ -5589,10 +5587,12 @@ function AddRecipeView({
             />
           </label>
           <label>
-            Snack / extra group (optional)
-            <input list="recipe-snack-groups" maxLength={60} value={draft.snackGroup ?? ""} placeholder="Choose or name a group"
-              onChange={event => setDraft(current => ({ ...current, snackGroup: event.target.value }))} />
-            <datalist id="recipe-snack-groups">{snackGroups.map(group => <option value={group} key={group} />)}</datalist>
+            Snacks and extras column
+            <select value={snackColumn(draft.snackGroup) ?? draft.snackGroup ?? ""} onChange={event => setDraft(current => ({ ...current, snackGroup: event.target.value }))}>
+              <option value="">Not included</option>
+              {draft.snackGroup && !snackColumn(draft.snackGroup) && <option value={draft.snackGroup}>Unassigned: {draft.snackGroup}</option>}
+              {defaultSnackGroups.map(group => <option key={group}>{group}</option>)}
+            </select>
           </label>
           <label>
             Prep mins
@@ -5959,7 +5959,7 @@ function AddRecipeView({
 }
 
 function ShoppingView({
-  mode, requiredItems, shop, supplies, reviewActions, onApplyDates, exportBlocked,
+  mode, requiredItems, addedExtras, shop, supplies, reviewActions, onApplyDates, exportBlocked,
   items,
   settings,
   commonExtraProfileKey,
@@ -5998,6 +5998,7 @@ function ShoppingView({
 }: {
   mode: "all" | "extras" | "review";
   requiredItems: ShoppingListItem[];
+  addedExtras: ShoppingListItem[];
   shop: GuidedShop;
   supplies: React.ReactNode;
   reviewActions: React.ReactNode;
@@ -6369,12 +6370,12 @@ function ShoppingView({
           <div className="section-heading">
             <div>
               <p className="eyebrow">Already added</p>
-              <h3>{manualItemCount} extras</h3>
+              <h3>{addedExtras.length} ingredients and extras</h3>
             </div>
           </div>
-          {manualItems.length ? (
+          {addedExtras.length ? (
             <div className="added-extra-list">
-              {manualItems.map((item) => {
+              {addedExtras.map((item) => {
                 const hasSavedProduct = Boolean(asdaProductLinks[shoppingPreferenceKey(item)]);
 
                 return (
@@ -6383,6 +6384,7 @@ function ShoppingView({
                       <strong>{[item.displayQuantity, item.name].filter(Boolean).join(" ")}</strong>
                       <div className="added-extra-meta">
                         <span>{item.category}</span>
+                        <span>{item.manual ? "Manual extra" : item.sourceMeals.join(", ")}</span>
                         {hasSavedProduct ? (
                           <span className="saved-product-indicator">
                             <Link size={13} />
@@ -6391,18 +6393,18 @@ function ShoppingView({
                         ) : null}
                       </div>
                     </div>
-                    <button className="icon-button" type="button" title={`Edit ${item.name}`} onClick={() => setEditingManualItemId(item.id)}>
+                    {item.manual && <><button className="icon-button" type="button" title={`Edit ${item.name}`} onClick={() => setEditingManualItemId(item.id)}>
                       <Pencil size={16} />
                     </button>
                     <button className="icon-button danger" type="button" title={`Delete ${item.name}`} onClick={() => onDeleteItem(item)}>
                       <Trash2 size={16} />
-                    </button>
+                    </button></>}
                   </div>
                 );
               })}
             </div>
           ) : (
-            <p className="muted added-extra-empty">Items added individually, as a list, or with the common buttons will appear here.</p>
+            <p className="muted added-extra-empty">No snacks or extras added yet.</p>
           )}
         </section>
       </div>

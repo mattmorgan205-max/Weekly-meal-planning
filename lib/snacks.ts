@@ -1,18 +1,17 @@
 import type { AppState, GuidedShop, PlannedMeal, Recipe } from "./domain";
 
-export const defaultSnackGroups = ["Sophia lunches", "Smoothies", "Puddings", "Snacks"];
+export const defaultSnackGroups = ["Snacks", "Sophia lunches", "Puddings & sweet treats", "Smoothies"];
 
-export function snackRecipeGroups(recipes: Recipe[], selectedIds: string[] = []) {
-  const groups = new Map<string, { name: string; recipes: Recipe[] }>();
-  for (const recipe of recipes) {
-    if (!recipe.snackGroup?.trim() && !recipe.mealTypes.includes("snack") && !selectedIds.includes(recipe.id)) continue;
-    const name = recipe.snackGroup?.trim().replace(/\s+/g, " ") || "Snacks";
-    const key = name.toLocaleLowerCase("en-GB");
-    if (!groups.has(key)) groups.set(key, { name, recipes: [] });
-    groups.get(key)!.recipes.push(recipe);
-  }
-  return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name)).map(group => ({
-    ...group, recipes: group.recipes.sort((a, b) => a.title.localeCompare(b.title))
+export function snackColumn(value?: string) {
+  const key = value?.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-GB");
+  // Preserve assignments made before the four-column picker was introduced.
+  if (key === "puddings") return "Puddings & sweet treats";
+  return defaultSnackGroups.find(name => name.toLocaleLowerCase("en-GB") === key);
+}
+
+export function snackRecipeGroups(recipes: Recipe[]) {
+  return defaultSnackGroups.map(name => ({
+    name, recipes: recipes.filter(recipe => snackColumn(recipe.snackGroup) === name).sort((a, b) => a.title.localeCompare(b.title))
   }));
 }
 

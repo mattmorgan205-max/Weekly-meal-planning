@@ -69,12 +69,23 @@ export function createShop(startDate: string, endDate: string, id = createId("sh
   return { id, startDate, endDate, step: 0, method: "checklist", supplyChecks: {}, basketChecks: {}, excludedRecipeIds: [] };
 }
 
-export function requiredShopItems(state: AppState, shop: GuidedShop) {
+function shoppingItemsForMeals(state: AppState, shop: GuidedShop, meals: PlannedMeal[]) {
   const range = shopRangeKey(shop);
   const hidden = Object.fromEntries(Object.entries(state.hiddenShoppingItems).filter(([key]) => key.startsWith(`${range}__`)).map(([key, value]) => [key.slice(range.length + 2), value]));
-  return generateShoppingList(state.recipes, [...state.plannedMeals.filter(meal => meal.date >= shop.startDate && meal.date <= shop.endDate), ...snackShoppingMeals(shop)],
+  return generateShoppingList(state.recipes, meals,
     { ...state.settings, includeStaples: true }, {}, hidden,
     state.manualShoppingItems.filter(item => item.shoppingRangeKey === range).map(item => ({ ...item, checked: false })));
+}
+
+export function requiredShopItems(state: AppState, shop: GuidedShop) {
+  const dinnersIncluded = state.plannedMeals.filter(meal => meal.date >= shop.startDate && meal.date <= shop.endDate
+    && (meal.slot !== "dinner" || dinnerNeedsMeal(state.dinnerAttendance?.[meal.date])));
+  return shoppingItemsForMeals(state, shop, [...dinnersIncluded, ...snackShoppingMeals(shop)]);
+}
+
+// This is a projection, not a second shopping list: only snack contributions and manual extras.
+export function addedShopExtras(state: AppState, shop: GuidedShop) {
+  return shoppingItemsForMeals(state, shop, snackShoppingMeals(shop));
 }
 
 export function requirementSignature(item: ShoppingListItem) {

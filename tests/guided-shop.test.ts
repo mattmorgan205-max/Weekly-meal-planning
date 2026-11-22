@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { commonExtraUsageForProfile, draftToRecipe, recipeToDraft, occasionalItemsForProfile, recordCompletedShoppingList, recordManualExtraUsage, seedState, type AppState, type DinnerAttendance, type PlannedMeal, type Recipe, type ShoppingListItem } from "../lib/domain";
-import { attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, resolveSupply, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, shopSignature } from "../lib/guided-shop";
+import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, resolveSupply, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, shopSignature } from "../lib/guided-shop";
 import { buildAutoDinnerPlan } from "../lib/dinner-planner";
 import { applyGuidedDinnerPreview, calendarDays, calendarRange, placeGuidedMeal } from "../lib/guided-planning";
-import { setSnackSelection, snackRecipeGroups } from "../lib/snacks";
+import { defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 
 const start = "2026-11-23", end = "2026-11-29";
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
@@ -152,10 +152,60 @@ test("snack groups survive recipe editing and combine case and whitespace varian
   const saved = draftToRecipe(recipeToDraft(lunch));
   assert.equal(saved.snackGroup, "Sophia lunches");
   const groups = snackRecipeGroups([saved, { ...recipe("Wraps"), snackGroup: "sophia lunches" }, { ...recipe("Fruit"), mealTypes: ["snack"] }, recipe("Dinner")]);
-  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map(group => group.name), defaultSnackGroups);
   assert.equal(groups.find(group => group.name === "Sophia lunches")?.recipes.length, 2);
-  assert.equal(groups.find(group => group.name === "Snacks")?.recipes[0].title, "Fruit");
+  assert.equal(groups.find(group => group.name === "Snacks")?.recipes.length, 0);
+  assert.equal(snackColumn(" Puddings "), "Puddings & sweet treats");
+  assert.equal(snackColumn("Breakfast"), undefined);
   assert.equal(draftToRecipe({ ...recipeToDraft(lunch), snackGroup: " " }).snackGroup, undefined);
+});
+test("all four columns require an explicit assignment, independent of meal type", () => {
+  const recipes = defaultSnackGroups.map((snackGroup, index) => ({ ...recipe(String(index)), snackGroup }));
+  const groups = snackRecipeGroups([...recipes, { ...recipe("unassigned snack"), mealTypes: ["snack"] }]);
+  assert.deepEqual(groups.map(group => group.recipes.length), [1, 1, 1, 1]);
+  assert.deepEqual(snackRecipeGroups([]).map(group => group.name), defaultSnackGroups);
+  assert.equal(snackRecipeGroups([{ ...recipe("legacy"), snackGroup: "Puddings" }])[2].recipes[0].id, "legacy");
+});
+test("clearing diners excludes manual and diner-sized dinners, including sides, without deleting meals", () => {
+  let current = state();
+  current.plannedMeals = [{ ...meal("diner"), portionSource: "diners", extraPortions: 1 }, meal("manual", 5), { ...meal("lunch", 1), slot: "lunch", extraSideIngredients: [] }];
+  current = setAttendance(current, start, attendance(true));
+  const original = requiredShopItems(current, current.guidedShop!);
+  const beforeMeals = current.plannedMeals;
+  current = setAttendance(current, start, { ...attendance(false), portions: {}, guests: 0 });
+  assert.equal(current.plannedMeals.length, 3);
+  assert.equal(current.plannedMeals.find(row => row.id === "manual")?.peopleCount, 5);
+  const cleared = requiredShopItems(current, current.guidedShop!);
+  assert.equal(cleared.length, 1);
+  assert.equal(cleared[0].quantity, 300); // Lunch remains, no dinner or extra side quantities.
+  current = setAttendance(current, start, attendance(true));
+  assert.deepEqual(requiredShopItems(current, current.guidedShop!), original);
+  assert.deepEqual(current.plannedMeals, beforeMeals);
+});
+test("confirmed guest-only dinners remain included, while unconfirmed defaults are not excluded", () => {
+  let current = state(); current.plannedMeals = [meal()];
+  assert.ok(requiredShopItems(current, current.guidedShop!).length);
+  current = setAttendance(current, start, { confirmed: true, portions: {}, guests: 2, sophiaEating: false });
+  assert.ok(requiredShopItems(current, current.guidedShop!).length);
+});
+test("Already added shows scaled snack contributions and manual extras, not unrelated dinner amounts", () => {
+  let current = state(); current.plannedMeals = [meal()];
+  current.recipes.push(recipe("smoothie"), recipe("snack"));
+  current.manualShoppingItems = [{ ...item("milk", 2, "l"), manual: true, shoppingRangeKey: `${start}__${end}` }, { ...item("old"), manual: true, shoppingRangeKey: "older-shop" }];
+  current = setSnackSelection(setSnackSelection(current, "smoothie", 4), "snack", 2);
+  let added = addedShopExtras(current, current.guidedShop!);
+  assert.equal(added.length, 2);
+  assert.equal(added.find(row => !row.manual)?.quantity, 1800);
+  assert.deepEqual(added.find(row => !row.manual)?.sourceMeals, ["smoothie", "snack"]);
+  assert.equal(requiredShopItems(current, current.guidedShop!).find(row => row.name === added[0].name)?.quantity, 2400);
+  const completed = recordCompletedShoppingList(current.settings, "local", "shop", added, "2026-11-22T12:00:00Z");
+  assert.equal(commonExtraUsageForProfile(completed, "local", "carrots")?.count ?? 0, 0);
+  assert.equal(commonExtraUsageForProfile(completed, "local", "milk")?.count, 1);
+  current = setSnackSelection(current, "smoothie", 0);
+  added = addedShopExtras(current, current.guidedShop!);
+  assert.equal(added.find(row => !row.manual)?.quantity, 600);
+  assert.equal(current.manualShoppingItems.length, 2);
+  assert.equal(current.plannedMeals.length, 1);
 });
 test("shop snacks merge with dinner ingredients, scale, deselect and do not add dated meals", () => {
   let current = state(); current.plannedMeals = [{ ...meal(), extraSideIngredients: [] }];
