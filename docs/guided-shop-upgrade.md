@@ -36,8 +36,11 @@ Confirmed by the user:
 - Make breakfast, lunch and snacks available without requiring them to finish the flow.
 - Offer Food to use up before generating meals. Treat it as a recommendation input, not an automatic deduction from required shopping quantities.
 
-## Step 3: Extras
+## Step 3: Snacks and extras
 
+- Save reusable snack selections through Add recipe, using an optional named group such as Sophia lunches, Smoothies or Puddings. A method is optional.
+- Select recipes for the whole shop, adjust portions and choose optional ingredients. Their requirements merge with meals and extras in both shopping views; no dated planner meal is created.
+- Snack selections survive reloads and date edits. A new shop starts with no snack selections, while the reusable recipes remain available.
 - Show the top 20 common extras, most frequently added first, with usage counts.
 - Support quick single-item entry and an expandable bulk-entry option.
 - Show only occasional essentials that are due. Let users adjust intervals and add or remove items through settings, returning to the same guided step afterward.
@@ -47,9 +50,8 @@ Confirmed by the user:
 ## Step 4: Check supplies
 
 - Combine meal ingredients and extras, grouped by grocery category.
-- Give each item separate Need to buy, Have enough and Have some states.
-- Support partial quantities: if 600 g is required and 200 g is available, buy 400 g.
-- Subtract only compatible units. Flag unknown quantities or incompatible units for review rather than guessing.
+- Use compact rows with a one-click Already got toggle. Toggle again to restore the item to the buy list.
+- Partial stock entry is removed for now. Existing Have some records require a fresh Already got / Need to buy choice before finalisation or export; do not silently subtract old quantities.
 - Include staple ingredients in this check even when the existing Shopping view normally hides them.
 - Keep supply checks separate from added-to-basket or purchased status.
 - Scope supply checks to this shop; a full persistent pantry inventory is outside this upgrade.
@@ -70,7 +72,7 @@ Confirmed by the user:
 
 1. Separate Have at home from Added to basket throughout shared shopping data and views.
 2. Include staples during the supply check.
-3. Support partial stock quantities with safe unit handling and explicit review where uncertain.
+3. Use whole-item supply checks, with explicit rechecking of legacy partial-stock records.
 4. Flag changed requirements after late edits to meals or portions; do not discard unaffected work.
 5. Preview date changes before applying them. Preserve manually added extras and existing work.
 6. Replace the Asda-send-only counting trigger with Finish list. Keep Shopping complete separate.
@@ -93,7 +95,7 @@ The existing Shopping tab must use the same finalisation record as Guided shop. 
 1. Add backward-compatible household diner and per-date attendance data, including confirmed versus unconfirmed attendance and portion preferences.
 2. Extend dinner planning to use per-date diners and portions across normal planning, use-up suggestions and refills.
 3. Add saved guided-shop progress, separate supply-check states and a shared finalisation record. Migrate existing history without duplicate counting.
-4. Reuse shopping quantity calculations and add safe partial-stock subtraction and affected-item rechecks.
+4. Reuse shopping quantity calculations and add whole-item supply checks and affected-item rechecks.
 5. Build the five guided stages using shared application data, then connect existing Planner and Shopping actions to the same behaviour.
 6. Test the complete workflow on phone and desktop before release.
 

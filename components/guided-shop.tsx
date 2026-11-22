@@ -185,26 +185,20 @@ export function SupplyCheckList({ items, shop, onChange, renderCategory }: {
   items: ShoppingListItem[]; shop: GuidedShop; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; renderCategory: (item: ShoppingListItem) => ReactNode;
 }) {
   const results = resolveShop(items, shop);
-  return <div className="supply-check-list">{groceryCategories.map(category => {
+  return <div className="supply-check-list"><p className="muted" role="status">{results.filter(row => !row.buy).length} already got · {results.filter(row => row.buy).length} to buy</p>{groceryCategories.map(category => {
     const rows = results.filter(row => row.required.category === category);
     return rows.length ? <section className="supply-category" key={category}><h3>{category}</h3>{rows.map(row => <SupplyRow key={row.required.id} row={row} onChange={onChange} category={renderCategory(row.required)} />)}</section> : null;
   })}{!items.length && <p className="muted">No ingredients or extras for these dates.</p>}</div>;
 }
 
 function SupplyRow({ row, onChange, category }: { row: SupplyResult; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; category: ReactNode }) {
-  const item = row.required, check = row.check;
-  const save = (patch: Partial<SupplyCheck>) => onChange(item, { status: check?.status ?? "need", ...check, ...patch, requirement: requirementSignature(item) });
-  return <article className={`supply-row ${row.reviewReason ? "needs-review" : ""}`}>
-    <div className="supply-item-name"><strong>{item.name}</strong><small>Required: {item.displayQuantity || "amount not specified"}{item.staple ? " · staple" : ""}</small>{category}</div>
-    <div className="supply-inputs"><label>Supplies<select aria-label={`Supplies for ${item.name}`} value={check?.status ?? "need"} onChange={event => save({ status: event.target.value as SupplyCheck["status"] })}>
-      <option value="need">Need to buy</option><option value="enough">Have enough</option><option value="some">Have some</option>
-    </select></label>
-    {check?.status === "some" && <><label>At home<input type="number" min="0" step="any" aria-label={`Amount at home for ${item.name}`} value={check.quantity ?? ""} onChange={event => save({ quantity: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
-      <label>Unit<select aria-label={`Stock unit for ${item.name}`} value={check.unit ?? item.unit ?? ""} onChange={event => save({ unit: event.target.value })}>
-        {Array.from(new Set([item.unit ?? "", "", "item", "g", "kg", "ml", "l", "tsp", "tbsp", "pack", "tin"])).map(unit => <option value={unit} key={unit}>{unit || "No unit"}</option>)}
-      </select></label></>}
-    <strong className="supply-buy">{row.buy ? `Buy ${row.buy.displayQuantity || "as needed"}` : "Covered at home"}</strong></div>
-    {row.reviewReason && <div className="shop-warning" role="alert">{row.reviewReason}<button className="text-button" type="button" onClick={() => save({})}>Recheck current amount</button></div>}
+  const item = row.required, covered = !row.buy && !row.reviewReason;
+  const save = (status: "need" | "enough") => onChange(item, { status, requirement: requirementSignature(item) });
+  return <article className={`supply-row ${covered ? "is-covered" : ""} ${row.reviewReason ? "needs-review" : ""}`}>
+    <button type="button" className="supply-toggle" aria-label={`Already got ${item.name}`} aria-pressed={covered} title={covered ? "Need to buy" : "Already got"} onClick={() => save(covered ? "need" : "enough")}><Check size={17} /></button>
+    <div className="supply-item-name"><strong>{item.name}</strong>{item.staple && <small>Staple</small>}</div>
+    <span className="supply-quantity">{item.displayQuantity || "As needed"}</span>{category}
+    {row.reviewReason && <div className="shop-warning" role="alert">{row.reviewReason}<button className="text-button" type="button" onClick={() => save("need")}>Need to buy</button></div>}
   </article>;
 }
 

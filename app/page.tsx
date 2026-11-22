@@ -123,6 +123,8 @@ import { getSupabaseClient } from "@/lib/supabase-client";
 import { RecipeFilterControls } from "@/components/recipe-filter-controls";
 import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type RecipeFilters } from "@/lib/recipe-filters";
 import { GuidedShopView, ShopDatesEditor, ShopReviewActions, SupplyCheckList, HouseholdDinersEditor } from "@/components/guided-shop";
+import { SnackSelections } from "@/components/snack-selections";
+import { defaultSnackGroups, snackRecipeGroups } from "@/lib/snacks";
 import { attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 
@@ -1138,6 +1140,8 @@ export default function Home() {
   const activeShop = state.guidedShop ?? createShop(formatDateKey(startOfWeek(new Date())), formatDateKey(addDays(startOfWeek(new Date()), 6)), "initial");
   const shoppingStartDate = activeShop.startDate, shoppingEndDate = activeShop.endDate;
   const [returnToGuided, setReturnToGuided] = useState(false);
+  const [returnFromSnackRecipe, setReturnFromSnackRecipe] = useState(false);
+  useEffect(() => { if (activeView !== "add") setReturnFromSnackRecipe(false); }, [activeView]);
   const [recipeSearch, setRecipeSearch] = useState("");
   const [recipeGroupFilter, setRecipeGroupFilter] = useState<RecipeGroupFilter>("all");
   const [recipeFilters, setRecipeFilters] = useState<RecipeFilters>(emptyRecipeFilters);
@@ -1965,7 +1969,7 @@ export default function Home() {
       applyDraft(emptyDraft());
       setEditingRecipeId(null);
       setImportMode("manual");
-      setActiveView("recipes");
+      setActiveView(returnFromSnackRecipe ? "guided" : "recipes");
       void syncPublishedRecipe(recipe).catch((error) => {
         const message = error instanceof Error ? error.message : "The shared recipe catalogue could not be updated.";
         setCloudMessage(`Recipe saved to this household. ${message}`);
@@ -3212,7 +3216,10 @@ export default function Home() {
               days={shopDates(shoppingStartDate, shoppingEndDate).map(date => new Date(`${date}T12:00:00`))} visibleSlots={mealSlots}
               ingredientAliases={state.settings.ingredientAliases} recipeFrequency={recipeFrequencies[meal.recipeId ?? ""] ?? 0}
               onMoveMeal={movePlannedMeal} onRemoveMeal={removeGuidedMeal} onUpdateMeal={updatePlannedMeal} onAddLeftovers={addLeftoverLunch} onOpenRecipe={setSelectedRecipeId} />}
-            extras={renderShopping("extras")} supplies={supplies} review={renderShopping("review")} />
+            extras={<><SnackSelections state={state} updateState={updateState} onOpenRecipe={setSelectedRecipeId} onAddRecipe={() => {
+              applyDraft({ ...emptyDraft(), mealTypes: ["snack"], snackGroup: "Snacks" });
+              setEditingRecipeId(null); setImportMode("manual"); setReturnFromSnackRecipe(true); setActiveView("add");
+            }} />{renderShopping("extras")}</>} supplies={supplies} review={renderShopping("review")} />
         </>}
 
         {activeView === "planner" && (
@@ -3286,6 +3293,8 @@ export default function Home() {
         )}
 
         {activeView === "add" && (
+          <>
+          {returnFromSnackRecipe && <button className="icon-text-button" type="button" onClick={() => setActiveView("guided")}><ChevronLeft size={16} />Return to snacks and extras</button>}
           <AddRecipeView
             importMode={importMode}
             setImportMode={setImportMode}
@@ -3303,6 +3312,7 @@ export default function Home() {
 	            setPhotoRawText={setPhotoRawText}
 	            onPhotoChange={handlePhotoChange}
             draft={draft}
+            snackGroups={Array.from(new Set([...defaultSnackGroups, ...snackRecipeGroups(state.recipes).map(group => group.name)]))}
             setDraft={setDraft}
             storedMealImageUrl={editingRecipeId ? recipeImageUrls[editingRecipeId] : undefined}
             ingredientAliases={state.settings.ingredientAliases}
@@ -3332,6 +3342,7 @@ export default function Home() {
             onAddInstruction={addInstruction}
             onRemoveInstruction={removeInstruction}
           />
+          </>
         )}
 
         {activeView === "shopping" && renderShopping("all")}
@@ -5291,6 +5302,7 @@ function AddRecipeView({
   setPhotoRawText,
   onPhotoChange,
   draft,
+  snackGroups,
   setDraft,
   storedMealImageUrl,
   ingredientAliases,
@@ -5332,6 +5344,7 @@ function AddRecipeView({
   setPhotoRawText: (value: string) => void;
   onPhotoChange: (file: File | null) => void;
   draft: ImportDraft;
+  snackGroups: string[];
   setDraft: (draft: ImportDraft | ((current: ImportDraft) => ImportDraft)) => void;
   storedMealImageUrl?: string;
   ingredientAliases: Record<string, string>;
@@ -5574,6 +5587,12 @@ function AddRecipeView({
               value={draft.servings}
               onChange={(event) => setDraft((current) => ({ ...current, servings: Number(event.target.value) || 1 }))}
             />
+          </label>
+          <label>
+            Snack / extra group (optional)
+            <input list="recipe-snack-groups" maxLength={60} value={draft.snackGroup ?? ""} placeholder="Choose or name a group"
+              onChange={event => setDraft(current => ({ ...current, snackGroup: event.target.value }))} />
+            <datalist id="recipe-snack-groups">{snackGroups.map(group => <option value={group} key={group} />)}</datalist>
           </label>
           <label>
             Prep mins

@@ -43,6 +43,7 @@ export type Recipe = {
   title: string;
   servings: number;
   mealTypes: MealSlot[];
+  snackGroup?: string;
   prepMinutes?: number;
   cookMinutes?: number;
   totalMinutes?: number;
@@ -91,6 +92,7 @@ export type DinnerAttendance = {
   dinnerStatus?: "plan" | "out" | "none" | "leftovers";
 };
 export type SupplyCheck = {
+  // Retain "some" only so older snapshots can request a fresh yes/no supply check.
   status: "need" | "enough" | "some";
   quantity?: number;
   unit?: string;
@@ -106,6 +108,7 @@ export type GuidedShop = {
   basketChecks: Record<string, string>;
   excludedRecipeIds: string[];
   unplannedMeals?: PlannedMeal[];
+  snackSelections?: { recipeId: string; servings: number; selectedIngredientIds?: string[] }[];
   finalizedSignature?: string;
   finalizedAt?: string;
   completedAt?: string;
@@ -196,6 +199,7 @@ export type ImportDraft = {
   title: string;
   servings: number;
   mealTypes: MealSlot[];
+  snackGroup?: string;
   prepMinutes?: number;
   cookMinutes?: number;
   totalMinutes?: number;
@@ -1288,6 +1292,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     title: draft.title.trim() || "Untitled recipe",
     servings: Math.max(1, Number(draft.servings) || 4),
     mealTypes: normalizeMealTypes(draft.mealTypes),
+    snackGroup: draft.snackGroup?.trim().replace(/\s+/g, " ") || undefined,
     prepMinutes: draft.prepMinutes,
     cookMinutes: draft.cookMinutes,
     totalMinutes: draft.totalMinutes,
@@ -1322,6 +1327,7 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     title: recipe.title,
     servings: recipe.servings,
     mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
+    snackGroup: recipe.snackGroup,
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
     totalMinutes: recipe.totalMinutes,

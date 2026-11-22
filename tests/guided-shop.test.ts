@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commonExtraUsageForProfile, occasionalItemsForProfile, recordCompletedShoppingList, recordManualExtraUsage, seedState, type AppState, type DinnerAttendance, type PlannedMeal, type Recipe, type ShoppingListItem } from "../lib/domain";
+import { commonExtraUsageForProfile, draftToRecipe, recipeToDraft, occasionalItemsForProfile, recordCompletedShoppingList, recordManualExtraUsage, seedState, type AppState, type DinnerAttendance, type PlannedMeal, type Recipe, type ShoppingListItem } from "../lib/domain";
 import { attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, resolveSupply, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, shopSignature } from "../lib/guided-shop";
 import { buildAutoDinnerPlan } from "../lib/dinner-planner";
 import { applyGuidedDinnerPreview, calendarDays, calendarRange, placeGuidedMeal } from "../lib/guided-planning";
+import { setSnackSelection, snackRecipeGroups } from "../lib/snacks";
 
 const start = "2026-11-23", end = "2026-11-29";
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
@@ -128,25 +129,77 @@ test("removing dinner placeholders in either view reopens the day; guided recipe
   assert.deepEqual(removeMealFromPlan(current, "m", true).guidedShop!.excludedRecipeIds, ["r"]);
   assert.deepEqual(removeMealFromPlan(current, "m").guidedShop!.excludedRecipeIds, []);
 });
-test("partial supplies subtract only compatible quantities", () => {
+test("legacy partial supplies require a fresh yes/no check and never silently subtract stock", () => {
   const shop = createShop(start, end), carrots = item();
   shop.supplyChecks.carrots = { status: "some", quantity: 0.2, unit: "kg", requirement: requirementSignature(carrots) };
-  assert.equal(resolveSupply(carrots, shop).buy?.quantity, 400);
-  shop.supplyChecks.carrots.unit = "ml";
-  assert.match(resolveSupply(carrots, shop).reviewReason!, /Units/);
-  shop.supplyChecks.carrots = { status: "some", quantity: 200, requirement: requirementSignature(carrots) };
-  assert.equal(resolveSupply(carrots, shop).buy?.quantity, 400);
+  assert.equal(resolveSupply(carrots, shop).buy?.quantity, 600);
+  assert.match(resolveSupply(carrots, shop).reviewReason!, /Already got or Need to buy/);
   shop.supplyChecks.carrots.quantity = 900;
-  assert.equal(resolveSupply(carrots, shop).buy, null);
+  assert.equal(resolveSupply(carrots, shop).buy?.quantity, 600);
 });
-test("partial volume and count quantities work; unspecified quantities require review", () => {
-  const shop = createShop(start, end), milk = item("milk", 1, "l"), onions = item("onions", 4, "item"), unknown = { ...item("herbs"), quantity: undefined, displayQuantity: "as needed" };
-  shop.supplyChecks.milk = { status: "some", quantity: 200, unit: "ml", requirement: requirementSignature(milk) };
-  shop.supplyChecks.onions = { status: "some", quantity: 2, unit: "", requirement: requirementSignature(onions) };
-  shop.supplyChecks.herbs = { status: "some", quantity: 1, unit: "g", requirement: requirementSignature(unknown) };
-  assert.equal(resolveSupply(milk, shop).buy?.quantity, 0.8);
-  assert.equal(resolveSupply(onions, shop).buy?.quantity, 2);
-  assert.ok(resolveSupply(unknown, shop).reviewReason);
+test("already got removes the whole requirement and undo restores it, including unspecified quantities", () => {
+  const shop = createShop(start, end);
+  for (const required of [item(), item("milk", 1, "l"), { ...item("herbs"), quantity: undefined }]) {
+    shop.supplyChecks[required.id] = { status: "enough", requirement: requirementSignature(required) };
+    assert.equal(resolveSupply(required, shop).buy, null);
+    shop.supplyChecks[required.id] = { status: "need", requirement: requirementSignature(required) };
+    assert.equal(resolveSupply(required, shop).buy?.quantity, required.quantity);
+    assert.equal(resolveSupply(required, shop).reviewReason, undefined);
+  }
+});
+test("snack groups survive recipe editing and combine case and whitespace variants", () => {
+  const lunch = { ...recipe("Quesadillas"), mealTypes: ["lunch" as const], snackGroup: " Sophia   lunches " };
+  const saved = draftToRecipe(recipeToDraft(lunch));
+  assert.equal(saved.snackGroup, "Sophia lunches");
+  const groups = snackRecipeGroups([saved, { ...recipe("Wraps"), snackGroup: "sophia lunches" }, { ...recipe("Fruit"), mealTypes: ["snack"] }, recipe("Dinner")]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups.find(group => group.name === "Sophia lunches")?.recipes.length, 2);
+  assert.equal(groups.find(group => group.name === "Snacks")?.recipes[0].title, "Fruit");
+  assert.equal(draftToRecipe({ ...recipeToDraft(lunch), snackGroup: " " }).snackGroup, undefined);
+});
+test("shop snacks merge with dinner ingredients, scale, deselect and do not add dated meals", () => {
+  let current = state(); current.plannedMeals = [{ ...meal(), extraSideIngredients: [] }];
+  current.recipes.push({ ...recipe("smoothie"), snackGroup: "Smoothies" });
+  current = setSnackSelection(current, "smoothie", 4);
+  assert.equal(requiredShopItems(current, current.guidedShop!)[0].quantity, 1800);
+  assert.equal(current.plannedMeals.length, 1);
+  current = setSnackSelection(current, "smoothie", 1);
+  assert.equal(current.guidedShop!.snackSelections!.length, 1);
+  assert.equal(requiredShopItems(current, current.guidedShop!)[0].quantity, 900);
+  current = setSnackSelection(current, "smoothie", 0);
+  assert.equal(requiredShopItems(current, current.guidedShop!)[0].quantity, 600);
+});
+test("snack selections survive snapshots and date changes but new shops start empty", () => {
+  const current = setSnackSelection(state(), "r", 3);
+  const changed = changeShopDates(JSON.parse(JSON.stringify(current)), "2026-12-01", "2026-12-07");
+  assert.deepEqual(changed.guidedShop!.snackSelections, current.guidedShop!.snackSelections);
+  assert.equal(requiredShopItems(changed, changed.guidedShop!)[0].quantity, 900);
+  assert.equal(createShop("2026-12-08", "2026-12-14").snackSelections, undefined);
+  assert.equal(setSnackSelection(current, "missing", 2), current);
+  assert.equal(setSnackSelection(current, "r", NaN), current);
+  const withoutRecipe = { ...current, recipes: [] };
+  assert.equal(requiredShopItems(withoutRecipe, withoutRecipe.guidedShop!).length, 0);
+  assert.equal(setSnackSelection(withoutRecipe, "r", 0).guidedShop!.snackSelections!.length, 0);
+});
+test("optional snack ingredients are explicit and retain their selections when portions change", () => {
+  let current = state(); current.recipes[0].ingredients.push({ id: "optional", name: "yoghurt", quantity: 100, unit: "g", category: "Dairy & Eggs", role: "optional" });
+  current = setSnackSelection(current, "r", 2);
+  assert.equal(requiredShopItems(current, current.guidedShop!).length, 1);
+  current = setSnackSelection(current, "r", 4, ["optional", "unknown"]);
+  assert.equal(requiredShopItems(current, current.guidedShop!).find(row => row.name.toLowerCase() === "yoghurt")?.quantity, 200);
+  current = setSnackSelection(current, "r", 1);
+  assert.deepEqual(current.guidedShop!.snackSelections![0].selectedIngredientIds, ["optional"]);
+  assert.equal(requiredShopItems(current, current.guidedShop!).find(row => row.name.toLowerCase() === "yoghurt")?.quantity, 50);
+});
+test("snack changes invalidate affected supply checks and a finalised list", () => {
+  let current = setSnackSelection(state(), "r", 2);
+  const required = requiredShopItems(current, current.guidedShop!);
+  current.guidedShop!.supplyChecks[required[0].id] = { status: "enough", requirement: requirementSignature(required[0]) };
+  current.guidedShop!.finalizedSignature = shopSignature(required, current.guidedShop!);
+  current = setSnackSelection(current, "r", 4);
+  const nextItems = requiredShopItems(current, current.guidedShop!);
+  assert.ok(resolveSupply(nextItems[0], current.guidedShop!).reviewReason);
+  assert.equal(shopIsFinalized(nextItems, current.guidedShop!), false);
 });
 test("late requirements invalidate only affected supplies and basket acknowledgements", () => {
   const shop = createShop(start, end), carrots = item(), milk = item("milk", 2, "l");

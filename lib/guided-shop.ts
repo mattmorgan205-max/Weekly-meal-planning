@@ -1,10 +1,11 @@
 import {
-  addDays, createId, displayQuantity, formatDateKey, generateShoppingList, normalizeUnit,
-  standardizeIngredientQuantity, type AppState, type DinnerAttendance, type GuidedShop,
+  addDays, createId, formatDateKey, generateShoppingList, normalizeUnit,
+  type AppState, type DinnerAttendance, type GuidedShop,
   type HouseholdDiner, type PlannedMeal, type Recipe, type ShoppingListItem, type SupplyCheck
 } from "./domain";
+import { snackShoppingMeals } from "./snacks";
 
-export const guidedSteps = ["Dates & diners", "Meals", "Extras", "Check supplies", "Review & shop"];
+export const guidedSteps = ["Dates & diners", "Meals", "Snacks and extras", "Check supplies", "Review & shop"];
 export const shopRangeKey = (shop: Pick<GuidedShop, "startDate" | "endDate">) => `${shop.startDate}__${shop.endDate}`;
 
 export function shopDates(start: string, end: string) {
@@ -71,7 +72,7 @@ export function createShop(startDate: string, endDate: string, id = createId("sh
 export function requiredShopItems(state: AppState, shop: GuidedShop) {
   const range = shopRangeKey(shop);
   const hidden = Object.fromEntries(Object.entries(state.hiddenShoppingItems).filter(([key]) => key.startsWith(`${range}__`)).map(([key, value]) => [key.slice(range.length + 2), value]));
-  return generateShoppingList(state.recipes, state.plannedMeals.filter(meal => meal.date >= shop.startDate && meal.date <= shop.endDate),
+  return generateShoppingList(state.recipes, [...state.plannedMeals.filter(meal => meal.date >= shop.startDate && meal.date <= shop.endDate), ...snackShoppingMeals(shop)],
     { ...state.settings, includeStaples: true }, {}, hidden,
     state.manualShoppingItems.filter(item => item.shoppingRangeKey === range).map(item => ({ ...item, checked: false })));
 }
@@ -107,14 +108,6 @@ export function changeShopDates(state: AppState, startDate: string, endDate: str
     manualShoppingItems: state.manualShoppingItems.map(item => item.shoppingRangeKey === previous ? { ...item, shoppingRangeKey: next } : item) }, startDate, endDate);
 }
 
-function stockBase(quantity: number, unit?: string) {
-  const standardized = standardizeIngredientQuantity(quantity, unit);
-  const normalized = normalizeUnit(standardized.unit);
-  const conversions: Record<string, [number, string]> = { kg: [1000, "g"], l: [1000, "ml"], tbsp: [15, "ml"], tsp: [5, "ml"], "": [1, "item"], item: [1, "item"] };
-  const [factor, base] = conversions[normalized] ?? [1, normalized];
-  return { quantity: standardized.quantity! * factor, unit: base, factor: quantity ? standardized.quantity! * factor / quantity : factor };
-}
-
 export type SupplyResult = { required: ShoppingListItem; buy: ShoppingListItem | null; check?: SupplyCheck; reviewReason?: string };
 export function resolveSupply(item: ShoppingListItem, shop: GuidedShop): SupplyResult {
   const signature = requirementSignature(item), check = shop.supplyChecks[item.id];
@@ -122,12 +115,7 @@ export function resolveSupply(item: ShoppingListItem, shop: GuidedShop): SupplyR
   if (check && check.requirement !== signature) return { ...result, reviewReason: "Required amount changed. Check supplies again." };
   if (!check || check.status === "need") return result;
   if (check.status === "enough") return { ...result, buy: null };
-  if (typeof item.quantity !== "number" || !Number.isFinite(item.quantity) || typeof check.quantity !== "number" || !Number.isFinite(check.quantity) || check.quantity < 0)
-    return { ...result, reviewReason: "Enter a known required amount and the amount at home, or choose Need to buy." };
-  const required = stockBase(item.quantity, item.unit), available = stockBase(check.quantity, check.unit ?? item.unit);
-  if (required.unit !== available.unit) return { ...result, reviewReason: "Units do not match. Check the amount at home." };
-  const remaining = Math.max(0, required.quantity - available.quantity) / required.factor;
-  return { ...result, buy: remaining <= 0 ? null : { ...result.buy!, quantity: Math.round(remaining * 1000) / 1000, displayQuantity: displayQuantity(remaining, item.unit) } };
+  return { ...result, reviewReason: "Previously marked as Have some. Choose Already got or Need to buy." };
 }
 export function resolveShop(items: ShoppingListItem[], shop: GuidedShop) { return items.map(item => resolveSupply(item, shop)); }
 export function shopSignature(items: ShoppingListItem[], shop: GuidedShop) {

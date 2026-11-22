@@ -3354,19 +3354,19 @@ h3 {
 .guided-shop .mobile-move-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-items: end; }
 .guided-shop .mobile-move-controls button { grid-column: 1 / -1; }
 .guided-shop .mobile-meal-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.supply-check-list { display: grid; gap: 20px; }
+.supply-check-list { display: grid; gap: 16px; }
 .supply-category { min-width: 0; }
-.supply-row { position: relative; padding: 12px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 12px; align-items: center; }
+.supply-category h3 { margin-bottom: 8px; font-size: 0.95rem; }
+.supply-row { position: relative; padding: 5px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 32px minmax(0, 1fr) minmax(70px, auto) 32px; gap: 10px; align-items: center; min-height: 43px; }
+.supply-toggle { display: grid; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0; border: 1px solid #8b998f; border-radius: 4px; background: white; color: transparent; }
+.supply-toggle:hover, .supply-toggle:focus-visible { color: #53715d; border-color: #34694a; }
+.supply-toggle[aria-pressed=true] { color: white; background: #3f6d51; border-color: #3f6d51; }
+.supply-row.is-covered .supply-item-name strong { text-decoration: line-through; color: var(--muted); }
 .supply-item-name { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; min-width: 0; }
-.supply-item-name { padding-right: 44px; }
-.supply-item-name > .shopping-category-control > .icon-button { position: absolute; top: 10px; right: 0; }
 .supply-item-name strong { font-size: 0.88rem; overflow-wrap: anywhere; }
-.supply-item-name small { width: 100%; color: var(--muted); font-size: 0.75rem; }
-.supply-inputs { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
-.supply-inputs label { font-size: 0.7rem; }
-.supply-inputs input { width: 90px; }
-.supply-inputs select, .supply-inputs input { min-height: 38px; padding: 6px; }
-.supply-buy { margin-left: auto; align-self: center; font-size: 0.8rem; }
+.supply-item-name small { color: var(--muted); font-size: 0.75rem; }
+.supply-quantity { color: var(--muted); font-size: 0.85rem; text-align: right; overflow-wrap: anywhere; max-width: 180px; }
+.supply-row > .shopping-category-control > .icon-button { min-height: 30px; width: 30px; height: 30px; padding: 4px; }
 .supply-row .shop-warning { grid-column: 1 / -1; }
 .supply-row .shopping-category-popover { z-index: 20; }
 .shop-review-actions { border-block: 1px solid var(--line); padding-block: 16px; }
@@ -3387,14 +3387,42 @@ h3 {
   .shop-diner-edit > button { grid-column: 3; grid-row: 1; }
   .shop-dates-editor .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .shop-dates-editor .segmented-control { grid-column: 1 / -1; }
-  .supply-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .supply-inputs { gap: 8px; }
-  .supply-inputs select { max-width: 150px; }
-  .supply-inputs input { width: 72px; }
-  .supply-buy { margin-left: 0; }
+  .supply-row { grid-template-columns: 30px minmax(0, 1fr) minmax(48px, 80px) 28px; gap: 6px; }
   .shop-review-actions .section-heading { align-items: start; flex-wrap: wrap; }
   .shop-review-actions .button-row { gap: 6px; }
   .shop-review-actions button { min-height: 40px; font-size: 0.78rem; }
+}
+.snack-selections { padding-bottom: 20px; border-bottom: 1px solid var(--line); min-width: 0; }
+.snack-selections .section-heading { flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.snack-selections .section-heading h3 { margin-bottom: 4px; }
+.snack-selections .section-heading .muted { font-size: 0.85rem; }
+.snack-search { display: flex; align-items: center; gap: 8px; max-width: 400px; margin-bottom: 18px; }
+.snack-search input { min-width: 0; min-height: 36px; padding: 7px 10px; }
+.snack-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; align-items: start; }
+.snack-group { min-width: 0; }
+.snack-group h4 { margin: 0 0 6px; font-size: 0.9rem; }
+.snack-group-recipes { display: grid; grid-template-columns: minmax(0, 1fr); }
+.snack-choice { display: grid; grid-template-columns: 32px minmax(0, 1fr) 118px; gap: 10px; align-items: center; padding: 10px 6px; border-top: 1px solid var(--line); min-height: 76px; }
+.snack-choice.is-selected { background: #eff6f1; }
+.snack-select.icon-button { min-height: 30px; width: 30px; height: 30px; padding: 4px; border-radius: 4px; }
+.snack-select[aria-pressed=true] { color: white; background: #3f6d51; border-color: #3f6d51; }
+.snack-choice-name { min-width: 0; display: grid; gap: 4px; }
+.snack-choice-name > button { text-align: left; background: transparent; border: 0; padding: 0; min-height: 0; font-weight: 650; font-size: 0.9rem; overflow-wrap: anywhere; }
+.snack-choice-name > small { color: var(--muted); font-size: 0.78rem; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.snack-yield { color: var(--muted); font-size: 0.8rem; text-align: right; }
+.snack-portions { display: grid; gap: 4px; justify-items: end; }
+.snack-portions > span { font-size: 0.75rem; color: var(--muted); }
+.snack-portions > div { display: grid; grid-template-columns: 28px 54px 28px; align-items: center; }
+.snack-portions .icon-button { width: 28px; height: 30px; min-height: 30px; padding: 4px; border: 0; background: transparent; }
+.snack-portions input { min-width: 0; width: 54px; padding: 4px; min-height: 30px; text-align: center; }
+.snack-optional { grid-column: 2 / -1; font-size: 0.8rem; }
+.snack-optional summary { cursor: pointer; padding: 4px 0; }
+.snack-optional label { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 6px 0; }
+.snack-optional input { width: 16px; height: 16px; min-height: 16px; }
+@media (max-width: 1050px) { .snack-groups { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) {
+  .snack-choice { grid-template-columns: 30px minmax(0, 1fr) 110px; gap: 6px; padding-inline: 0; }
+  .snack-selections .section-heading .icon-text-button { min-height: 36px; font-size: 0.85rem; }
 }
 .guided-dates-workspace { display: grid; grid-template-columns: 284px minmax(0, 1fr); gap: 32px; align-items: start; }
 .guided-shop .guided-tool-heading, .calendar-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
