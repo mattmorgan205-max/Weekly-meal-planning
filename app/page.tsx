@@ -124,6 +124,7 @@ import { RecipeFilterControls } from "@/components/recipe-filter-controls";
 import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type RecipeFilters } from "@/lib/recipe-filters";
 import { GuidedShopView, ShopDatesEditor, ShopReviewActions, SupplyCheckList, HouseholdDinersEditor } from "@/components/guided-shop";
 import { SnackSelections } from "@/components/snack-selections";
+import { addLeftoverMeal } from "@/lib/guided-planning";
 import { defaultSnackGroups, snackColumn } from "@/lib/snacks";
 import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
@@ -1735,24 +1736,7 @@ export default function Home() {
   }
 
   function addLeftoverLunch(meal: (typeof state.plannedMeals)[number]) {
-    const nextDay = formatDateKey(addDays(new Date(`${meal.date}T12:00:00`), 1));
-    updateState((current) => ({
-      ...current,
-      plannedMeals: [
-        ...current.plannedMeals,
-        {
-          id: createId("meal"),
-          date: nextDay,
-          slot: "lunch",
-          recipeId: meal.recipeId,
-          manualTitle: meal.recipeId ? undefined : meal.manualTitle,
-          peopleCount: 0,
-          notes: "Leftovers",
-          selectedIngredientIds: meal.selectedIngredientIds,
-          extraSideIngredients: meal.extraSideIngredients?.map((ingredient) => ({ ...ingredient }))
-        }
-      ]
-    }));
+    updateState(current => addLeftoverMeal(current, meal));
   }
 
   function moveWeek(direction: -1 | 1) {
@@ -3210,13 +3194,9 @@ export default function Home() {
         {activeView === "guided" && state.guidedShop && <>
           <GuidedShopView state={state} updateState={updateState} onDates={applyShoppingDates}
             onOpenMeal={(date, slot) => { setMealPicker({ date, slot }); setMealPickerQuery(""); }}
-            onSwap={meal => { setMealPicker({ date: meal.date, slot: meal.slot, replaceMealId: meal.id }); setMealPickerQuery(""); }}
             onRemove={removeGuidedMeal} preferenceScores={autoPlannerPreferenceScores} reactions={recipeReactions} onOpenRecipe={setSelectedRecipeId}
             suggestions={suggestUseUpRecipes(state.recipes.filter(recipe => recipe.mealTypes.includes("dinner")), state.useUpIngredients, state.settings.ingredientAliases, recipeReactions, autoPlannerPreferenceScores).suggestions}
-            renderMeal={meal => <MobileMealCard key={meal.id} meal={meal} recipe={state.recipes.find(recipe => recipe.id === meal.recipeId)}
-              days={shopDates(shoppingStartDate, shoppingEndDate).map(date => new Date(`${date}T12:00:00`))} visibleSlots={mealSlots}
-              ingredientAliases={state.settings.ingredientAliases} recipeFrequency={recipeFrequencies[meal.recipeId ?? ""] ?? 0}
-              onMoveMeal={movePlannedMeal} onRemoveMeal={removeGuidedMeal} onUpdateMeal={updatePlannedMeal} onAddLeftovers={addLeftoverLunch} onOpenRecipe={setSelectedRecipeId} />}
+            onAddLeftovers={addLeftoverLunch}
             extras={<><SnackSelections state={state} updateState={updateState} onOpenRecipe={setSelectedRecipeId} onAddRecipe={group => {
               applyDraft({ ...emptyDraft(), mealTypes: ["snack"], snackGroup: group });
               setEditingRecipeId(null); setImportMode("manual"); setReturnFromSnackRecipe(true); setActiveView("add");

@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Check, Copy, Plus, RefreshCw, Settings, Trash2, Undo2, UserMinus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Plus, Settings, Trash2, Undo2, UserMinus } from "lucide-react";
 import { addDays, createId, formatDateKey, groceryCategories, type AppState, type DinnerAttendance, type GuidedShop, type HouseholdDiner, type MealSlot, type PlannedMeal, type RecipeReaction, type ShoppingListItem, type SupplyCheck } from "@/lib/domain";
-import { attendancePortions, changeDiners as updateDiners, createShop, defaultAttendance, dinnerNeedsMeal, guidedSteps, recipeAllowedForDinner, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, type SupplyResult } from "@/lib/guided-shop";
+import { attendancePortions, changeDiners as updateDiners, createShop, defaultAttendance, guidedSteps, requiredShopItems, requirementSignature, resolveShop, setAttendance, shopDates, shopIsFinalized, type SupplyResult } from "@/lib/guided-shop";
 import { ShopCalendar } from "./shop-calendar";
 import { GuidedMealWorkspace } from "./guided-meal-workspace";
+import { GuidedMealCalendar } from "./guided-meal-calendar";
 
 type UpdateState = (updater: (current: AppState) => AppState) => void;
 const dateLabel = (date: string) => new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
@@ -73,10 +74,10 @@ function AttendanceRow({ date, diners, attendance, note, onChange, onNote, onApp
   </div>;
 }
 
-export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap, onRemove, renderMeal, extras, supplies, review, suggestions, preferenceScores, reactions, onOpenRecipe }: {
+export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onRemove, onAddLeftovers, extras, supplies, review, suggestions, preferenceScores, reactions, onOpenRecipe }: {
   state: AppState; updateState: UpdateState; onDates: (start: string, end: string) => void;
-  onOpenMeal: (date: string, slot: MealSlot) => void; onSwap: (meal: PlannedMeal) => void;
-  onRemove: (id: string) => void; renderMeal: (meal: PlannedMeal) => ReactNode;
+  onOpenMeal: (date: string, slot: MealSlot) => void; onAddLeftovers: (meal: PlannedMeal) => void;
+  onRemove: (id: string) => void;
   extras: ReactNode; supplies: ReactNode; review: ReactNode;
   suggestions: { recipeIds: string[]; coveredIngredients: string[]; missingIngredients: string[] }[];
   preferenceScores: Record<string, number>; reactions: Record<string, RecipeReaction>; onOpenRecipe: (id: string) => void;
@@ -94,14 +95,6 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap
   const setStep = (value: number) => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, step: value } }));
   function changeDiners(next: HouseholdDiner[]) {
     updateState(current => updateDiners(current, next));
-  }
-  function statusForDay(date: string, dinnerStatus: DinnerAttendance["dinnerStatus"]) {
-    updateState(current => {
-      const next = setAttendance(current, date, { ...attendanceFor(date), dinnerStatus });
-      const plannedMeals = next.plannedMeals.filter(meal => !(meal.date === date && meal.slot === "dinner" && !meal.recipeId && meal.notes === "Guided dinner status"));
-      if (dinnerStatus && dinnerStatus !== "plan") plannedMeals.push({ id: createId("meal"), date, slot: "dinner", peopleCount: 0, manualTitle: dinnerStatus === "out" ? "Eating out" : dinnerStatus === "none" ? "No meal needed" : "Leftovers", notes: "Guided dinner status" });
-      return { ...next, plannedMeals };
-    });
   }
   const renderAttendance = (date: string) => <AttendanceRow date={date} diners={diners} attendance={attendanceFor(date)} note={state.dayNotes[date] ?? ""} compact={step === 1}
     onChange={value => updateState(current => setAttendance(current, date, value))}
@@ -143,40 +136,7 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onSwap
       </section>
     </div>}
     {step === 1 && <GuidedMealWorkspace key={`${shop.id}:${shop.startDate}:${shop.endDate}`} state={state} updateState={updateState} suggestions={suggestions} preferenceScores={preferenceScores} reactions={reactions} onOpenRecipe={onOpenRecipe}>
-      {({ dropProps, moveControl, parkMeal }) => <div className="guided-days">{dates.map(date => {
-        const attendance = attendanceFor(date), meals = state.plannedMeals.filter(meal => meal.date === date && meal.slot === "dinner");
-        const drop = dropProps(date);
-        return <section {...drop} className={`guided-day ${date === today ? "is-today" : ""} ${drop.className ?? ""}`} key={date} aria-label={`Dinner on ${dateLabel(date)}`} aria-current={date === today ? "date" : undefined}>
-          {date === today && <small className="today-label">Today</small>}{renderAttendance(date)}
-          {meals.map(meal => {
-            const recipe = state.recipes.find(row => row.id === meal.recipeId);
-            const expected = dinnerNeedsMeal(attendance) ? attendancePortions(attendance, state.settings.defaultPeople) + (meal.extraPortions ?? 0) : 0;
-            return <div className="guided-planned-meal" key={meal.id}>
-              {recipe && !recipeAllowedForDinner(recipe, date, state.dinnerAttendance, state.dayNotes) && <p role="alert" className="shop-warning">This meal does not match the current diners or dinner status.</p>}
-              <div className="guided-drag-meal">{meal.notes !== "Guided dinner status" && moveControl(meal)}{renderMeal(meal)}</div>
-              <details className="guided-meal-options"><summary>Meal options</summary><div className="guided-meal-actions"><button type="button" className="icon-button" title={`Swap ${recipe?.title ?? meal.manualTitle}`} onClick={() => onSwap(meal)}><RefreshCw size={16} /></button>
-                <button type="button" className="icon-button danger" title={`Remove ${recipe?.title ?? meal.manualTitle} and allow refill`} onClick={() => onRemove(meal.id)}><Trash2 size={16} /></button>
-                {meal.notes !== "Guided dinner status" && <button type="button" className="icon-text-button" onClick={() => parkMeal(meal)}><Undo2 size={15} />Unschedule</button>}
-                <label>Cook extra portions<input type="number" min="0" max="50" step="0.5" disabled={!dinnerNeedsMeal(attendance) || !recipe} value={meal.extraPortions ?? 0} onChange={event => {
-                  const extra = Math.max(0, Number(event.target.value)); updateState(current => ({ ...current, plannedMeals: current.plannedMeals.map(row => row.id === meal.id
-                    ? { ...scaleMealPortions(row, Math.max(0, row.peopleCount - (row.extraPortions ?? 0)) + extra), extraPortions: extra } : row) }));
-                }} /></label>
-                {meal.portionSource !== "diners" && <button type="button" className="text-button" onClick={() => updateState(current => ({ ...current, plannedMeals: current.plannedMeals.map(row => row.id === meal.id ? { ...scaleMealPortions(row, expected), portionSource: "diners" } : row) }))}>Use diner portions ({expected})</button>}
-              </div></details>
-            </div>;
-          })}
-          {!meals.length && !dinnerNeedsMeal(attendance) && <p className="muted">{attendance.dinnerStatus === "out" ? "Eating out" : attendance.dinnerStatus === "leftovers" ? "Leftovers: no new ingredients" : "No dinner to plan"}</p>}
-          {!meals.length && dinnerNeedsMeal(attendance) && <button type="button" className="guided-empty-dinner" onClick={() => onOpenMeal(date, "dinner")}><Plus size={16} />Choose dinner</button>}
-          <details className="guided-other-meals"><summary>Day options & other meals</summary>
-          <div className="guided-dinner-status"><label>Dinner<select value={attendance.dinnerStatus ?? "plan"} onChange={event => statusForDay(date, event.target.value as DinnerAttendance["dinnerStatus"])}>
-            <option value="plan">Plan a meal</option><option value="out">Eating out</option><option value="none">No meal needed</option><option value="leftovers">Leftovers</option>
-          </select></label>{dinnerNeedsMeal(attendance) && <button type="button" className="icon-text-button" onClick={() => onOpenMeal(date, "dinner")}><Plus size={16} />Add dinner</button>}</div>
-          {(["breakfast", "lunch", "snack"] as MealSlot[]).map(slot => <div key={slot}>
-            <div className="section-heading"><strong>{slot[0].toUpperCase() + slot.slice(1)}</strong><button type="button" className="icon-button" title={`Add ${slot} on ${date}`} onClick={() => onOpenMeal(date, slot)}><Plus size={16} /></button></div>
-            {state.plannedMeals.filter(meal => meal.date === date && meal.slot === slot).map(meal => <div key={meal.id}>{renderMeal(meal)}</div>)}
-          </div>)}</details>
-        </section>;
-      })}</div>}
+      {controls => <GuidedMealCalendar state={state} updateState={updateState} controls={controls} onOpenMeal={onOpenMeal} onOpenRecipe={onOpenRecipe} onRemove={onRemove} onAddLeftovers={onAddLeftovers} />}
     </GuidedMealWorkspace>}
     {step === 2 && extras}{step === 3 && supplies}{step === 4 && review}
     {applyAllDate && <div className="modal-backdrop"><section className="modal small-modal" role="dialog" aria-modal="true" aria-label="Apply diners to all days">

@@ -3,7 +3,7 @@ import test from "node:test";
 import { commonExtraUsageForProfile, draftToRecipe, recipeToDraft, occasionalItemsForProfile, recordCompletedShoppingList, recordManualExtraUsage, seedState, type AppState, type DinnerAttendance, type PlannedMeal, type Recipe, type ShoppingListItem } from "../lib/domain";
 import { addedShopExtras, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, resolveSupply, scaleMealPortions, setAttendance, shopDates, shopIsFinalized, shopSignature } from "../lib/guided-shop";
 import { buildAutoDinnerPlan } from "../lib/dinner-planner";
-import { applyGuidedDinnerPreview, calendarDays, calendarRange, placeGuidedMeal } from "../lib/guided-planning";
+import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange, mealCalendarDays, mealSource, placeGuidedMeal } from "../lib/guided-planning";
 import { defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 
 const start = "2026-11-23", end = "2026-11-29";
@@ -26,6 +26,81 @@ test("mini-month has six Monday-first weeks and supports ranges across months in
   assert.deepEqual(calendarRange("2026-12-06", "2026-11-23"), { start: "2026-11-23", end: "2026-12-06" });
   assert.deepEqual(calendarRange(start, start), { start, end: start });
   assert.equal(calendarRange(start, "2026-12-07"), null);
+});
+test("meal calendar shows complete Monday-first weeks with a two-week minimum", () => {
+  assert.equal(mealCalendarDays(start, start).length, 14);
+  assert.equal(mealCalendarDays(start, "2026-12-06").length, 14);
+  const midweek = mealCalendarDays("2026-11-25", "2026-12-08");
+  assert.equal(midweek.length, 21); assert.equal(midweek[0], start); assert.equal(midweek[20], "2026-12-13");
+  const newYear = mealCalendarDays("2026-12-30", "2027-01-04");
+  assert.equal(newYear[0], "2026-12-28"); assert.equal(newYear[13], "2027-01-10");
+  assert.deepEqual(mealCalendarDays("invalid", end), []);
+});
+test("lunch moves keep portions and can use a day with no dinner", () => {
+  const current = state(), nextDay = "2026-11-24";
+  current.plannedMeals = [{ ...meal("lunch", 3), slot: "lunch" }];
+  current.dinnerAttendance![nextDay] = { ...attendance(false), dinnerStatus: "out" };
+  const result = placeGuidedMeal(current, { kind: "planned", meal: current.plannedMeals[0] }, nextDay, "lunch");
+  assert.equal(result.error, undefined);
+  assert.equal(result.state.plannedMeals[0].peopleCount, 3);
+  assert.equal(result.state.plannedMeals[0].date, nextDay);
+  assert.equal(result.state.plannedMeals[0].slot, "lunch");
+  assert.ok(placeGuidedMeal(current, { kind: "planned", meal: current.plannedMeals[0] }, nextDay, "dinner").error);
+});
+test("same-day lunch and dinner swaps scale dinner diners and keep lunch portions", () => {
+  const current = state(); current.dinnerAttendance![start] = attendance(true);
+  current.plannedMeals = [{ ...meal("lunch", 3), slot: "lunch" }, { ...meal("dinner", 2), portionSource: "diners" }];
+  const result = placeGuidedMeal(current, { kind: "planned", meal: current.plannedMeals[0] }, start, "dinner");
+  assert.equal(result.error, undefined);
+  const dinner = result.state.plannedMeals.find(row => row.id === "lunch")!;
+  assert.equal(dinner.slot, "dinner"); assert.equal(dinner.peopleCount, 1.5); assert.equal(dinner.portionSource, "diners");
+  assert.equal(dinner.extraSideIngredients![0].quantity, 100);
+  const lunch = result.state.plannedMeals.find(row => row.id === "dinner")!;
+  assert.equal(lunch.slot, "lunch"); assert.equal(lunch.peopleCount, 2); assert.equal(lunch.portionSource, "manual");
+});
+test("new lunch suggestions use household portions rather than dinner attendance", () => {
+  const current = state(); current.settings.defaultPeople = 4; current.dinnerAttendance![start] = attendance(false);
+  const result = placeGuidedMeal(current, { kind: "new", meal: { ...meal("new", 1), portionSource: "diners" } }, start, "lunch");
+  assert.equal(result.state.plannedMeals[0].peopleCount, 4);
+  assert.equal(result.state.plannedMeals[0].extraSideIngredients![0].quantity, 800);
+  assert.equal(result.state.plannedMeals[0].portionSource, "manual");
+});
+test("lunch swaps validate the displaced recipe before moving it to dinner", () => {
+  const current = state(); current.recipes.push(recipe("restricted", true)); current.dinnerAttendance![start] = attendance(true);
+  current.plannedMeals = [meal("safe"), { ...meal("restricted"), recipeId: "restricted", slot: "lunch" }];
+  const result = placeGuidedMeal(current, { kind: "planned", meal: current.plannedMeals[0] }, start, "lunch");
+  assert.match(result.error!, /Cannot swap/); assert.equal(result.state, current);
+});
+test("swapping with a specific lunch preserves the other lunch and rejects stale targets", () => {
+  const current = state(), nextDay = "2026-11-24";
+  current.plannedMeals = [meal("dinner"), { ...meal("lunch"), date: nextDay, slot: "lunch" }, { ...meal("leftover", 0), date: nextDay, slot: "lunch", notes: "Leftovers" }];
+  const source = { kind: "planned" as const, meal: current.plannedMeals[0] };
+  assert.match(placeGuidedMeal(current, source, nextDay, "lunch").error!, /particular meal/);
+  assert.match(placeGuidedMeal(current, source, nextDay, "lunch", "missing").error!, /has moved/);
+  const result = placeGuidedMeal(current, source, nextDay, "lunch", "lunch");
+  assert.equal(result.error, undefined); assert.equal(result.state.plannedMeals.length, 3);
+  assert.deepEqual(result.state.plannedMeals.find(row => row.id === "leftover"), current.plannedMeals[2]);
+  assert.equal(result.state.plannedMeals.find(row => row.id === "lunch")?.slot, "dinner");
+});
+test("leftovers append beyond the shop without replacing lunch or adding shopping requirements", () => {
+  const current = state(); current.plannedMeals = [{ ...meal("dinner"), date: end }, { ...meal("existing"), date: "2026-11-30", slot: "lunch" }];
+  const before = requiredShopItems(current, current.guidedShop!);
+  const result = addLeftoverMeal(current, current.plannedMeals[0]);
+  const leftover = result.plannedMeals[2];
+  assert.equal(result.plannedMeals[1], current.plannedMeals[1]);
+  assert.equal(leftover.date, "2026-11-30"); assert.equal(leftover.slot, "lunch"); assert.equal(leftover.peopleCount, 0);
+  assert.equal(leftover.portionSource, "manual"); assert.equal(leftover.notes, "Leftovers");
+  assert.deepEqual(requiredShopItems(result, result.guidedShop!), before);
+  const inside = placeGuidedMeal(result, { kind: "planned", meal: leftover }, start, "dinner");
+  assert.equal(inside.state.plannedMeals.find(row => row.id === leftover.id)?.peopleCount, 0);
+  assert.deepEqual(requiredShopItems(inside.state, inside.state.guidedShop!), before);
+});
+test("recipe source labels retain cookbook names and only link HTTP sources", () => {
+  assert.deepEqual(mealSource(), { label: "Manual" });
+  assert.deepEqual(mealSource({ ...recipe("r"), importedFrom: "photo" }), { label: "Photo import" });
+  assert.deepEqual(mealSource({ ...recipe("r"), source: "The Roasting Tin, page 40" }), { label: "The Roasting Tin, page 40" });
+  assert.deepEqual(mealSource({ ...recipe("r"), sourceUrl: "https://www.bbcgoodfood.com/recipes/example" }), { label: "bbcgoodfood.com", href: "https://www.bbcgoodfood.com/recipes/example" });
+  assert.equal(mealSource({ ...recipe("r"), source: "javascript:alert(1)" }).href, undefined);
 });
 test("moving between occupied dinner days swaps meals and scales diner-controlled portions and sides", () => {
   const current = state(), nextDay = "2026-11-24";
