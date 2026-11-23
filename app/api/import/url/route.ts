@@ -27,6 +27,8 @@ const methodHeadingPattern = /^(method|instructions|directions|preparation|steps
 
 function decodeHtml(value: string) {
   return value
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (_, code: string) => { const n = code[0].toLowerCase() === "x" ? parseInt(code.slice(1), 16) : Number(code); return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : " "; })
+    .replace(/&frac12;/gi, " 1/2").replace(/&frac14;/gi, " 1/4").replace(/&frac34;/gi, " 3/4")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, "\"")
@@ -145,6 +147,10 @@ function findRecipeJsonLd(value: unknown): JsonLdRecipe | undefined {
 
 function parseDurationMinutes(value?: string) {
   if (!value) return undefined;
+  if (/^P/i.test(value)) {
+    const match = value.match(/^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i);
+    if (match) return Math.ceil(Number(match[1] || 0) * 1440 + Number(match[2] || 0) * 60 + Number(match[3] || 0) + Number(match[4] || 0) / 60);
+  }
   const isoHours = value.match(/(\d+)H/i);
   const isoMinutes = value.match(/(\d+)M/i);
   const plainHours = value.match(/(\d+)\s*(?:hours?|hrs?|hr)\b/i);
@@ -157,6 +163,7 @@ function parseDurationMinutes(value?: string) {
 type JsonLdInstruction = string | { text?: string; name?: string; itemListElement?: unknown };
 
 function normalizeInstruction(step: JsonLdInstruction): string[] {
+  if (!step) return [];
   if (typeof step === "string") return [step.trim()].filter(Boolean);
   if (Array.isArray(step.itemListElement)) {
     return step.itemListElement.flatMap((item) => normalizeInstruction(item as JsonLdInstruction));
@@ -164,12 +171,35 @@ function normalizeInstruction(step: JsonLdInstruction): string[] {
   return [step.text || step.name || ""].map((line) => line.trim()).filter(Boolean);
 }
 
+function cleanRecipeText(value: string) {
+  const fractions: Record<string, string> = { "½": "1/2", "¼": "1/4", "¾": "3/4", "⅓": "1/3", "⅔": "2/3", "⅛": "1/8" };
+  return decodeHtml(value.replace(/<[^>]+>/g, " ")).replace(/[½¼¾⅓⅔⅛]/g, fraction => ` ${fractions[fraction]}`).replace(/[\u200b-\u200d\ufeff]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function uniqueInstructions(lines: string[]) {
+  const seen = new Set<string>();
+  return lines.flatMap(line => {
+    const text = cleanRecipeText(line).replace(/^(?:step\s*)?\d+[.):]?\s+/i, "");
+    const key = text.toLowerCase().replace(/\s+/g, " ");
+    if (!key || seen.has(key)) return [];
+    seen.add(key);
+    return [text];
+  });
+}
+
+function pageTimes(html: string) {
+  const text = stripHtml(removePageChrome(html)).replace(/\s+/g, " ");
+  const duration = "(\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|minutes?|mins?)(?:\\s*\\d+\\s*(?:minutes?|mins?))?)";
+  const read = (label: string) => parseDurationMinutes(text.match(new RegExp(`\\b${label}\\s*(?:time)?\\s*:?\\s*${duration}`, "i"))?.[1]);
+  return { prepMinutes: read("prep(?:aration)?"), cookMinutes: read("cook(?:ing)?"), totalMinutes: read("total") };
+}
+
 function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string): ImportDraft {
   const yieldText = Array.isArray(recipe.recipeYield) ? recipe.recipeYield[0] : recipe.recipeYield;
   const servings = Number(yieldText?.match(/\d+/)?.[0]) || 4;
   const ingredients = (recipe.recipeIngredient ?? [])
     .filter((line) => typeof line === "string" && line.trim())
-    .map((line) => parseIngredientLine(line, { strict: true }));
+    .map((line) => parseIngredientLine(cleanRecipeText(line), { strict: true }));
   const instructions = Array.isArray(recipe.recipeInstructions)
     ? recipe.recipeInstructions.flatMap((step) => normalizeInstruction(step))
     : recipe.recipeInstructions
@@ -181,13 +211,13 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string):
     title: recipe.name || "Imported recipe",
     servings,
     mealTypes: inferRecipeMealTypes({ title: recipe.name || "Imported recipe", tags: ["url import"], ingredients }),
-    prepMinutes: parseDurationMinutes(recipe.prepTime),
-    cookMinutes: parseDurationMinutes(recipe.cookTime),
-    totalMinutes: parseDurationMinutes(recipe.totalTime),
+    prepMinutes: parseDurationMinutes(recipe.prepTime) ?? pageTimes(html).prepMinutes,
+    cookMinutes: parseDurationMinutes(recipe.cookTime) ?? pageTimes(html).cookMinutes,
+    totalMinutes: parseDurationMinutes(recipe.totalTime) ?? pageTimes(html).totalMinutes,
     sourceText: [recipe.name, `Servings: ${yieldText || "not specified"}`, "Ingredients", ...(recipe.recipeIngredient ?? []), "Method", ...instructions].join("\n"),
     tags: ["url import"],
     ingredients,
-    instructions,
+    instructions: uniqueInstructions(instructions),
     source: sourceUrl,
     sourceUrl,
     mealImageUrl: imageUrlFromJsonLd(recipe.image, sourceUrl) ?? imageUrlFromPageMetadata(html, sourceUrl),
@@ -229,7 +259,7 @@ function extractClassScopedItems(html: string, kind: "ingredient" | "method") {
       : /<(li|p|span|div)[^>]*(?:class|id)=["'][^"']*(?:instruction|direction|method|recipe-instruction|wprm-recipe-instruction)[^"']*["'][^>]*>([\s\S]*?)<\/\1>/gi;
 
   return Array.from(cleaned.matchAll(classPattern))
-    .map((match) => stripHtml(match[2]))
+    .map((match) => cleanRecipeText(match[2]))
     .map((line) => line.replace(/^\d+[.)]\s*/, "").trim())
     .filter(Boolean);
 }
@@ -254,10 +284,8 @@ function extractDomFallbackDraft(html: string, sourceUrl: string): ImportDraft {
     .filter((line) => isLikelyIngredientLine(line, true))
     .slice(0, 30);
   const ingredients = ingredientLines.map((line) => parseIngredientLine(line, { strict: true }));
-  const methodLines = [
-    ...scopedInstructions,
-    ...(methodHeadingIndex >= 0 ? takeSection(lines, methodHeadingIndex, /^(nutrition|comments|reviews|related|you may also like|ingredients)\b/i, 40) : [])
-  ]
+  const methodLines = uniqueInstructions(scopedInstructions.length ? scopedInstructions :
+    (methodHeadingIndex >= 0 ? takeSection(lines, methodHeadingIndex, /^(nutrition|comments|reviews|related|you may also like|ingredients)\b/i, 40) : []))
     .map((line) => line.replace(/^\d+[.)]\s*/, "").trim())
     .filter((line, index, allLines) => line.length > 4 && allLines.indexOf(line) === index)
     .slice(0, 30);
@@ -277,6 +305,7 @@ function extractDomFallbackDraft(html: string, sourceUrl: string): ImportDraft {
   return {
     id: createId("draft"),
     sourceText: lines.join("\n"),
+    ...pageTimes(html),
     title,
     servings,
     mealTypes: inferRecipeMealTypes({ title, tags: ["url import"], ingredients }),

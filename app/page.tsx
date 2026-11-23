@@ -3249,6 +3249,13 @@ export default function Home() {
             excludedShoppingIngredients={state.settings.excludedShoppingIngredients ?? []}
             draftStorageStatus={draftStorageStatus}
             draftArchive={draftArchive}
+            measurementSystem={state.settings.measurementSystem}
+            onDeleteDraft={id => {
+              forgetDraft(id);
+              if (draft.id === id) {
+                setDraft(emptyDraft()); setTagInput(""); setEditingRecipeId(null); setImportMode("manual"); setImportText(""); setImportUrl(""); setPhotoRawText(""); setPhotoPreview(""); setPhotoFile(null); setCompressedPhotoFile(null);
+              }
+            }}
             onRestoreDraft={record => { setDraft(record.draft); setTagInput(record.tagInput); setEditingRecipeId(record.editingRecipeId && state.recipes.some(recipe => recipe.id === record.editingRecipeId) ? record.editingRecipeId : null); setImportMode(record.importMode); setImportText(record.importText); setImportUrl(record.importUrl); setPhotoRawText(record.photoRawText); setPhotoPreview(record.draft.photoDataUrl ?? ""); }}
             importMode={importMode}
             setImportMode={setImportMode}
@@ -5242,7 +5249,7 @@ function RecipeDetailModal({
 }
 
 function AddRecipeView({
-  recipes, excludedShoppingIngredients, draftStorageStatus, draftArchive, onRestoreDraft,
+  recipes, excludedShoppingIngredients, draftStorageStatus, draftArchive, onRestoreDraft, onDeleteDraft, measurementSystem,
   importMode,
   setImportMode,
   importText,
@@ -5288,6 +5295,8 @@ function AddRecipeView({
   excludedShoppingIngredients: string[];
   draftStorageStatus: string;
   draftArchive: SavedRecipeDraft[];
+  onDeleteDraft: (id: string) => void;
+  measurementSystem: Ingredient["measurementSystem"];
   onRestoreDraft: (record: SavedRecipeDraft) => void;
   importMode: ImportMode;
   setImportMode: (mode: ImportMode) => void;
@@ -5331,10 +5340,25 @@ function AddRecipeView({
   onRemoveInstruction: (index: number) => void;
 }) {
   const [mealImageStatus, setMealImageStatus] = useState("");
+  const [photoPasteStatus, setPhotoPasteStatus] = useState("");
+  async function pasteRecipePhoto() {
+    try {
+      if (!navigator.clipboard?.read) throw new Error("Use keyboard paste or choose a photo in this browser.");
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find(type => type.startsWith("image/"));
+        if (!type) continue;
+        onPhotoChange(new File([await item.getType(type)], "pasted-recipe.png", { type }));
+        setPhotoPasteStatus("");
+        return;
+      }
+      setPhotoPasteStatus("No image was found on the clipboard.");
+    } catch (error) { setPhotoPasteStatus(error instanceof Error ? error.message : "Unable to paste image. Choose a photo instead."); }
+  }
   const [ingredientFilter, setIngredientFilter] = useState<"all" | "needs-review" | "reviewed">("all");
   const [sourceIngredient, setSourceIngredient] = useState<string | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
-  const issues = reviewRecipe(draft, recipes, editingRecipeId);
+  const issues = reviewRecipe({ ...draft, ingredients: draft.ingredients.map(row => ({ ...row, measurementSystem: measurementSystem ?? row.measurementSystem })) }, recipes, editingRecipeId);
   const flagged = new Set(issues.flatMap(issue => issue.ingredientId ? [issue.ingredientId] : []));
   const reviewedCount = draft.ingredients.filter(ingredient => ingredient.reviewed).length;
   const selectedSource = draft.ingredients.find(row => row.id === sourceIngredient);
@@ -5391,7 +5415,7 @@ function AddRecipeView({
     <div className="split-view recipe-review-workspace">
       <section className="import-panel">
         <div className="recipe-review-stage"><span>1 Import</span><span>2 Review</span><span>3 Save</span></div>
-        {draftArchive.length > 0 && <details className="draft-library"><summary>Saved drafts ({draftArchive.length})</summary>{draftArchive.map(record => <button className="text-button" type="button" key={record.draft.id} onClick={() => onRestoreDraft(record)}>{record.draft.title || "Untitled draft"}<small>{new Date(record.savedAt).toLocaleString("en-GB")}</small></button>)}</details>}
+        {draftArchive.length > 0 && <details className="draft-library"><summary>Saved drafts ({draftArchive.length})</summary>{draftArchive.map(record => <div className="draft-library-row" key={record.draft.id}><button className="text-button" type="button" onClick={() => onRestoreDraft(record)}>{record.draft.title || "Untitled draft"}<small>{new Date(record.savedAt).toLocaleString("en-GB")}</small></button><button type="button" className="icon-button danger" title={`Delete draft: ${record.draft.title || "Untitled draft"}`} onClick={() => onDeleteDraft(record.draft.id)}><Trash2 size={16} /></button></div>)}</details>}
         <div className="segmented-control" role="tablist" aria-label="Recipe import method">
           <button className={classNames(importMode === "manual" && "active")} onClick={() => setImportMode("manual")}>
             <ChefHat size={17} />
@@ -5449,7 +5473,13 @@ function AddRecipeView({
         )}
 
         {importMode === "photo" && (
-          <form className="import-box" onSubmit={onExtractPhoto}>
+          <form className="import-box" onSubmit={onExtractPhoto} onPaste={event => {
+            const item = Array.from(event.clipboardData.items).find(item => item.type.startsWith("image/"));
+            const file = item?.getAsFile();
+            if (file) { event.preventDefault(); onPhotoChange(file); setPhotoPasteStatus(""); }
+          }}>
+            <button className="icon-text-button" type="button" disabled={Boolean(importStatus)} onClick={() => void pasteRecipePhoto()}><Clipboard size={18} />Paste recipe image</button>
+            {photoPasteStatus && <p role="status">{photoPasteStatus}</p>}
             <div className="photo-actions">
               <label className="photo-choice">
                 <Camera size={22} />
@@ -5864,6 +5894,7 @@ function AddRecipeView({
                       list={`shopping-names-${ingredient.id}`}
                       value={shoppingName}
                       onChange={event => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
+                      onBlur={event => onRememberShoppingName(ingredient.name, event.target.value)}
                       placeholder={suggestedShoppingName || "shopping name"}
                     />
                     <datalist id={`shopping-names-${ingredient.id}`}>
@@ -5888,21 +5919,7 @@ function AddRecipeView({
                         <option value="side">Optional side</option>
                       </select>
                     </label>
-                    <label>Measurement convention<select aria-label="Measurement convention" value={ingredient.measurementSystem ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { measurementSystem: event.target.value as Ingredient["measurementSystem"] || undefined })}><option value="">Unspecified</option><option value="metric">Metric (250 ml cup)</option><option value="uk">UK imperial (250 ml cup)</option><option value="us">US customary</option></select></label>
                     {["can", "pack", "jar", "bottle"].includes(normalizeUnit(ingredient.unit)) && <><label>Pack size<input aria-label="Pack size" type="number" min="0" value={ingredient.packSize ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { packSize: parseNumberInput(event.target.value) })} /></label><label>Pack unit<select aria-label="Pack unit" value={ingredient.packUnit ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { packUnit: event.target.value as Ingredient["packUnit"] || undefined })}><option value="">Choose</option><option value="g">g</option><option value="ml">ml</option></select></label></>}
-                    <label>Weight basis<select aria-label="Weight basis" value={ingredient.weightBasis ?? "net"} onChange={event => onUpdateIngredient(ingredient.id, { weightBasis: event.target.value as Ingredient["weightBasis"] })}><option value="net">As supplied</option><option value="drained">Drained</option></select></label>
-                    <button
-                      className="text-button"
-                      type="button"
-                      disabled={!ingredient.name.trim() || !shoppingName.trim()}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onRememberShoppingName(ingredient.name, shoppingName);
-                      }}
-                    >
-                      Remember shopping name
-                    </button>
                     <button className="text-button" type="button" disabled={!suggestedShoppingName || shoppingName === suggestedShoppingName} onClick={() => onUpdateIngredient(ingredient.id, { canonicalName: suggestedShoppingName })}>Use suggested name: {suggestedShoppingName}</button>
                   </div></div>
 	                {(ingredient.needsReview || ingredient.originalLine) && (
@@ -6819,6 +6836,7 @@ function SettingsView({
     <div className="settings-layout">
       <section className="settings-section">
         <h2>Household</h2>
+        <label>Recipe measurement convention<select aria-label="Recipe measurement convention" value={settings.measurementSystem ?? ""} onChange={event => updateSettings({ measurementSystem: event.target.value as AppState["settings"]["measurementSystem"] || undefined })}><option value="">Choose a convention</option><option value="metric">Metric (250 ml cup, 15 ml tablespoon)</option><option value="uk">UK imperial (568 ml pint, 250 ml cup)</option><option value="us">US customary (237 ml cup, 473 ml pint)</option></select></label>
         <div className="form-grid">
           <label>
             Household name
