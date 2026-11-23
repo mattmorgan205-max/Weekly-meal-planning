@@ -15,6 +15,7 @@
     "test:recipe-sync": "node scripts/test-recipe-sync.mjs",
     "test:shopping-improvements": "node scripts/test-shopping-improvements.mjs",
     "test:guided-shop": "node scripts/test-guided-shop.mjs",
+    "test:recipe-review": "node scripts/test-recipe-review.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.check.json"
   },
   "dependencies": {

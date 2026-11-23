@@ -87,7 +87,6 @@ import {
   shoppingListIncludesExtra,
   startOfWeek,
   standardIngredientUnits,
-  standardizeIngredientQuantity,
   totalRecipeMinutes,
   updateCommonExtraProfileChoices,
   type AsdaProductSelection,
@@ -131,6 +130,8 @@ import { BatchExtras } from "@/components/batch-extras";
 import { createManualShoppingItemFromLine, oldestShoppingAddFirst } from "@/lib/shopping-extras";
 import { addedShopExtras, attendanceForSlot, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
+import { ingredientIncludedInShopping } from "@/lib/domain";
+import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, ingredientIssues, type SavedRecipeDraft } from "@/lib/recipe-review";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
@@ -282,15 +283,13 @@ function hydrateRecipe(recipe: Recipe): Recipe {
     visibility: recipe.visibility ?? "global",
     mealTypes: normalizeMealTypes(recipe.mealTypes, inferRecipeMealTypes(recipe)[0]),
     ingredients: recipe.ingredients.map((ingredient) => {
-      const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
       const suggestedShoppingName = canonicalizeIngredientName(ingredient.name).canonicalName;
       const storedShoppingName = normalizeIngredientAliasKey(ingredient.canonicalName ?? "");
       const shouldUpgradeBroadName = legacyBroadShoppingNames[storedShoppingName]?.includes(suggestedShoppingName) ?? false;
 
       return {
         ...ingredient,
-        quantity: standardized.quantity,
-        unit: standardized.unit,
+        unit: normalizeUnit(ingredient.unit),
         canonicalName: shouldUpgradeBroadName ? suggestedShoppingName : storedShoppingName || suggestedShoppingName,
         needsReview: ingredient.needsReview ?? ingredient.confidence === "low",
         role: ingredient.role === "optional" || ingredient.role === "side" ? ingredient.role : "required"
@@ -1131,6 +1130,32 @@ export default function Home() {
   const [cloudHouseholds, setCloudHouseholds] = useState<CloudHousehold[]>([]);
   const [activeHouseholdId, setActiveHouseholdId] = useState<string | null>(null);
   const [multiHouseholdReady, setMultiHouseholdReady] = useState(false);
+  const draftScope = `${cloudUser ?? "local"}:${activeHouseholdId ?? "local"}`;
+  const [draftOwner, setDraftOwner] = useState(draftScope);
+  const [draftArchive, setDraftArchive] = useState<SavedRecipeDraft[]>([]);
+  const [draftStorageStatus, setDraftStorageStatus] = useState("");
+  const [draftStorageReady, setDraftStorageReady] = useState(false);
+  const pendingSavedDraftRef = useRef<{ id: string; recipeId: string; scope: string } | null>(null);
+  useEffect(() => {
+    setDraftStorageReady(false);
+    setDraft(emptyDraft()); setTagInput(""); setEditingRecipeId(null); setPhotoPreview(""); setPhotoRawText(""); setPhotoFile(null); setCompressedPhotoFile(null); setImportText(""); setImportUrl(""); setDraftOwner(draftScope);
+    try { setDraftArchive(readDraftArchive(localStorage.getItem(draftStorageKey(draftScope)))); setDraftStorageReady(true); setDraftStorageStatus(""); }
+    catch (error) { setDraftArchive([]); setDraftStorageStatus(String(error)); }
+  }, [draftScope]);
+  useEffect(() => {
+    if (!draftStorageReady || draftOwner !== draftScope || activeView !== "add") return;
+    if (!draft.title.trim() && !draft.ingredients.some(row => row.name.trim()) && !(importMode === "paste" && importText.trim()) && !(importMode === "url" && importUrl.trim())) return;
+    const record: SavedRecipeDraft = { draft, tagInput, editingRecipeId, importMode, importText, importUrl, photoRawText, savedAt: new Date().toISOString() };
+    try {
+      const records = upsertDraftArchive(readDraftArchive(localStorage.getItem(draftStorageKey(draftScope))), record);
+      localStorage.setItem(draftStorageKey(draftScope), JSON.stringify(records)); setDraftArchive(records); setDraftStorageStatus("Draft saved on this device");
+    } catch { setDraftStorageStatus("Draft not saved: device storage is unavailable or full. Keep this tab open."); }
+  }, [draft, tagInput, editingRecipeId, importMode, importText, importUrl, photoRawText, draftStorageReady, draftOwner, draftScope, activeView]);
+
+  function forgetDraft(id: string) {
+    try { const records = readDraftArchive(localStorage.getItem(draftStorageKey(draftScope))).filter(row => row.draft.id !== id); localStorage.setItem(draftStorageKey(draftScope), JSON.stringify(records)); setDraftArchive(records); }
+    catch { setDraftStorageStatus("Saved draft could not be removed."); }
+  }
   const [recipeReactions, setRecipeReactions] = useState<Record<string, RecipeReaction>>({});
   const [recipePopularity, setRecipePopularity] = useState<Record<string, RecipePopularitySummary>>({});
   const [recipeImageUrls, setRecipeImageUrls] = useState<Record<string, string>>({});
@@ -1255,8 +1280,13 @@ export default function Home() {
     stateRef.current = state;
     if (!hasHydratedLocalState) return;
     const saved = writeLocalStorage(storageKey, JSON.stringify(state));
+    const pendingDraft = pendingSavedDraftRef.current;
+    if (saved && pendingDraft?.scope === draftScope && state.recipes.some(recipe => recipe.id === pendingDraft.recipeId)) {
+      forgetDraft(pendingDraft.id);
+      pendingSavedDraftRef.current = null;
+    }
     if (!saved) {
-      setCloudMessage("The browser backup is full. Recipe data will continue syncing to Supabase, but embedded photos need cloud image storage.");
+      setCloudMessage(cloudUser ? "The browser backup is full. Recipe data will continue syncing to Supabase; review drafts are retained where possible." : "The browser backup could not be saved. Keep this tab open; any saved review draft has been retained.");
     }
   }, [hasHydratedLocalState, state]);
 
@@ -1512,11 +1542,9 @@ export default function Home() {
       mealTypes: normalizeMealTypes(nextDraft.mealTypes, inferRecipeMealTypes(nextDraft)[0]),
       source: nextDraft.source ?? nextDraft.sourceUrl ?? "",
       ingredients: nextDraft.ingredients.map((ingredient) => {
-        const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
         return {
           ...ingredient,
-          quantity: standardized.quantity,
-          unit: standardized.unit,
+          unit: normalizeUnit(ingredient.unit),
           canonicalName:
             normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
             canonicalizeIngredientName(ingredient.name, state.settings.ingredientAliases).canonicalName,
@@ -1842,6 +1870,7 @@ export default function Home() {
   }
 
   async function saveDraft() {
+    if (reviewRecipe(draft, state.recipes, editingRecipeId).some(issue => issue.blocking)) return;
     setImportStatus("Saving recipe...");
 
     try {
@@ -1867,12 +1896,10 @@ export default function Home() {
         ingredients: draft.ingredients
           .filter((ingredient) => ingredient.name.trim())
           .map((ingredient) => {
-            const standardized = standardizeIngredientQuantity(ingredient.quantity, ingredient.unit);
             return {
               ...ingredient,
               id: ingredient.id || createId("ing"),
-              quantity: standardized.quantity,
-              unit: standardized.unit,
+              unit: normalizeUnit(ingredient.unit),
               category: ingredient.category || inferCategory(ingredient.name),
               canonicalName:
                 normalizeIngredientAliasKey(ingredient.canonicalName ?? "") ||
@@ -1914,6 +1941,8 @@ export default function Home() {
         };
       });
 
+      pendingSavedDraftRef.current = { id: draft.id, recipeId, scope: draftScope };
+      setImportText(""); setImportUrl(""); setPhotoRawText(""); setPhotoPreview("");
       applyDraft(emptyDraft());
       setEditingRecipeId(null);
       setImportMode("manual");
@@ -2021,13 +2050,14 @@ export default function Home() {
           ? {
               ...ingredient,
               ...patch,
+              reviewed: patch.reviewed ?? false,
               category: patch.name && !patch.category ? inferCategory(patch.name) : patch.category ?? ingredient.category,
               canonicalName: hasCanonicalNamePatch
                 ? patch.canonicalName
                 : patch.name
                   ? canonicalizeIngredientName(patch.name, state.settings.ingredientAliases).canonicalName
                   : ingredient.canonicalName,
-              needsReview: patch.name ? false : patch.needsReview ?? ingredient.needsReview
+              needsReview: patch.needsReview ?? ingredient.needsReview
             }
           : ingredient
       )
@@ -3214,6 +3244,11 @@ export default function Home() {
           <>
           {returnFromSnackRecipe && <button className="icon-text-button" type="button" onClick={() => setActiveView("guided")}><ChevronLeft size={16} />Return to snacks and extras</button>}
           <AddRecipeView
+            recipes={state.recipes}
+            excludedShoppingIngredients={state.settings.excludedShoppingIngredients ?? []}
+            draftStorageStatus={draftStorageStatus}
+            draftArchive={draftArchive}
+            onRestoreDraft={record => { setDraft(record.draft); setTagInput(record.tagInput); setEditingRecipeId(record.editingRecipeId && state.recipes.some(recipe => recipe.id === record.editingRecipeId) ? record.editingRecipeId : null); setImportMode(record.importMode); setImportText(record.importText); setImportUrl(record.importUrl); setPhotoRawText(record.photoRawText); setPhotoPreview(record.draft.photoDataUrl ?? ""); }}
             importMode={importMode}
             setImportMode={setImportMode}
             importText={importText}
@@ -5206,6 +5241,7 @@ function RecipeDetailModal({
 }
 
 function AddRecipeView({
+  recipes, excludedShoppingIngredients, draftStorageStatus, draftArchive, onRestoreDraft,
   importMode,
   setImportMode,
   importText,
@@ -5247,6 +5283,11 @@ function AddRecipeView({
   onAddInstruction,
   onRemoveInstruction
 }: {
+  recipes: Recipe[];
+  excludedShoppingIngredients: string[];
+  draftStorageStatus: string;
+  draftArchive: SavedRecipeDraft[];
+  onRestoreDraft: (record: SavedRecipeDraft) => void;
   importMode: ImportMode;
   setImportMode: (mode: ImportMode) => void;
   importText: string;
@@ -5289,6 +5330,14 @@ function AddRecipeView({
   onRemoveInstruction: (index: number) => void;
 }) {
   const [mealImageStatus, setMealImageStatus] = useState("");
+  const [fullEditor, setFullEditor] = useState(false);
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [sourceIngredient, setSourceIngredient] = useState<string | null>(null);
+  const [confirmSave, setConfirmSave] = useState(false);
+  const issues = reviewRecipe(draft, recipes, editingRecipeId);
+  const flagged = new Set(issues.flatMap(issue => issue.ingredientId ? [issue.ingredientId] : []));
+  const selectedSource = draft.ingredients.find(row => row.id === sourceIngredient);
+  useEffect(() => { setFlaggedOnly(draft.importedFrom !== "manual"); setSourceIngredient(null); setConfirmSave(false); }, [draft.id]);
   const mealImagePreview = draft.mealImageUrl ?? (draft.mealImagePath ? storedMealImageUrl : undefined);
   const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
   const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
@@ -5338,8 +5387,10 @@ function AddRecipeView({
   }
 
   return (
-    <div className="split-view">
+    <div className="split-view recipe-review-workspace">
       <section className="import-panel">
+        <div className="recipe-review-stage"><span>1 Import</span><span>2 Review</span><span>3 Save</span></div>
+        {draftArchive.length > 0 && <details className="draft-library"><summary>Saved drafts ({draftArchive.length})</summary>{draftArchive.map(record => <button className="text-button" type="button" key={record.draft.id} onClick={() => onRestoreDraft(record)}>{record.draft.title || "Untitled draft"}<small>{new Date(record.savedAt).toLocaleString("en-GB")}</small></button>)}</details>}
         <div className="segmented-control" role="tablist" aria-label="Recipe import method">
           <button className={classNames(importMode === "manual" && "active")} onClick={() => setImportMode("manual")}>
             <ChefHat size={17} />
@@ -5363,7 +5414,6 @@ function AddRecipeView({
           <div className="import-box">
             <ImagePlus size={32} />
             <h2>{editingRecipeId ? "Editing saved recipe" : "Start from a blank recipe"}</h2>
-            <p>Create a clean review draft, then save it to the recipe library.</p>
             <button className="primary-button" onClick={onNewManual}>
               <Plus size={18} />
               Blank recipe
@@ -5466,6 +5516,13 @@ function AddRecipeView({
             )}
           </form>
         )}
+        <section className="recipe-source-preview" aria-label="Original recipe source">
+          <h3>Original source</h3>
+          {selectedSource && <blockquote>{selectedSource.originalLine || selectedSource.name}</blockquote>}
+          {(draft.photoDataUrl || photoPreview) && <img src={draft.photoDataUrl || photoPreview} alt="Original recipe page" />}
+          {draft.sourceUrl && /^https?:\/\//i.test(draft.sourceUrl) && <a href={draft.sourceUrl} target="_blank" rel="noreferrer">Open source recipe</a>}
+          <pre>{draft.sourceText || draft.rawText || (draft.importedFrom === "photo" ? photoRawText : "") || draft.ingredients.map(row => row.originalLine).filter(Boolean).join("\n") || "No imported source"}</pre>
+        </section>
       </section>
 
       <section className="review-panel">
@@ -5476,13 +5533,17 @@ function AddRecipeView({
           </div>
           <button
             className="primary-button"
-            onClick={() => void onSaveDraft()}
-            disabled={Boolean(importStatus) || !draft.title.trim() || draft.ingredients.every((ingredient) => !ingredient.name.trim())}
+            onClick={() => issues.length || draft.warnings.length ? setConfirmSave(true) : void onSaveDraft()}
+            disabled={Boolean(importStatus) || issues.some(issue => issue.blocking)}
           >
             {importStatus === "Saving recipe..." ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
             {importStatus === "Saving recipe..." ? "Saving..." : editingRecipeId ? "Update recipe" : "Save recipe"}
           </button>
         </div>
+
+        <div className="recipe-review-summary" role="status"><strong>{draft.ingredients.length} ingredients · {issues.length} checks</strong><small>{draftStorageStatus}</small></div>
+        {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setSourceIngredient(issue.ingredientId!); setFlaggedOnly(true); document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" }); }}>Check source</button>}</div>)}</details>}
+        <button className="text-button" type="button" aria-expanded={fullEditor} onClick={() => setFullEditor(value => !value)}><Settings size={15} />{fullEditor ? "Close full editor" : "Full editor"}</button>
 
         {draft.warnings.length > 0 && (
           <div className="warning-list">
@@ -5543,6 +5604,7 @@ function AddRecipeView({
           </label>
         </div>
 
+        <div hidden={!fullEditor}>
         <label>
           Recipe notes
           <textarea
@@ -5717,6 +5779,7 @@ function AddRecipeView({
           )}
         </div>
 
+        </div>
         <div className="editor-section">
           <div className="section-heading">
             <h3>Ingredients</h3>
@@ -5725,6 +5788,8 @@ function AddRecipeView({
               Add row
             </button>
           </div>
+          <label className="toggle-line"><input type="checkbox" checked={flaggedOnly} onChange={event => setFlaggedOnly(event.target.checked)} />Needs checking only ({flagged.size})</label>
+          {flaggedOnly && !flagged.size && <p>No ingredient checks outstanding.</p>}
           <div className="ingredient-editor">
 	            {draft.ingredients.map((ingredient) => {
                   const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName : "";
@@ -5738,6 +5803,8 @@ function AddRecipeView({
 	              <div
 	                className={classNames("ingredient-row", (ingredient.confidence === "low" || ingredient.needsReview) && "needs-review")}
 	                key={ingredient.id}
+                    id={`ingredient-${ingredient.id}`}
+                    hidden={flaggedOnly && !flagged.has(ingredient.id)}
 	              >
 	                <input
 	                  aria-label="Quantity"
@@ -5787,7 +5854,12 @@ function AddRecipeView({
 	                <button className="icon-button danger" type="button" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
 	                  <Trash2 size={16} />
 	                </button>
-                  <div className="ingredient-standard-row">
+                  <div className="ingredient-review-actions">
+                    <label className="toggle-line"><input type="checkbox" checked={ingredientIncludedInShopping(ingredient, excludedShoppingIngredients)} onChange={event => onUpdateIngredient(ingredient.id, { shoppingIncluded: event.target.checked })} />Include in shopping</label>
+                    <button className="text-button" type="button" onClick={() => setSourceIngredient(ingredient.id)}>Source</button>
+                    <button className="text-button" type="button" title="Confirm ingredient checked against source" onClick={() => onUpdateIngredient(ingredient.id, { reviewed: !ingredient.reviewed, needsReview: false })}><Check size={14} />{ingredient.reviewed ? "Checked" : "Mark checked"}</button>
+                  </div>
+                  <details className="ingredient-standard-details" open={fullEditor || undefined}><summary>Shopping details</summary><div className="ingredient-standard-row">
                     <label className="ingredient-role-control">
                       Planner use
                       <select
@@ -5800,6 +5872,9 @@ function AddRecipeView({
                         <option value="side">Optional side</option>
                       </select>
                     </label>
+                    <label>Measurement convention<select aria-label="Measurement convention" value={ingredient.measurementSystem ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { measurementSystem: event.target.value as Ingredient["measurementSystem"] || undefined })}><option value="">Unspecified</option><option value="metric">Metric (250 ml cup)</option><option value="uk">UK imperial (250 ml cup)</option><option value="us">US customary</option></select></label>
+                    {["can", "pack", "jar", "bottle"].includes(normalizeUnit(ingredient.unit)) && <><label>Pack size<input aria-label="Pack size" type="number" min="0" value={ingredient.packSize ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { packSize: parseNumberInput(event.target.value) })} /></label><label>Pack unit<select aria-label="Pack unit" value={ingredient.packUnit ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { packUnit: event.target.value as Ingredient["packUnit"] || undefined })}><option value="">Choose</option><option value="g">g</option><option value="ml">ml</option></select></label></>}
+                    <label>Weight basis<select aria-label="Weight basis" value={ingredient.weightBasis ?? "net"} onChange={event => onUpdateIngredient(ingredient.id, { weightBasis: event.target.value as Ingredient["weightBasis"] })}><option value="net">As supplied</option><option value="drained">Drained</option></select></label>
                     <label>
                       Shopping name
                       <div className="shopping-name-controls">
@@ -5838,10 +5913,8 @@ function AddRecipeView({
                     >
                       Save name & variant
                     </button>
-                    <small>
-                      Suggested for Asda: <strong>{suggestedShoppingName || "enter an ingredient"}</strong>. This name standardises matching items across recipes.
-                    </small>
-                  </div>
+                    <button className="text-button" type="button" disabled={!suggestedShoppingName || shoppingName === suggestedShoppingName} onClick={() => onUpdateIngredient(ingredient.id, { canonicalName: suggestedShoppingName })}>Use suggested name: {suggestedShoppingName}</button>
+                  </div></details>
 	                {(ingredient.needsReview || ingredient.originalLine) && (
 	                  <small className="ingredient-review-note">
 	                    {ingredient.needsReview ? "Check this line" : "Imported line"}{ingredient.originalLine ? `: ${ingredient.originalLine}` : ""}
@@ -5874,6 +5947,7 @@ function AddRecipeView({
           </div>
         </div>
       </section>
+      {confirmSave && <div className="modal-backdrop"><section className="modal small-modal" role="dialog" aria-modal="true" aria-label="Confirm recipe review"><h2>Save with review notes?</h2><ul>{[...issues.map(issue => issue.message), ...draft.warnings].map((message, index) => <li key={index}>{message}</li>)}</ul><div className="button-row"><button type="button" className="text-button" onClick={() => setConfirmSave(false)}>Keep reviewing</button><button type="button" className="primary-button" disabled={Boolean(importStatus) || issues.some(issue => issue.blocking)} onClick={() => { setConfirmSave(false); void onSaveDraft(); }}>Save recipe anyway</button></div></section></div>}
     </div>
   );
 }
@@ -6789,6 +6863,7 @@ function SettingsView({
 
       <section className="settings-section">
         <h2>Staples</h2>
+        <label>Default shopping exclusions (one ingredient per line)<textarea aria-label="Default shopping exclusions" rows={3} value={(settings.excludedShoppingIngredients ?? []).join("\n")} onChange={event => updateSettings({ excludedShoppingIngredients: event.target.value.split("\n") })} /></label>
         <label>
           Usually at home
           <textarea

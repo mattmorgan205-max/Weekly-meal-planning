@@ -18,6 +18,7 @@ type JsonLdRecipe = {
   recipeInstructions?: Array<string | { text?: string; name?: string; itemListElement?: unknown }> | string;
   prepTime?: string;
   cookTime?: string;
+  totalTime?: string;
 };
 
 const sectionStopPattern = /^(method|instructions|directions|preparation|prep|cook|total|notes|nutrition|comments|reviews|related|you may also like|equipment|video)\b/i;
@@ -167,7 +168,7 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string):
   const yieldText = Array.isArray(recipe.recipeYield) ? recipe.recipeYield[0] : recipe.recipeYield;
   const servings = Number(yieldText?.match(/\d+/)?.[0]) || 4;
   const ingredients = (recipe.recipeIngredient ?? [])
-    .filter((line) => isLikelyIngredientLine(line, true))
+    .filter((line) => typeof line === "string" && line.trim())
     .map((line) => parseIngredientLine(line, { strict: true }));
   const instructions = Array.isArray(recipe.recipeInstructions)
     ? recipe.recipeInstructions.flatMap((step) => normalizeInstruction(step))
@@ -182,6 +183,8 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string):
     mealTypes: inferRecipeMealTypes({ title: recipe.name || "Imported recipe", tags: ["url import"], ingredients }),
     prepMinutes: parseDurationMinutes(recipe.prepTime),
     cookMinutes: parseDurationMinutes(recipe.cookTime),
+    totalMinutes: parseDurationMinutes(recipe.totalTime),
+    sourceText: [recipe.name, `Servings: ${yieldText || "not specified"}`, "Ingredients", ...(recipe.recipeIngredient ?? []), "Method", ...instructions].join("\n"),
     tags: ["url import"],
     ingredients,
     instructions,
@@ -189,7 +192,7 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string):
     sourceUrl,
     mealImageUrl: imageUrlFromJsonLd(recipe.image, sourceUrl) ?? imageUrlFromPageMetadata(html, sourceUrl),
     warnings: recipe.recipeIngredient?.length
-      ? ["Review the imported recipe before saving it to your library."]
+      ? ["Review the imported recipe before saving it to your library.", ...(!yieldText ? ["Servings were not found; 4 is an unconfirmed default."] : [])]
       : ["No structured ingredients were found. Review and add ingredients before saving."],
     importedFrom: "url"
   };
@@ -273,6 +276,7 @@ function extractDomFallbackDraft(html: string, sourceUrl: string): ImportDraft {
 
   return {
     id: createId("draft"),
+    sourceText: lines.join("\n"),
     title,
     servings,
     mealTypes: inferRecipeMealTypes({ title, tags: ["url import"], ingredients }),

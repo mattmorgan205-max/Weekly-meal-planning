@@ -36,9 +36,16 @@ export type Ingredient = {
   confidence?: "high" | "medium" | "low";
   needsReview?: boolean;
   role?: IngredientRole;
+  shoppingIncluded?: boolean;
+  reviewed?: boolean;
+  measurementSystem?: "metric" | "uk" | "us";
+  packSize?: number;
+  packUnit?: "g" | "ml";
+  weightBasis?: "net" | "drained";
 };
 
 export type Recipe = {
+  sourceText?: string;
   id: string;
   title: string;
   servings: number;
@@ -186,6 +193,7 @@ export type AppSettings = {
   stapleIngredients: string[];
   includeStaples: boolean;
   ingredientAliases: Record<string, string>;
+  excludedShoppingIngredients?: string[];
   shoppingNameVariants: Record<string, string[]>;
   shoppingCategoryOverrides?: Record<string, GroceryCategory>;
   commonExtraItems: string[];
@@ -195,6 +203,7 @@ export type AppSettings = {
 };
 
 export type ImportDraft = {
+  sourceText?: string;
   id: string;
   title: string;
   servings: number;
@@ -481,6 +490,7 @@ export function recordCompletedShoppingList(
 }
 
 export const standardIngredientUnits = [
+  "oz", "lb", "fl oz", "pt", "qt", "gal", "cup",
   "g",
   "kg",
   "ml",
@@ -638,7 +648,7 @@ const unitConversions: Record<string, { family: string; base: string; factor: nu
 };
 
 const ingredientCleanupWords =
-  /\b(sliced|chopped|diced|minced|cubed|shredded|fresh|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|cooked|uncooked|raw|extra|virgin|dried|freshly|toasted|halved|quartered|thinly|thickly|boneless|skinless|washed|trimmed|deseeded|seeded|softened|melted|divided)\b/g;
+  /\b(sliced|chopped|diced|cubed|shredded|large|small|medium|optional|roughly|finely|peeled|crushed|grated|drained|rinsed|freshly|halved|quartered|thinly|thickly|washed|trimmed|deseeded|seeded|softened|melted|divided)\b/g;
 const ingredientContainerWords =
   /\b(?:bunch(?:es)?|pack(?:s|ets)?|packet(?:s)?|can(?:s)?|tin(?:s)?|jar(?:s)?|bottle(?:s)?|bag(?:s)?|box(?:es)?|head(?:s)?|stalk(?:s)?|sprig(?:s)?|handful(?:s)?|clove(?:s)?|slice(?:s)?|fillet(?:s)?|bulb(?:s)?|sheet(?:s)?|pinch(?:es)?|piece(?:s)?|item(?:s)?)\b(?:\s+of\b)?/g;
 const ingredientAmountWords = /\b(?:a|an|one|some|half|quarter|third|dozen|remaining|leftover|approximately|approx|about)\b/g;
@@ -676,6 +686,9 @@ const ingredientAliasRules: Array<{
     warning: string;
   };
 }> = [
+  { canonicalName: "aubergine", patterns: [/\b(aubergines?|eggplants?)\b/] },
+  { canonicalName: "courgette", patterns: [/\b(courgettes?|zucchini)\b/] },
+  { canonicalName: "fresh coriander", patterns: [/\b(fresh coriander|cilantro)\b/] },
   {
     canonicalName: "spring onion",
     patterns: [/\b(spring onion|spring onions|scallion|scallions)\b/],
@@ -802,7 +815,8 @@ export function weekDates(weekStart: string) {
 export function normalizeIngredientName(name: string) {
   let normalized = name
     .toLowerCase()
-    .replace(/\([^)]*\)/g, "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[()]/g, " ")
     .replace(/[,.;:]/g, " ");
 
   preservedCoreIngredientPhrases.forEach(({ pattern, token }) => {
@@ -856,7 +870,7 @@ export function canonicalizeIngredientName(
   }
 
   for (const rule of ingredientAliasRules) {
-    if (rule.patterns.some((pattern) => pattern.test(normalizedName))) {
+    if (rule.patterns.some((pattern) => normalizedName.match(pattern)?.[0] === normalizedName)) {
       return {
         canonicalName: rule.canonicalName,
         normalizedName,
@@ -934,6 +948,13 @@ export function normalizeUnit(unit?: string) {
   return unitAliases[cleaned] ?? cleaned;
 }
 
+export function ingredientIncludedInShopping(ingredient: Ingredient, excluded: string[] = []) {
+  if (typeof ingredient.shoppingIncluded === "boolean") return ingredient.shoppingIncluded;
+  const name = canonicalizeIngredientName(ingredient.name).canonicalName;
+  if (/^(?:(?:tap|cold|hot|boiling|warm) )*water$/.test(name)) return false;
+  return !excluded.some(value => canonicalizeIngredientName(value).canonicalName === name);
+}
+
 export function standardizeIngredientQuantity(quantity?: number, unit?: string) {
   const normalizedUnit = normalizeUnit(unit);
   if (typeof quantity !== "number") return { quantity, unit: normalizedUnit };
@@ -941,11 +962,6 @@ export function standardizeIngredientQuantity(quantity?: number, unit?: string) 
   const metricConversions: Record<string, { factor: number; unit: "g" | "ml" }> = {
     oz: { factor: 28.3495, unit: "g" },
     lb: { factor: 453.592, unit: "g" },
-    "fl oz": { factor: 28.4131, unit: "ml" },
-    pt: { factor: 568.261, unit: "ml" },
-    qt: { factor: 1136.52, unit: "ml" },
-    gal: { factor: 4546.09, unit: "ml" },
-    cup: { factor: 240, unit: "ml" }
   };
   const conversion = metricConversions[normalizedUnit];
   if (!conversion) return { quantity, unit: normalizedUnit };
@@ -958,7 +974,7 @@ export function standardizeIngredientQuantity(quantity?: number, unit?: string) 
 }
 
 function readLeadingQuantity(value: string) {
-  const match = value.match(/^((?:\d+(?:\.\d+)?)|(?:\d+\s+\d+\/\d+)|(?:\d+\/\d+)|[¼½¾⅓⅔⅛⅜⅝⅞])\s*(.*)$/);
+  const match = value.match(/^((?:\d+\s+\d+\/\d+)|(?:\d+\/\d+)|(?:\d+(?:\.\d+)?)|[¼½¾⅓⅔⅛⅜⅝⅞])\s*(.*)$/);
   if (!match) return { quantity: undefined, rest: value.trim() };
   return {
     quantity: parseQuantity(match[1]),
@@ -1043,6 +1059,8 @@ export function draftFromOcrText(text: string, fileName = "Recipe book import") 
     title: draft.title === "Imported recipe" ? fileName.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ") : draft.title,
     tags: Array.from(new Set([...draft.tags, "photo import"])),
     rawText: cleanedText,
+    sourceText: text,
+    ingredients: draft.ingredients.map(ingredient => ({ ...ingredient, needsReview: true, confidence: "medium" as const })),
     warnings: Array.from(new Set([...warnings, "Nothing has been saved to the recipe library yet."]))
   };
 }
@@ -1208,10 +1226,13 @@ export function parseQuantity(value: string) {
 
 export function parseIngredientLine(line: string, options: { strict?: boolean } = {}): Ingredient {
   const cleaned = line.replace(/^[-*•]\s*/, "").trim();
+  const pack = cleaned.match(/^(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(g|ml)\s*(tins?|cans?|packs?|jars?|bottles?)?\s*(?:of\s+)?(.+)$/i);
+  if (pack) return { ...parseIngredientLine(`${pack[1]} ${pack[4] || "pack"} ${pack[5]}`, options), originalLine: cleaned,
+    packSize: Number(pack[2]), packUnit: pack[3].toLowerCase() as "g" | "ml", weightBasis: "net" };
   const parsedQuantity = readLeadingQuantity(cleaned);
   const parsedUnit = splitIngredientUnit(parsedQuantity.rest, typeof parsedQuantity.quantity === "number");
   const quantity = parsedQuantity.quantity;
-  const unit = parsedUnit.unit;
+  const unit = parsedUnit.unit || (typeof parsedQuantity.quantity === "number" ? "item" : "");
   const name = parsedUnit.name || parsedQuantity.rest || cleaned;
   const validation = validateIngredientLine(cleaned, options.strict);
   const canonical = canonicalizeIngredientName(name);
@@ -1262,6 +1283,7 @@ export function parseRecipeText(text: string, importedFrom: ImportDraft["importe
     .map((line) => parseIngredientLine(line, { strict: importedFrom === "url" }))
     .filter((ingredient) => ingredient.name.length > 1);
   const warnings: string[] = [];
+  if (ingredientLines.length > ingredients.length) warnings.push(`${ingredientLines.length - ingredients.length} source lines were not recognised as ingredients. Check the original source.`);
 
   if (!servingsMatch) warnings.push("Servings were not found, so the draft defaults to 4.");
   if (ingredients.length === 0) warnings.push("No clear ingredient list was detected. Add ingredients before saving.");
@@ -1271,8 +1293,12 @@ export function parseRecipeText(text: string, importedFrom: ImportDraft["importe
 
   return {
     id: createId("draft"),
+    sourceText: text,
     title,
     servings,
+    prepMinutes: textTime(text, "prep(?:aration)?"),
+    cookMinutes: textTime(text, "cook(?:ing)?"),
+    totalMinutes: textTime(text, "total"),
     mealTypes: inferRecipeMealTypes({ title, tags: [], ingredients }),
     tags: [],
     ingredients,
@@ -1285,10 +1311,19 @@ export function parseRecipeText(text: string, importedFrom: ImportDraft["importe
   };
 }
 
+function textTime(text: string, label: string) {
+  const match = text.match(new RegExp(`\\b${label}(?:\\s+time)?\\s*:?\\s*((?:\\d+\\s*(?:hours?|hrs?|minutes?|mins?)\\s*)+)`, "i"));
+  if (!match) return undefined;
+  const hours = Number(match[1].match(/(\d+)\s*(?:hours?|hrs?)/i)?.[1] ?? 0);
+  const minutes = Number(match[1].match(/(\d+)\s*(?:minutes?|mins?)/i)?.[1] ?? 0);
+  return hours * 60 + minutes;
+}
+
 export function draftToRecipe(draft: ImportDraft): Recipe {
   const now = new Date().toISOString();
 
   return {
+    sourceText: draft.sourceText ?? draft.rawText,
     id: createId("recipe"),
     title: draft.title.trim() || "Untitled recipe",
     servings: Math.max(1, Number(draft.servings) || 4),
@@ -1324,6 +1359,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
 
 export function recipeToDraft(recipe: Recipe): ImportDraft {
   return {
+    sourceText: recipe.sourceText,
     id: createId("draft"),
     title: recipe.title,
     servings: recipe.servings,
@@ -1439,23 +1475,32 @@ export function generateShoppingList(
     const selectedIngredientIds = new Set(meal.selectedIngredientIds ?? []);
 
     function addIngredientToBuckets(ingredient: Ingredient, ingredientFactor: number) {
+      if (!ingredientIncludedInShopping(ingredient, settings.excludedShoppingIngredients)) return;
       const scaled = scaleIngredient(ingredient, ingredientFactor);
       const savedShoppingName = scaled.canonicalName ? singularizeIngredientName(normalizeIngredientAliasKey(scaled.canonicalName)) : "";
       const canonical = savedShoppingName
         ? { canonicalName: savedShoppingName, normalizedName: savedShoppingName }
         : canonicalizeIngredientName(scaled.name, settings.ingredientAliases ?? {});
       const nameKey = canonical.canonicalName;
-      const normalizedUnit = normalizeUnit(scaled.unit);
-      const conversion = scaled.unit ? unitConversions[normalizedUnit] : undefined;
+      const packed = scaled.packSize && scaled.packUnit && ["can", "pack", "jar", "bottle"].includes(normalizeUnit(scaled.unit));
+      const normalizedUnit = packed ? scaled.packUnit! : normalizeUnit(scaled.unit);
+      if (packed && typeof scaled.quantity === "number") scaled.quantity *= scaled.packSize!;
+      const ambiguous = ["cup", "fl oz", "pt", "qt", "gal", "tsp", "tbsp"].includes(normalizedUnit);
+      const volumeFactors = scaled.measurementSystem === "us" ? { cup: 236.588, "fl oz": 29.5735, pt: 473.176, qt: 946.353, gal: 3785.41, tsp: 4.92892, tbsp: 14.7868 }
+        : { cup: 250, "fl oz": 28.4131, pt: 568.261, qt: 1136.52, gal: 4546.09, tsp: 5, tbsp: 15 };
+      const conversion = ambiguous
+        ? scaled.measurementSystem ? { family: "volume", base: "ml", factor: volumeFactors[normalizedUnit as keyof typeof volumeFactors] }
+          : ["tsp", "tbsp"].includes(normalizedUnit) ? unitConversions[normalizedUnit] : undefined
+        : unitConversions[normalizedUnit];
       const quantity = typeof scaled.quantity === "number" && conversion ? scaled.quantity * conversion.factor : scaled.quantity;
       const family = conversion?.family ?? (scaled.unit ? `raw-${scaled.unit}` : "no-unit");
       const baseUnit = conversion?.base ?? scaled.unit ?? "";
       const staple = isStaple(scaled.name, settings.stapleIngredients);
-      const note = conversionNote(scaled.quantity, normalizedUnit, quantity, baseUnit);
+      const note = [conversionNote(scaled.quantity, normalizedUnit, quantity, baseUnit), scaled.weightBasis === "drained" ? "Drained weight; kept separate from net pack weight." : ""].filter(Boolean).join(" ");
 
       if (staple && !settings.includeStaples) return;
 
-      const mergeKey = `${nameKey}::${family}`;
+      const mergeKey = `${nameKey}::${family}${scaled.weightBasis === "drained" ? "::drained" : ""}`;
       const key = mergeKey;
       const existing = buckets.get(key);
 
