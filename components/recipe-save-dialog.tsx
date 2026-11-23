@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { AlertTriangle, Check, Pencil, X } from "lucide-react";
 import type { ImportDraft } from "@/lib/domain";
-import type { ReviewIssue } from "@/lib/recipe-review";
+import { actionableImportWarnings, type ReviewIssue } from "@/lib/recipe-review";
 
 export function RecipeSaveDialog({ draft, issues, editing, busy, onClose, onEditMethod, onSave }: {
   draft: ImportDraft;
@@ -22,7 +22,7 @@ export function RecipeSaveDialog({ draft, issues, editing, busy, onClose, onEdit
       const ingredient = draft.ingredients.find(row => row.id === issue.ingredientId);
       return ingredient ? `${ingredient.name || "Unnamed ingredient"}: ${issue.message}` : issue.message;
     }),
-    ...draft.warnings
+    ...actionableImportWarnings(draft.warnings)
   ])];
 
   useEffect(() => {

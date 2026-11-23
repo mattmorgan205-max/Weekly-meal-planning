@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { actionableImportWarnings } from "../lib/recipe-review";
 import { canonicalizeIngredientName, completedTotalMinutes, draftToRecipe, generateShoppingList, ingredientIncludedInShopping, parseIngredientLine, parseRecipeText, recipeToDraft, seedState, type Ingredient } from "../lib/domain";
 import { acknowledgeReviewIssues, draftStorageKey, ingredientIssues, ingredientReviewFields, readDraftArchive, reviewRecipe, upsertDraftArchive, type SavedRecipeDraft } from "../lib/recipe-review";
 
 const draft = () => parseRecipeText("Test soup\nServes 4\nIngredients\n500g carrots\nMethod\nRoast until tender.", "paste");
+test("generic URL alerts are hidden in legacy drafts while specific warnings remain", () => {
+  const generic = [
+    "This URL did not provide structured recipe data, so only likely recipe sections were imported.",
+    "Review the imported recipe before saving it to your library.",
+    "Some extracted ingredient lines need review."
+  ];
+  assert.deepEqual(actionableImportWarnings(generic), []);
+  assert.deepEqual(actionableImportWarnings([...generic, "Servings were not found; 4 is an unconfirmed default."]), ["Servings were not found; 4 is an unconfirmed default."]);
+});
 test("shopping names omit preparation clauses while retaining product identity and original text", () => {
   for (const [input, expected] of [
     ["egg lightly beaten", "egg"], ["harissa - shop-bought or see below, to serve", "harissa"],

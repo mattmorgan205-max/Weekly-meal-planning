@@ -133,6 +133,7 @@ import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 import { ingredientIncludedInShopping } from "@/lib/domain";
 import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, acknowledgeReviewIssues, ingredientReviewFields, type ReviewIssue, type SavedRecipeDraft } from "@/lib/recipe-review";
 import { completedTotalMinutes } from "@/lib/domain";
+import { actionableImportWarnings } from "@/lib/recipe-review";
 import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -5362,6 +5363,7 @@ function AddRecipeView({
   }
   const [ingredientFilter, setIngredientFilter] = useState<"all" | "needs-review" | "reviewed">(editingRecipeId ? "all" : "needs-review");
   const [confirmSave, setConfirmSave] = useState(false);
+  const visibleWarnings = actionableImportWarnings(draft.warnings);
   const issues = reviewRecipe({ ...draft, ingredients: draft.ingredients.map(row => ({ ...row, measurementSystem: measurementSystem ?? row.measurementSystem })) }, recipes, editingRecipeId);
   const flagged = new Set(issues.flatMap(issue => issue.ingredientId ? [issue.ingredientId] : []));
   const reviewedCount = draft.ingredients.filter(ingredient => ingredient.reviewed).length;
@@ -5573,7 +5575,7 @@ function AddRecipeView({
           </label>
           <button
             className="primary-button"
-            onClick={() => issues.length || draft.warnings.length ? setConfirmSave(true) : void onSaveDraft()}
+            onClick={() => issues.length || visibleWarnings.length ? setConfirmSave(true) : void onSaveDraft()}
             disabled={Boolean(importStatus) || issues.some(issue => issue.blocking)}
           >
             {importStatus === "Saving recipe..." ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
@@ -5583,12 +5585,12 @@ function AddRecipeView({
         </div>
 
         <div className="recipe-review-summary" role="status"><strong>{draft.ingredients.length} ingredients · {issues.length} checks</strong><small>{draftStorageStatus}</small></div>
-        {(issues.some(issue => !issue.blocking) || draft.warnings.length > 0) && <button className="icon-text-button" type="button" onClick={() => acknowledgeChecks(issues, true)}><Check size={16} />Mark all review notes checked</button>}
+        {(issues.some(issue => !issue.blocking) || visibleWarnings.length > 0) && <button className="icon-text-button" type="button" onClick={() => acknowledgeChecks(issues, true)}><Check size={16} />Mark all review notes checked</button>}
         {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setIngredientFilter("all"); requestAnimationFrame(() => document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" })); }}>Review ingredient</button>}{!issue.blocking && <button className="icon-button" type="button" title={`Mark checked: ${issue.message}`} onClick={() => acknowledgeChecks([issue])}><Check size={15} /></button>}</div>)}</details>}
 
-        {draft.warnings.length > 0 && (
+        {visibleWarnings.length > 0 && (
           <div className="warning-list">
-            {draft.warnings.map((warning) => (
+            {visibleWarnings.map((warning) => (
               <span key={warning}>{warning}<button className="icon-button" type="button" title={`Dismiss: ${warning}`} onClick={() => setDraft(current => ({ ...current, warnings: current.warnings.filter(value => value !== warning) }))}><X size={14} /></button></span>
             ))}
           </div>

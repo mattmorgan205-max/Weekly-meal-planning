@@ -222,7 +222,7 @@ function draftFromJsonLd(recipe: JsonLdRecipe, sourceUrl: string, html: string):
     sourceUrl,
     mealImageUrl: imageUrlFromJsonLd(recipe.image, sourceUrl) ?? imageUrlFromPageMetadata(html, sourceUrl),
     warnings: recipe.recipeIngredient?.length
-      ? ["Review the imported recipe before saving it to your library.", ...(!yieldText ? ["Servings were not found; 4 is an unconfirmed default."] : [])]
+      ? (!yieldText ? ["Servings were not found; 4 is an unconfirmed default."] : [])
       : ["No structured ingredients were found. Review and add ingredients before saving."],
     importedFrom: "url"
   };
@@ -289,17 +289,11 @@ function extractDomFallbackDraft(html: string, sourceUrl: string): ImportDraft {
     .map((line) => line.replace(/^\d+[.)]\s*/, "").trim())
     .filter((line, index, allLines) => line.length > 4 && allLines.indexOf(line) === index)
     .slice(0, 30);
-  const warnings = [
-    "This URL did not provide structured recipe data, so only likely recipe sections were imported.",
-    "Review the imported recipe before saving it to your library."
-  ];
+  const warnings: string[] = [];
 
   if (!servingsMatch) warnings.push("Servings were not found, so the draft defaults to 4.");
   if (ingredients.length < 2) {
     warnings.push("No reliable ingredient section was found. Paste the recipe text or edit the draft rather than saving bad webpage text.");
-  }
-  if (ingredients.some((ingredient) => ingredient.needsReview || ingredient.confidence === "low")) {
-    warnings.push("Some extracted ingredient lines need review.");
   }
 
   return {

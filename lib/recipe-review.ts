@@ -1,6 +1,15 @@
 import { canonicalizeIngredientName, normalizeUnit, type ImportDraft, type Ingredient, type Recipe } from "./domain";
 
 export type ReviewIssue = { key: string; message: string; ingredientId?: string; blocking?: boolean };
+const genericImportWarnings = new Set([
+  "This URL did not provide structured recipe data, so only likely recipe sections were imported.",
+  "Review the imported recipe before saving it to your library.",
+  "Some extracted ingredient lines need review."
+]);
+
+export function actionableImportWarnings(warnings: string[]) {
+  return warnings.filter(warning => !genericImportWarnings.has(warning.trim()));
+}
 export function reviewIssueSignature(draft: ImportDraft, issue: ReviewIssue) {
   const method = draft.instructions.map(step => step.trim()).filter(Boolean);
   if (issue.ingredientId) {
