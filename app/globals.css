@@ -3678,6 +3678,20 @@ h3 {
 .meal-calendar-actions { display: flex; justify-content: flex-end; gap: 2px; margin-top: 3px; }
 .meal-calendar-actions .meal-drag-handle { margin-right: auto; }
 .meal-calendar-empty { display: block; padding: 8px 2px; font-size: 0.75rem; color: var(--muted); }
+.meal-calendar-slot.no-diners { background: #e5e7e6; border-color: #a4aaa7; color: #555c58; }
+.no-diners .meal-calendar-tile { background: #d9ddda; border: 1px solid #b8bfbb; }
+.no-diners .meal-calendar-slot-heading, .no-diners .meal-slot-diners, .no-diners .meal-calendar-title,
+.no-diners .meal-calendar-source, .no-diners .meal-calendar-warning, .no-diners .meal-calendar-leftovers { color: #555c58; }
+.weekly-diner-settings { grid-column: 1 / -1; }
+.weekly-defaults-scroll { overflow-x: auto; }
+.weekly-defaults-grid { display: grid; grid-template-columns: repeat(7, minmax(125px, 1fr)); gap: 0; }
+.weekly-default-day { min-width: 0; padding: 8px; border-left: 1px solid var(--line); }
+.weekly-default-day:last-child { border-right: 1px solid var(--line); }
+.weekly-default-day > header { display: flex; align-items: center; justify-content: space-between; }
+.weekly-default-day h3 { margin: 0; font-size: 0.9rem; }
+.weekly-default-day .icon-button { width: 26px; height: 26px; min-height: 26px; padding: 0; border: 0; background: transparent; }
+.weekly-note-label { margin-top: 10px; font-size: 0.75rem; }
+.weekly-note-label textarea { width: 100%; min-width: 0; min-height: 66px; padding: 6px; font-size: 0.8rem; resize: vertical; }
 .outside-shop { color: #737873; }
 .outside-shop .meal-calendar-tile { background: #eceeeb; }
 .guided-planning-tools { position: sticky; top: 16px; max-height: calc(100dvh - 120px); overflow-y: auto; scrollbar-width: thin; padding-right: 12px; border-right: 1px solid var(--line); }

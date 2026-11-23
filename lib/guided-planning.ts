@@ -1,5 +1,5 @@
 import { addDays, createId, formatDateKey, type AppState, type PlannedMeal, type Recipe } from "./domain";
-import { attendanceForSlot, attendancePortions, dinnerNeedsMeal, recipeAllowedForDinner, scaleMealPortions, shopDates } from "./guided-shop";
+import { attendanceForSlot, attendancePortions, dinnerNeedsMeal, recipeAllowedForState, scaleMealPortions, shopDates } from "./guided-shop";
 import type { AutoDinnerPlanEntry, AutoDinnerPlanResult } from "./dinner-planner";
 
 export function calendarDays(month: string) {
@@ -59,7 +59,7 @@ function destinationError(state: AppState, meal: PlannedMeal, date: string, slot
   if (!dinnerNeedsMeal(attendanceForSlot(state, date, slot))) return `No ${slot} diners selected. Choose diners first.`;
   const recipe = state.recipes.find(row => row.id === meal.recipeId);
   if (meal.recipeId && !recipe) return "This recipe is no longer available.";
-  if (slot === "dinner" && recipe && !recipeAllowedForDinner(recipe, date, state.dinnerAttendance, state.dayNotes)) return "This meal does not match the diners on that day.";
+  if (slot === "dinner" && recipe && !recipeAllowedForState(state, recipe, date)) return "This meal does not match the diners on that day.";
   return null;
 }
 

@@ -1,7 +1,7 @@
 import {
   addDays, createId, formatDateKey, generateShoppingList, normalizeUnit,
   type AppState, type DinnerAttendance, type GuidedShop,
-  type HouseholdDiner, type PlannedMeal, type Recipe, type ShoppingListItem, type SupplyCheck
+  type HouseholdDiner, type PlannedMeal, type Recipe, type ShoppingListItem, type SupplyCheck, type Weekday
 } from "./domain";
 import { snackShoppingMeals } from "./snacks";
 
@@ -49,10 +49,56 @@ export function scaleMealPortions(meal: PlannedMeal, portions: number): PlannedM
 }
 export function attendanceForSlot(state: AppState, date: string, slot: "lunch" | "dinner"): DinnerAttendance {
   const saved = (slot === "lunch" ? state.lunchAttendance : state.dinnerAttendance)?.[date];
+  const ids = state.settings.weeklyDefaults?.[weekdayForDate(date)]?.[slot];
+  if (!saved?.confirmed && ids !== undefined) return { ...attendanceFromIds(state, ids), dinnerStatus: saved?.dinnerStatus };
   if (saved) return saved;
   // Older planned lunches keep their requirements until attendance is explicitly changed.
   if (slot === "dinner" || state.plannedMeals.some(meal => meal.date === date && meal.slot === "lunch")) return defaultAttendance(state.settings.diners ?? defaultDiners(state.settings.defaultPeople));
   return { confirmed: true, portions: {}, guests: 0, sophiaEating: false };
+}
+
+export const weekdays: Weekday[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+export function weekdayForDate(date: string): Weekday {
+  return weekdays[(new Date(`${date}T12:00:00`).getDay() + 6) % 7];
+}
+function attendanceFromIds(state: AppState, ids: string[]): DinnerAttendance {
+  const diners = (state.settings.diners ?? defaultDiners(state.settings.defaultPeople)).filter(diner => ids.includes(diner.id));
+  return { confirmed: true, portions: Object.fromEntries(diners.map(diner => [diner.id, diner.portions])), guests: 0,
+    sophiaEating: diners.some(diner => diner.name.trim().toLowerCase() === "sophia" && diner.portions > 0) };
+}
+export function dayNoteForDate(state: AppState, date: string) {
+  return state.dayNotes[date] ?? state.settings.weeklyDefaults?.[weekdayForDate(date)]?.note ?? "";
+}
+export function allDinersSelected(state: AppState, date: string, slots: ("lunch" | "dinner")[]) {
+  const diners = state.settings.diners ?? defaultDiners(state.settings.defaultPeople);
+  return diners.length > 0 && slots.every(slot => diners.every(diner => Object.hasOwn(attendanceForSlot(state, date, slot).portions, diner.id)));
+}
+export function toggleAllDiners(state: AppState, date: string, slots: ("lunch" | "dinner")[] = ["lunch", "dinner"]) {
+  const clear = allDinersSelected(state, date, slots);
+  const ids = (state.settings.diners ?? defaultDiners(state.settings.defaultPeople)).map(diner => diner.id);
+  return slots.reduce((next, slot) => setAttendance(next, date, {
+    ...attendanceFromIds(next, clear ? [] : ids), dinnerStatus: attendanceForSlot(next, date, slot).dinnerStatus,
+    guests: clear ? 0 : attendanceForSlot(next, date, slot).guests
+  }, slot), state);
+}
+export function recipeAllowedForState(state: AppState, recipe: Recipe, date: string) {
+  return recipeAllowedForDinner(recipe, date, { [date]: attendanceForSlot(state, date, "dinner") }, { [date]: dayNoteForDate(state, date) });
+}
+// Resolve weekly defaults for display/planning only; never save these as date overrides.
+export function planningDefaultsForDates(state: AppState, dates: string[]): AppState {
+  return { ...state,
+    dinnerAttendance: { ...state.dinnerAttendance, ...Object.fromEntries(dates.map(date => [date, attendanceForSlot(state, date, "dinner")])) },
+    lunchAttendance: { ...state.lunchAttendance, ...Object.fromEntries(dates.map(date => [date, attendanceForSlot(state, date, "lunch")])) },
+    dayNotes: { ...state.dayNotes, ...Object.fromEntries(dates.map(date => [date, dayNoteForDate(state, date)])) }
+  };
+}
+export function refreshDinerPortions(state: AppState, previous?: AppState): AppState {
+  return { ...state, plannedMeals: state.plannedMeals.map(meal => {
+    if (meal.portionSource !== "diners" || meal.notes === "Leftovers" || (meal.slot !== "lunch" && meal.slot !== "dinner")) return meal;
+    const attendance = attendanceForSlot(state, meal.date, meal.slot);
+    if (previous && JSON.stringify(attendance) === JSON.stringify(attendanceForSlot(previous, meal.date, meal.slot))) return meal;
+    return scaleMealPortions(meal, dinnerNeedsMeal(attendance) ? attendancePortions(attendance, 0) + (meal.extraPortions ?? 0) : 0);
+  }) };
 }
 
 export function setAttendance(state: AppState, date: string, attendance: DinnerAttendance, slot: "lunch" | "dinner" = "dinner"): AppState {
@@ -159,5 +205,5 @@ export function changeDiners(state: AppState, diners: HouseholdDiner[]): AppStat
     updated.sophiaEating = diners.some(diner => diner.name.trim().toLowerCase() === "sophia" && (updated.portions[diner.id] ?? 0) > 0);
     next = setAttendance(next, date, updated, slot);
   }
-  return next;
+  return refreshDinerPortions(next);
 }

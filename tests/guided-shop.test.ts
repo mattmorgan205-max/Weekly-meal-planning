@@ -6,6 +6,7 @@ import { buildAutoDinnerPlan } from "../lib/dinner-planner";
 import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange, mealCalendarDays, mealFromDinnerEntry, mealSource, placeGuidedMeal, removeDinnerPreviewEntry } from "../lib/guided-planning";
 import { assignSnackGroup, defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 import { copyAttendanceToDates } from "../lib/guided-shop";
+import { allDinersSelected, dayNoteForDate, planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, toggleAllDiners, weekdayForDate } from "../lib/guided-shop";
 
 const start = "2026-11-23", end = "2026-11-29";
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
@@ -14,6 +15,95 @@ const item = (id = "carrots", quantity: number | undefined = 600, unit = "g"): S
 const recipe = (id: string, restricted = false): Recipe => ({ id, title: id, servings: 2, mealTypes: ["dinner"], prepMinutes: 5, cookMinutes: 15, tags: restricted ? ["Not Sophia friendly"] : [], favorite: false, ingredients: [{ id: `${id}-carrot`, name: "carrots", quantity: 600, unit: "g", category: "Produce" }], instructions: ["Cook"], createdAt: "2026-11-01", updatedAt: "2026-11-01" });
 const meal = (id = "m", peopleCount = 2): PlannedMeal => ({ id, date: start, slot: "dinner", recipeId: "r", peopleCount, extraSideIngredients: [{ id: "side", name: "rice", quantity: 200, unit: "g", category: "Pantry", role: "side" }] });
 function state(): AppState { const initial = seedState(); return migrateGuidedState({ ...initial, recipes: [recipe("r")], plannedMeals: [], settings: { ...initial.settings, diners }, manualShoppingItems: [], shoppingChecks: {}, asdaShoppingStatus: {} }, start, end); }
+
+test("all-diner toggles select everyone from partial or empty days, then clear both slots", () => {
+  let current = state();
+  current.settings.diners = diners.map(diner => ({ ...diner, usual: false }));
+  current = toggleAllDiners(current, start);
+  assert.equal(allDinersSelected(current, start, ["lunch", "dinner"]), true);
+  assert.equal(attendanceForSlot(current, start, "lunch").sophiaEating, true);
+  assert.equal(attendancePortions(attendanceForSlot(current, start, "dinner"), 0), 1.5);
+  current = toggleAllDiners(JSON.parse(JSON.stringify(current)), start);
+  assert.equal(attendancePortions(attendanceForSlot(current, start, "lunch"), 0), 0);
+  assert.equal(attendancePortions(attendanceForSlot(current, start, "dinner"), 0), 0);
+  current = toggleAllDiners(current, start, ["lunch"]);
+  assert.equal(allDinersSelected(current, start, ["lunch"]), true);
+  assert.equal(attendancePortions(attendanceForSlot(current, start, "dinner"), 0), 0);
+});
+
+test("weekly defaults resolve across weeks, slots and reloads without changing date overrides", () => {
+  let current = state();
+  current.settings.weeklyDefaults = { mon: { lunch: ["child"], dinner: [], note: "Swimming" } };
+  assert.equal(weekdayForDate("2026-11-30"), "mon");
+  for (const date of [start, "2026-11-30"]) {
+    assert.equal(attendancePortions(attendanceForSlot(current, date, "lunch"), 0), 0.5);
+    assert.equal(dinnerNeedsMeal(attendanceForSlot(current, date, "dinner")), false);
+    assert.equal(dayNoteForDate(current, date), "Swimming");
+  }
+  current = setAttendance(current, start, attendance(true));
+  current.dayNotes[start] = "";
+  current = changeShopDates(JSON.parse(JSON.stringify(current)), "2026-11-30", "2026-12-06");
+  assert.equal(attendancePortions(attendanceForSlot(current, start, "dinner"), 0), 1.5);
+  assert.equal(dayNoteForDate(current, start), "");
+  assert.equal(dayNoteForDate(current, "2026-11-30"), "Swimming");
+  assert.equal(current.dayNotes["2026-11-30"], undefined);
+});
+
+test("weekly default changes scale automatic meals and sides, not explicit diners or manual portions", () => {
+  let current = state();
+  current.plannedMeals = [{ ...meal(), portionSource: "diners" }, { ...meal("manual", 5), portionSource: "manual" }, { ...meal("leftover", 0), notes: "Leftovers" }];
+  current.settings.weeklyDefaults = { mon: { dinner: ["adult"] } };
+  current = refreshDinerPortions(current);
+  assert.equal(current.plannedMeals[0].peopleCount, 1);
+  assert.equal(current.plannedMeals[0].extraSideIngredients![0].quantity, 100);
+  assert.equal(current.plannedMeals[1].peopleCount, 5);
+  current.settings.weeklyDefaults!.mon!.dinner = [];
+  current = refreshDinerPortions(current);
+  assert.equal(requiredShopItems(current, current.guidedShop!).length, 0);
+  assert.equal(current.plannedMeals.length, 3);
+  current.settings.weeklyDefaults!.mon!.dinner = ["adult", "child"];
+  current = refreshDinerPortions(current);
+  assert.equal(current.plannedMeals[0].extraSideIngredients![0].quantity, 150);
+  current = setAttendance(current, start, attendance(false));
+  current.settings.weeklyDefaults!.mon!.dinner = [];
+  assert.equal(refreshDinerPortions(current).plannedMeals[0].peopleCount, 1);
+});
+
+test("recurring notes and diners drive autoplan and drag rules without being persisted as overrides", () => {
+  const current = state();
+  current.settings.weeklyDefaults = { mon: { dinner: [], note: "Away" }, tue: { dinner: ["adult"], note: "Sophia nursery" } };
+  const dates = shopDates(start, end), projected = planningDefaultsForDates(current, dates);
+  const plan = buildAutoDinnerPlan({ startDate: start, endDate: end, mode: "fill", recipes: [recipe("restricted", true), recipe("safe")], plannedMeals: [], peopleCount: 4, ingredientAliases: {}, useUpIngredients: [], dayNotes: projected.dayNotes, dinnerAttendance: projected.dinnerAttendance });
+  assert.ok(plan.entries.length);
+  assert.ok(plan.entries.every(entry => entry.date !== start));
+  assert.equal(recipeAllowedForState(current, recipe("restricted", true), "2026-11-24"), true);
+  assert.ok(placeGuidedMeal(current, { kind: "new", meal: meal() }, start).error);
+  assert.equal(projected.dayNotes[start], "Away");
+  assert.equal(current.dayNotes[start], undefined);
+  assert.equal(current.dinnerAttendance![start].confirmed, false);
+});
+
+test("removed diners are ignored in weekly defaults and renamed Sophia keeps the correct restriction", () => {
+  const current = state(); current.settings.weeklyDefaults = { mon: { lunch: ["adult", "child"] } };
+  const next = changeDiners(current, [{ ...diners[0], name: "Sophia" }]);
+  assert.deepEqual(attendanceForSlot(next, start, "lunch").portions, { adult: 1 });
+  assert.equal(attendanceForSlot(next, start, "lunch").sophiaEating, true);
+});
+
+test("editing only weekly notes leaves planned portions unchanged", () => {
+  const current = state(); current.plannedMeals = [{ ...meal(), portionSource: "diners" }];
+  const next = { ...current, settings: { ...current.settings, weeklyDefaults: { mon: { note: "Swimming" } } } };
+  assert.deepEqual(refreshDinerPortions(next, current).plannedMeals, current.plannedMeals);
+});
+
+test("weekly diners retain eating-out statuses and toggles clear guest quantities", () => {
+  let current = state(); current.settings.weeklyDefaults = { mon: { dinner: ["adult"] } };
+  current.dinnerAttendance![start] = { ...defaultAttendance(diners), dinnerStatus: "out" };
+  assert.equal(dinnerNeedsMeal(attendanceForSlot(current, start, "dinner")), false);
+  current = setAttendance(current, start, { ...attendance(true), guests: 2 });
+  current = toggleAllDiners(current, start, ["dinner"]);
+  assert.equal(attendancePortions(attendanceForSlot(current, start, "dinner"), 0), 0);
+});
 
 test("new lunches default to no diners while existing legacy lunches remain included", () => {
   const current = state();

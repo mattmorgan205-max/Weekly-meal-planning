@@ -92,6 +92,8 @@ export type PlannedMeal = {
 };
 
 export type HouseholdDiner = { id: string; name: string; portions: number; usual: boolean };
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+export type WeeklyDayDefault = { lunch?: string[]; dinner?: string[]; note?: string };
 export type DinnerAttendance = {
   confirmed: boolean;
   portions: Record<string, number>;
@@ -202,6 +204,7 @@ export type AppSettings = {
   commonExtraProfiles: Record<string, CommonExtraProfile>;
   splitShoppingItems: Record<string, boolean>;
   diners?: HouseholdDiner[];
+  weeklyDefaults?: Partial<Record<Weekday, WeeklyDayDefault>>;
 };
 
 export type ImportDraft = {

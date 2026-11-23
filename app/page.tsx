@@ -135,6 +135,8 @@ import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, ac
 import { completedTotalMinutes } from "@/lib/domain";
 import { actionableImportWarnings } from "@/lib/recipe-review";
 import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
+import { WeeklyDinerSettings } from "@/components/weekly-diner-settings";
+import { dayNoteForDate, planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, weekdayForDate } from "@/lib/guided-shop";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
@@ -1195,6 +1197,9 @@ export default function Home() {
   );
   const commonExtraProfileKey = cloudUser?.trim().toLowerCase() || "local";
   const days = useMemo(() => dateRangeDates(weekStart, plannerDayCount), [plannerDayCount, weekStart]);
+  const planningState = useMemo(() => planningDefaultsForDates(state, [...new Set([
+    ...days.map(formatDateKey), ...(state.guidedShop ? shopDates(state.guidedShop.startDate, state.guidedShop.endDate) : [])
+  ])]), [state, days]);
   const shoppingDateRange = useMemo(() => normalizeDateRange(shoppingStartDate, shoppingEndDate), [shoppingStartDate, shoppingEndDate]);
   const shoppingRangeKey = useMemo(() => shoppingRangeKeyForRange(shoppingDateRange), [shoppingDateRange]);
   const shoppingHiddenPrefix = useMemo(
@@ -1577,7 +1582,7 @@ export default function Home() {
             date,
             slot,
             recipeId,
-            peopleCount: slot === "dinner" || (slot === "lunch" && current.lunchAttendance?.[date]) ? attendancePortions(attendanceForSlot(current, date, slot), current.settings.defaultPeople) : current.settings.defaultPeople,
+            peopleCount: slot === "dinner" || (slot === "lunch" && (current.lunchAttendance?.[date] || current.settings.weeklyDefaults?.[weekdayForDate(date)]?.lunch !== undefined)) ? attendancePortions(attendanceForSlot(current, date, slot), current.settings.defaultPeople) : current.settings.defaultPeople,
             portionSource: slot === "dinner" || slot === "lunch" ? "diners" as const : "manual" as const,
             selectedIngredientIds: [],
             extraSideIngredients: []
@@ -1614,8 +1619,8 @@ export default function Home() {
         for (const date of displayedDates) {
           const availableSlot = candidateSlots.find((slot) =>
             !occupiedSlots.has(`${date}:${slot}`) &&
-            (slot !== "dinner" || recipeAllowedForDinner(recipe, date, current.dinnerAttendance, current.dayNotes)) &&
-            (slot !== "lunch" || dinnerNeedsMeal(current.lunchAttendance?.[date]))
+            (slot !== "dinner" || recipeAllowedForState(current, recipe, date)) &&
+            (slot !== "lunch" || dinnerNeedsMeal(attendanceForSlot(current, date, "lunch")))
           );
           if (availableSlot) {
             target = { date, slot: availableSlot };
@@ -1633,7 +1638,7 @@ export default function Home() {
           peopleCount: selectedTarget.slot === "dinner"
             ? attendancePortions(attendanceForSlot(current, selectedTarget.date, "dinner"), current.settings.defaultPeople)
             : selectedTarget.slot === "lunch"
-              ? attendancePortions(current.lunchAttendance?.[selectedTarget.date], current.settings.defaultPeople)
+              ? attendancePortions(attendanceForSlot(current, selectedTarget.date, "lunch"), current.settings.defaultPeople)
               : current.settings.defaultPeople,
           portionSource: selectedTarget.slot === "dinner" || selectedTarget.slot === "lunch" ? "diners" : "manual",
           notes: "Uses food already at home"
@@ -1650,7 +1655,7 @@ export default function Home() {
     updateState((current) => {
       const retainedMeals = plan.mode === "replace"
         ? current.plannedMeals.filter(
-            (meal) => !(meal.slot === "dinner" && meal.date >= plan.startDate && meal.date <= plan.endDate && dinnerNeedsMeal(current.dinnerAttendance?.[meal.date]))
+            (meal) => !(meal.slot === "dinner" && meal.date >= plan.startDate && meal.date <= plan.endDate && dinnerNeedsMeal(attendanceForSlot(current, meal.date, "dinner")))
           )
         : current.plannedMeals;
       const occupiedDinnerDates = new Set(
@@ -1660,18 +1665,18 @@ export default function Home() {
       );
       const generatedMeals = plan.entries
         .filter((entry) => plan.mode === "replace" || !occupiedDinnerDates.has(entry.date))
-        .filter((entry) => current.recipes.some((recipe) => recipe.id === entry.recipeId && recipeAllowedForDinner(recipe, entry.date, current.dinnerAttendance, current.dayNotes)))
+        .filter((entry) => current.recipes.some((recipe) => recipe.id === entry.recipeId && recipeAllowedForState(current, recipe, entry.date)))
         .map((entry) => ({
           id: createId("meal"),
           date: entry.date,
           slot: "dinner" as const,
           recipeId: entry.recipeId,
-          peopleCount: attendancePortions(current.dinnerAttendance?.[entry.date], current.settings.defaultPeople),
+          peopleCount: attendancePortions(attendanceForSlot(current, entry.date, "dinner"), current.settings.defaultPeople),
           portionSource: "diners" as const,
           selectedIngredientIds: [...entry.selectedIngredientIds],
           extraSideIngredients: entry.extraSideIngredients.map((ingredient) => ({
             ...ingredient,
-            quantity: typeof ingredient.quantity === "number" ? ingredient.quantity * attendancePortions(current.dinnerAttendance?.[entry.date], current.settings.defaultPeople) / Math.max(0.25, entry.peopleCount ?? current.settings.defaultPeople) : ingredient.quantity,
+            quantity: typeof ingredient.quantity === "number" ? ingredient.quantity * attendancePortions(attendanceForSlot(current, entry.date, "dinner"), current.settings.defaultPeople) / Math.max(0.25, entry.peopleCount ?? current.settings.defaultPeople) : ingredient.quantity,
             id: createId("planned_side")
           })),
           notes: entry.coveredUseUpIngredients.length
@@ -1744,11 +1749,7 @@ export default function Home() {
   function updateDayNote(date: string, note: string) {
     updateState((current) => {
       const dayNotes = { ...current.dayNotes };
-      if (note.trim()) {
-        dayNotes[date] = note;
-      } else {
-        delete dayNotes[date];
-      }
+      dayNotes[date] = note;
 
       return { ...current, dayNotes };
     });
@@ -1763,7 +1764,7 @@ export default function Home() {
     }));
     const newDayNotes = days.reduce<Record<string, string>>((notes, day, index) => {
       const sourceDate = formatDateKey(day);
-      const note = state.dayNotes[sourceDate];
+      const note = dayNoteForDate(state, sourceDate);
       if (note) notes[formatDateKey(addDays(nextWeek, index))] = note;
       return notes;
     }, {});
@@ -1784,12 +1785,12 @@ export default function Home() {
       const dayNotes = { ...current.dayNotes };
       sourceDays.forEach((day) => {
         const sourceDate = formatDateKey(day);
-        const note = current.dayNotes[sourceDate]?.trim();
+        const note = dayNoteForDate(current, sourceDate).trim();
         if (!note) return;
 
         for (let week = 1; week <= safeWeekCount; week += 1) {
           const targetDate = formatDateKey(addDays(day, week * 7));
-          if (!dayNotes[targetDate]?.trim()) dayNotes[targetDate] = note;
+          if (!Object.hasOwn(dayNotes, targetDate)) dayNotes[targetDate] = note;
         }
       });
 
@@ -2655,10 +2656,10 @@ export default function Home() {
   }
 
   function updateSettings(patch: Partial<AppState["settings"]>) {
-    updateState((current) => ({
-      ...current,
-      settings: { ...current.settings, ...patch }
-    }));
+    updateState((current) => {
+      const next = { ...current, settings: { ...current.settings, ...patch } };
+      return patch.weeklyDefaults ? refreshDinerPortions(next, current) : next;
+    });
   }
 
   async function resolveSnapshotOwnerForUser(userId: string, email?: string | null) {
@@ -3164,7 +3165,7 @@ export default function Home() {
         </header>
 
         {activeView === "guided" && state.guidedShop && <>
-          <GuidedShopView state={state} updateState={updateState} onDates={applyShoppingDates}
+          <GuidedShopView state={planningState} updateState={updateState} onDates={applyShoppingDates}
             onOpenMeal={(date, slot) => { setMealPicker({ date, slot }); setMealPickerQuery(""); }}
             onRemove={removeGuidedMeal} preferenceScores={autoPlannerPreferenceScores} reactions={recipeReactions} onOpenRecipe={setSelectedRecipeId}
             suggestions={suggestUseUpRecipes(state.recipes.filter(recipe => recipe.mealTypes.includes("dinner")), state.useUpIngredients, state.settings.ingredientAliases, recipeReactions, autoPlannerPreferenceScores).suggestions}
@@ -3180,8 +3181,9 @@ export default function Home() {
             days={days}
             weekStart={weekStart}
             plannerDayCount={plannerDayCount}
-            dayNotes={state.dayNotes}
-            dinnerAttendance={state.dinnerAttendance ?? {}}
+            dayNotes={planningState.dayNotes}
+            dinnerAttendance={planningState.dinnerAttendance ?? {}}
+            resolvePlanningDefaults={(start, end) => planningDefaultsForDates(state, shopDates(start, end))}
             recipes={state.recipes}
             plannedMeals={state.plannedMeals}
             visibleSlots={visibleSlots}
@@ -3667,6 +3669,7 @@ function PlannerView({
   plannerDayCount,
   dayNotes,
   dinnerAttendance,
+  resolvePlanningDefaults,
   recipes,
   plannedMeals,
   visibleSlots,
@@ -3699,6 +3702,7 @@ function PlannerView({
   plannerDayCount: 7 | 14;
   dayNotes: Record<string, string>;
   dinnerAttendance: Record<string, DinnerAttendance>;
+  resolvePlanningDefaults: (start: string, end: string) => AppState;
   recipes: Recipe[];
   plannedMeals: AppState["plannedMeals"];
   visibleSlots: MealSlot[];
@@ -3797,7 +3801,7 @@ function PlannerView({
     const plannedDates = new Set(plannedRows.map((row) => row.date));
     const unfilledRows = dateRangeDates(autoPlanPreview.startDate, 14)
       .map(formatDateKey)
-      .filter((date) => date <= autoPlanPreview.endDate && !plannedDates.has(date) && dinnerNeedsMeal(dinnerAttendance[date]))
+      .filter((date) => date <= autoPlanPreview.endDate && !plannedDates.has(date) && dinnerNeedsMeal(resolvePlanningDefaults(autoPlanPreview.startDate, autoPlanPreview.endDate).dinnerAttendance?.[date]))
       .map<AutoPlanPreviewRow>((date) => ({
         key: `unfilled:${date}`,
         date,
@@ -3808,7 +3812,7 @@ function PlannerView({
     return [...plannedRows, ...unfilledRows].sort(
       (left, right) => left.date.localeCompare(right.date) || Number(right.preserved) - Number(left.preserved)
     );
-  }, [autoPlanPreview, recipes, dinnerAttendance]);
+  }, [autoPlanPreview, recipes, dinnerAttendance, resolvePlanningDefaults]);
   const autoPlanUnfilledCount = autoPlanPreviewRows.filter((row) => row.badges.includes("Unfilled")).length;
 
   useEffect(() => {
@@ -3847,6 +3851,7 @@ function PlannerView({
   }
 
   function buildAutoPlanPreview(variation: number) {
+    const defaults = resolvePlanningDefaults(autoPlanStart, autoPlanEnd);
     setAutoPlanVariation(variation);
     setAutoPlanExcludedRecipeIds([]);
     setAutoPlanPreview(buildAutoDinnerPlan({
@@ -3857,8 +3862,8 @@ function PlannerView({
       plannedMeals,
       useUpIngredients,
       ingredientAliases,
-      dayNotes,
-      dinnerAttendance,
+      dayNotes: defaults.dayNotes,
+      dinnerAttendance: defaults.dinnerAttendance,
       peopleCount: defaultPeople,
       recipePreferenceScores,
       recipeReactions,
@@ -3881,7 +3886,7 @@ function PlannerView({
       ]);
       const missingCount = dateRangeDates(current.startDate, 14)
         .map(formatDateKey)
-        .filter((date) => date <= current.endDate && !plannedDates.has(date) && dinnerNeedsMeal(dinnerAttendance[date])).length;
+        .filter((date) => date <= current.endDate && !plannedDates.has(date) && dinnerNeedsMeal(resolvePlanningDefaults(current.startDate, current.endDate).dinnerAttendance?.[date])).length;
       const warnings = current.warnings.filter((warning) => !/dinner slots? ready to refill/i.test(warning));
       warnings.unshift(`${missingCount} dinner slot${missingCount === 1 ? " is" : "s are"} ready to refill.`);
 
@@ -3925,8 +3930,8 @@ function PlannerView({
       plannedMeals: [...retainedPlannedMeals, ...previewMeals],
       useUpIngredients,
       ingredientAliases,
-      dayNotes,
-      dinnerAttendance,
+      dayNotes: resolvePlanningDefaults(autoPlanPreview.startDate, autoPlanPreview.endDate).dayNotes,
+      dinnerAttendance: resolvePlanningDefaults(autoPlanPreview.startDate, autoPlanPreview.endDate).dinnerAttendance,
       excludedRecipeIds: autoPlanExcludedRecipeIds,
       peopleCount: defaultPeople,
       recipePreferenceScores,
@@ -6868,6 +6873,8 @@ function SettingsView({
           </label>
         </div>
       </section>
+
+      <WeeklyDinerSettings settings={settings} onChange={updateSettings} />
 
       <section className="settings-section">
         <h2>Meal slots</h2>

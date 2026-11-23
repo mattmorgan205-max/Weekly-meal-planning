@@ -54,7 +54,8 @@ export function GuidedMealCalendar({ state, updateState, controls, onOpenMeal, o
               const summary = `${names || "No diners"}${attendance.guests ? ` + ${attendance.guests} guest portions` : ""}`;
               const allowed = selected && dinnerNeedsMeal(attendance);
               const drop = selected ? controls.dropProps(date, slot) : {};
-              return <div {...drop} className={`meal-calendar-slot ${slot} ${drop.className ?? ""}`} key={slot} aria-label={`${slot} on ${date}`}>
+              const noDiners = selected && attendancePortions(attendance, 0) === 0;
+              return <div {...drop} className={`meal-calendar-slot ${slot} ${noDiners ? "no-diners" : ""} ${drop.className ?? ""}`} key={slot} aria-label={`${slot} on ${date}`}>
                 <div className="meal-calendar-slot-heading"><span>{slot === "lunch" ? "Lunch" : "Dinner"}</span>{allowed && <button className="icon-button" type="button" title={`Add ${slot} on ${date}`} onClick={() => onOpenMeal(date, slot)}><Plus size={13} /></button>}</div>
                 {selected && <small className="meal-slot-diners" title={`${slot}: ${summary}`}>{summary}</small>}
                 {meals.map(meal => {
