@@ -1491,10 +1491,42 @@ h3 {
 .ingredient-standard-details .ingredient-standard-row { margin-top: 10px; }
 .recipe-review-workspace [hidden] { display: none !important; }
 .recipe-review-workspace .review-heading h2 { font-size: 1.3rem; overflow-wrap: anywhere; }
+.recipe-title-label { flex: 1; min-width: 0; }
+.recipe-title-field { display: grid; min-width: 0; }
+.recipe-title-field > span, .recipe-title-field > textarea {
+  grid-area: 1 / 1;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  font: inherit;
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.recipe-title-field > span { visibility: hidden; }
+.recipe-title-field > textarea { height: 100%; min-height: 0; resize: none; overflow: hidden; background: #fff; }
+.ingredient-shopping-name { grid-column: 1 / -1; display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 0.8rem; }
+.ingredient-shopping-name input { min-width: 0; }
+.ingredient-review-filters { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.ingredient-review-filters button { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 6px 9px; font-size: 0.8rem; border: 1px solid transparent; background: transparent; }
+.ingredient-review-filters button[aria-pressed="true"] { color: #285e47; background: #e6f1eb; border-color: #a9c9b8; }
+.recipe-review-workspace .ingredient-row.is-reviewed { border-color: #a9c9b8; background: #f0f7f3; }
+.ingredient-review-actions button[aria-pressed="true"] { color: #285e47; border-color: #a9c9b8; }
 @media (max-width: 1050px) {
   .recipe-review-workspace { grid-template-columns: minmax(0, 1fr); }
   .recipe-review-workspace .import-panel { position: static; max-height: none; }
   .recipe-source-preview pre { max-height: 180px; }
+}
+@media (max-width: 760px) {
+  .recipe-review-workspace .ingredient-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 42px; }
+  .recipe-review-workspace .ingredient-row > .qty-input { grid-column: 1; grid-row: 1; }
+  .recipe-review-workspace .ingredient-row > .unit-input { grid-column: 2; grid-row: 1; }
+  .recipe-review-workspace .ingredient-row > .icon-button { grid-column: 3; grid-row: 1; }
+  .recipe-review-workspace .ingredient-row > [aria-label="Ingredient"] { grid-column: 1 / -1; grid-row: 2; }
+  .recipe-review-workspace .ingredient-row > [aria-label="Category"] { grid-column: 1 / -1; grid-row: 3; }
 }
 
 .import-panel,

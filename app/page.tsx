@@ -5331,13 +5331,14 @@ function AddRecipeView({
 }) {
   const [mealImageStatus, setMealImageStatus] = useState("");
   const [fullEditor, setFullEditor] = useState(false);
-  const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [ingredientFilter, setIngredientFilter] = useState<"all" | "needs-review" | "reviewed">("all");
   const [sourceIngredient, setSourceIngredient] = useState<string | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
   const issues = reviewRecipe(draft, recipes, editingRecipeId);
   const flagged = new Set(issues.flatMap(issue => issue.ingredientId ? [issue.ingredientId] : []));
+  const reviewedCount = draft.ingredients.filter(ingredient => ingredient.reviewed).length;
   const selectedSource = draft.ingredients.find(row => row.id === sourceIngredient);
-  useEffect(() => { setFlaggedOnly(draft.importedFrom !== "manual"); setSourceIngredient(null); setConfirmSave(false); }, [draft.id]);
+  useEffect(() => { setIngredientFilter("all"); setSourceIngredient(null); setConfirmSave(false); }, [draft.id]);
   const mealImagePreview = draft.mealImageUrl ?? (draft.mealImagePath ? storedMealImageUrl : undefined);
   const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
   const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
@@ -5527,10 +5528,13 @@ function AddRecipeView({
 
       <section className="review-panel">
         <div className="review-heading">
-          <div>
-            <p className="eyebrow">Review before save</p>
-            <h2>{draft.title || "Untitled recipe"}</h2>
-          </div>
+          <label className="recipe-title-label">
+            <span className="eyebrow">Recipe name</span>
+            <span className="recipe-title-field">
+              <span aria-hidden="true">{draft.title || "Untitled recipe"}{"\n"}</span>
+              <textarea aria-label="Recipe name" rows={1} value={draft.title} placeholder="Untitled recipe" onChange={event => setDraft(current => ({ ...current, title: event.target.value.replace(/\r?\n/g, " ") }))} />
+            </span>
+          </label>
           <button
             className="primary-button"
             onClick={() => issues.length || draft.warnings.length ? setConfirmSave(true) : void onSaveDraft()}
@@ -5542,7 +5546,7 @@ function AddRecipeView({
         </div>
 
         <div className="recipe-review-summary" role="status"><strong>{draft.ingredients.length} ingredients · {issues.length} checks</strong><small>{draftStorageStatus}</small></div>
-        {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setSourceIngredient(issue.ingredientId!); setFlaggedOnly(true); document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" }); }}>Check source</button>}</div>)}</details>}
+        {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setSourceIngredient(issue.ingredientId!); setIngredientFilter("all"); requestAnimationFrame(() => document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" })); }}>Check source</button>}</div>)}</details>}
         <button className="text-button" type="button" aria-expanded={fullEditor} onClick={() => setFullEditor(value => !value)}><Settings size={15} />{fullEditor ? "Close full editor" : "Full editor"}</button>
 
         {draft.warnings.length > 0 && (
@@ -5554,10 +5558,6 @@ function AddRecipeView({
         )}
 
         <div className="form-grid">
-          <label>
-            Recipe name
-            <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
-          </label>
           <label>
             Serves
             <input
@@ -5783,13 +5783,18 @@ function AddRecipeView({
         <div className="editor-section">
           <div className="section-heading">
             <h3>Ingredients</h3>
-            <button className="icon-text-button" onClick={onAddIngredient}>
+            <button className="icon-text-button" onClick={() => { setIngredientFilter("all"); onAddIngredient(); }}>
               <Plus size={17} />
               Add row
             </button>
           </div>
-          <label className="toggle-line"><input type="checkbox" checked={flaggedOnly} onChange={event => setFlaggedOnly(event.target.checked)} />Needs checking only ({flagged.size})</label>
-          {flaggedOnly && !flagged.size && <p>No ingredient checks outstanding.</p>}
+          <div className="ingredient-review-filters" role="group" aria-label="Ingredient review filter">
+            <button type="button" aria-pressed={ingredientFilter === "all"} onClick={() => setIngredientFilter("all")}>All ingredients ({draft.ingredients.length})</button>
+            <button type="button" aria-pressed={ingredientFilter === "needs-review"} onClick={() => setIngredientFilter("needs-review")}>Needs checking ({flagged.size})</button>
+            <button type="button" aria-pressed={ingredientFilter === "reviewed"} onClick={() => setIngredientFilter("reviewed")}><Check size={14} />Reviewed ({reviewedCount})</button>
+          </div>
+          {ingredientFilter === "needs-review" && !flagged.size && <p>No ingredient checks outstanding.</p>}
+          {ingredientFilter === "reviewed" && !reviewedCount && <p>No ingredients marked as reviewed yet.</p>}
           <div className="ingredient-editor">
 	            {draft.ingredients.map((ingredient) => {
                   const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName : "";
@@ -5797,14 +5802,13 @@ function AddRecipeView({
                   const variantOptions = ingredient.name.trim()
                     ? shoppingNameVariants(ingredient.name, ingredientAliases, savedShoppingNameVariants)
                     : [];
-                  const selectedVariant = variantOptions.includes(normalizeIngredientAliasKey(shoppingName)) ? normalizeIngredientAliasKey(shoppingName) : "";
 
                   return (
 	              <div
-	                className={classNames("ingredient-row", (ingredient.confidence === "low" || ingredient.needsReview) && "needs-review")}
+	                className={classNames("ingredient-row", (ingredient.confidence === "low" || ingredient.needsReview) && "needs-review", ingredient.reviewed && "is-reviewed")}
 	                key={ingredient.id}
                     id={`ingredient-${ingredient.id}`}
-                    hidden={flaggedOnly && !flagged.has(ingredient.id)}
+                    hidden={ingredientFilter === "needs-review" ? !flagged.has(ingredient.id) : ingredientFilter === "reviewed" && !ingredient.reviewed}
 	              >
 	                <input
 	                  aria-label="Quantity"
@@ -5854,10 +5858,23 @@ function AddRecipeView({
 	                <button className="icon-button danger" type="button" title="Remove ingredient" onClick={() => onRemoveIngredient(ingredient.id)}>
 	                  <Trash2 size={16} />
 	                </button>
+                  <label className="ingredient-shopping-name">
+                    Shopping name
+                    <input
+                      aria-label="Shopping name"
+                      list={`shopping-names-${ingredient.id}`}
+                      value={shoppingName}
+                      onChange={event => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
+                      placeholder={suggestedShoppingName || "shopping name"}
+                    />
+                    <datalist id={`shopping-names-${ingredient.id}`}>
+                      {variantOptions.map(variant => <option key={variant} value={variant} />)}
+                    </datalist>
+                  </label>
                   <div className="ingredient-review-actions">
                     <label className="toggle-line"><input type="checkbox" checked={ingredientIncludedInShopping(ingredient, excludedShoppingIngredients)} onChange={event => onUpdateIngredient(ingredient.id, { shoppingIncluded: event.target.checked })} />Include in shopping</label>
                     <button className="text-button" type="button" onClick={() => setSourceIngredient(ingredient.id)}>Source</button>
-                    <button className="text-button" type="button" title="Confirm ingredient checked against source" onClick={() => onUpdateIngredient(ingredient.id, { reviewed: !ingredient.reviewed, needsReview: false })}><Check size={14} />{ingredient.reviewed ? "Checked" : "Mark checked"}</button>
+                    <button className="text-button" type="button" aria-pressed={Boolean(ingredient.reviewed)} title={ingredient.reviewed ? "Mark ingredient as needing review" : "Confirm ingredient checked against source"} onClick={() => onUpdateIngredient(ingredient.id, { reviewed: !ingredient.reviewed, needsReview: Boolean(ingredient.reviewed) })}><Check size={14} />{ingredient.reviewed ? "Checked" : "Mark checked"}</button>
                   </div>
                   <details className="ingredient-standard-details" open={fullEditor || undefined}><summary>Shopping details</summary><div className="ingredient-standard-row">
                     <label className="ingredient-role-control">
@@ -5875,32 +5892,6 @@ function AddRecipeView({
                     <label>Measurement convention<select aria-label="Measurement convention" value={ingredient.measurementSystem ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { measurementSystem: event.target.value as Ingredient["measurementSystem"] || undefined })}><option value="">Unspecified</option><option value="metric">Metric (250 ml cup)</option><option value="uk">UK imperial (250 ml cup)</option><option value="us">US customary</option></select></label>
                     {["can", "pack", "jar", "bottle"].includes(normalizeUnit(ingredient.unit)) && <><label>Pack size<input aria-label="Pack size" type="number" min="0" value={ingredient.packSize ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { packSize: parseNumberInput(event.target.value) })} /></label><label>Pack unit<select aria-label="Pack unit" value={ingredient.packUnit ?? ""} onChange={event => onUpdateIngredient(ingredient.id, { packUnit: event.target.value as Ingredient["packUnit"] || undefined })}><option value="">Choose</option><option value="g">g</option><option value="ml">ml</option></select></label></>}
                     <label>Weight basis<select aria-label="Weight basis" value={ingredient.weightBasis ?? "net"} onChange={event => onUpdateIngredient(ingredient.id, { weightBasis: event.target.value as Ingredient["weightBasis"] })}><option value="net">As supplied</option><option value="drained">Drained</option></select></label>
-                    <label>
-                      Shopping name
-                      <div className="shopping-name-controls">
-                        <input
-                          aria-label="Shopping name"
-                          value={shoppingName}
-                          onChange={(event) => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
-                          placeholder={suggestedShoppingName || "shopping name"}
-                        />
-                        <select
-                          aria-label="Shopping name variants"
-                          value={selectedVariant}
-                          onChange={(event) => {
-                            if (!event.target.value) return;
-                            onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false });
-                          }}
-                        >
-                          <option value="">Variants</option>
-                          {variantOptions.map((variant) => (
-                            <option key={variant} value={variant}>
-                              {variant}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </label>
                     <button
                       className="text-button"
                       type="button"
@@ -5911,7 +5902,7 @@ function AddRecipeView({
                         onRememberShoppingName(ingredient.name, shoppingName);
                       }}
                     >
-                      Save name & variant
+                      Remember shopping name
                     </button>
                     <button className="text-button" type="button" disabled={!suggestedShoppingName || shoppingName === suggestedShoppingName} onClick={() => onUpdateIngredient(ingredient.id, { canonicalName: suggestedShoppingName })}>Use suggested name: {suggestedShoppingName}</button>
                   </div></details>
