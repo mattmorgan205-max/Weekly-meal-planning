@@ -132,6 +132,7 @@ import { addedShopExtras, attendanceForSlot, attendancePortions, changeDiners, c
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 import { ingredientIncludedInShopping } from "@/lib/domain";
 import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, ingredientIssues, type SavedRecipeDraft } from "@/lib/recipe-review";
+import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
@@ -5330,7 +5331,6 @@ function AddRecipeView({
   onRemoveInstruction: (index: number) => void;
 }) {
   const [mealImageStatus, setMealImageStatus] = useState("");
-  const [fullEditor, setFullEditor] = useState(false);
   const [ingredientFilter, setIngredientFilter] = useState<"all" | "needs-review" | "reviewed">("all");
   const [sourceIngredient, setSourceIngredient] = useState<string | null>(null);
   const [confirmSave, setConfirmSave] = useState(false);
@@ -5547,7 +5547,6 @@ function AddRecipeView({
 
         <div className="recipe-review-summary" role="status"><strong>{draft.ingredients.length} ingredients · {issues.length} checks</strong><small>{draftStorageStatus}</small></div>
         {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setSourceIngredient(issue.ingredientId!); setIngredientFilter("all"); requestAnimationFrame(() => document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" })); }}>Check source</button>}</div>)}</details>}
-        <button className="text-button" type="button" aria-expanded={fullEditor} onClick={() => setFullEditor(value => !value)}><Settings size={15} />{fullEditor ? "Close full editor" : "Full editor"}</button>
 
         {draft.warnings.length > 0 && (
           <div className="warning-list">
@@ -5604,7 +5603,7 @@ function AddRecipeView({
           </label>
         </div>
 
-        <div hidden={!fullEditor}>
+        <div className="recipe-details-fields">
         <label>
           Recipe notes
           <textarea
@@ -5876,7 +5875,7 @@ function AddRecipeView({
                     <button className="text-button" type="button" onClick={() => setSourceIngredient(ingredient.id)}>Source</button>
                     <button className="text-button" type="button" aria-pressed={Boolean(ingredient.reviewed)} title={ingredient.reviewed ? "Mark ingredient as needing review" : "Confirm ingredient checked against source"} onClick={() => onUpdateIngredient(ingredient.id, { reviewed: !ingredient.reviewed, needsReview: Boolean(ingredient.reviewed) })}><Check size={14} />{ingredient.reviewed ? "Checked" : "Mark checked"}</button>
                   </div>
-                  <details className="ingredient-standard-details" open={fullEditor || undefined}><summary>Shopping details</summary><div className="ingredient-standard-row">
+                  <div className="ingredient-standard-details"><h4>Shopping details</h4><div className="ingredient-standard-row">
                     <label className="ingredient-role-control">
                       Planner use
                       <select
@@ -5905,7 +5904,7 @@ function AddRecipeView({
                       Remember shopping name
                     </button>
                     <button className="text-button" type="button" disabled={!suggestedShoppingName || shoppingName === suggestedShoppingName} onClick={() => onUpdateIngredient(ingredient.id, { canonicalName: suggestedShoppingName })}>Use suggested name: {suggestedShoppingName}</button>
-                  </div></details>
+                  </div></div>
 	                {(ingredient.needsReview || ingredient.originalLine) && (
 	                  <small className="ingredient-review-note">
 	                    {ingredient.needsReview ? "Check this line" : "Imported line"}{ingredient.originalLine ? `: ${ingredient.originalLine}` : ""}
@@ -5925,11 +5924,11 @@ function AddRecipeView({
               Add step
             </button>
           </div>
-          <div className="method-editor">
+          <div className="method-editor" id="recipe-method-editor">
             {draft.instructions.map((step, index) => (
               <div className="method-row" key={`${index}-${step.slice(0, 8)}`}>
                 <span>{index + 1}</span>
-                <textarea value={step} onChange={(event) => onUpdateInstruction(index, event.target.value)} rows={2} />
+                <textarea aria-label={`Cooking instruction ${index + 1}`} value={step} onChange={(event) => onUpdateInstruction(index, event.target.value)} rows={2} />
                 <button className="icon-button danger" title="Remove step" onClick={() => onRemoveInstruction(index)}>
                   <Trash2 size={16} />
                 </button>
@@ -5938,7 +5937,15 @@ function AddRecipeView({
           </div>
         </div>
       </section>
-      {confirmSave && <div className="modal-backdrop"><section className="modal small-modal" role="dialog" aria-modal="true" aria-label="Confirm recipe review"><h2>Save with review notes?</h2><ul>{[...issues.map(issue => issue.message), ...draft.warnings].map((message, index) => <li key={index}>{message}</li>)}</ul><div className="button-row"><button type="button" className="text-button" onClick={() => setConfirmSave(false)}>Keep reviewing</button><button type="button" className="primary-button" disabled={Boolean(importStatus) || issues.some(issue => issue.blocking)} onClick={() => { setConfirmSave(false); void onSaveDraft(); }}>Save recipe anyway</button></div></section></div>}
+      {confirmSave && <RecipeSaveDialog draft={draft} issues={issues} editing={Boolean(editingRecipeId)} busy={Boolean(importStatus)} onClose={() => setConfirmSave(false)} onEditMethod={() => {
+        setConfirmSave(false);
+        if (!draft.instructions.length) onAddInstruction();
+        requestAnimationFrame(() => {
+          const editor = document.getElementById("recipe-method-editor");
+          editor?.scrollIntoView({ block: "center" });
+          editor?.querySelector("textarea")?.focus({ preventScroll: true });
+        });
+      }} onSave={() => { setConfirmSave(false); void onSaveDraft(); }} />}
     </div>
   );
 }
