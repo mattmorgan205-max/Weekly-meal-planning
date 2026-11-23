@@ -45,6 +45,7 @@ export type Ingredient = {
 };
 
 export type Recipe = {
+  reviewAcknowledgements?: Record<string, string>;
   sourceText?: string;
   id: string;
   title: string;
@@ -204,6 +205,7 @@ export type AppSettings = {
 };
 
 export type ImportDraft = {
+  reviewAcknowledgements?: Record<string, string>;
   sourceText?: string;
   id: string;
   title: string;
@@ -817,6 +819,17 @@ export function normalizeIngredientName(name: string) {
   let normalized = name
     .toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    // Strip preparation/serving clauses before punctuation loses their boundaries.
+    .replace(/\b(?:plus extra|extra (?:for|to)|to serve|for serving|to garnish|for garnishing|for greasing|for dusting|for brushing|for the (?:topping|garnish))\b.*$/g, " ")
+    .replace(/\b(?:shop[- ]bought|store[- ]bought|homemade)\s+or\s+(?:see|use|make)\b.*$/g, " ")
+    .replace(/\b(?:see (?:below|above|note|page|recipe)|according to (?:pack|packet))\b.*$/g, " ")
+    .replace(/\bcut into\b.*$/g, " ")
+    .replace(/\b(?:lightly|well)?\s*(?:beaten|whisked)\b/g, " ")
+    .replace(/\b(?:at )?room temperature\b|\b(?:thawed|defrosted)\b/g, " ")
+    .replace(/\b(?:seeds?|stalks?|stems?|skin) (?:removed|discarded)\b/g, " ")
+    .replace(/\b(?:zested and juiced|zest and juice(?: of half)?|leaves picked|patted dry)\b/g, " ")
+    .replace(/\b(?:shop[- ]bought|store[- ]bought)\b/g, " ")
+    .replace(/\s+[-–—]\s*(?=$|[,;)])/g, " ")
     .replace(/[()]/g, " ")
     .replace(/[,.;:]/g, " ");
 
@@ -1128,6 +1141,12 @@ export function totalRecipeMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMin
   return recipe.totalMinutes ?? ((recipe.prepMinutes ?? 0) + (recipe.cookMinutes ?? 0));
 }
 
+export function completedTotalMinutes(recipe: Pick<Recipe, "prepMinutes" | "cookMinutes" | "totalMinutes">) {
+  if (recipe.totalMinutes !== undefined) return recipe.totalMinutes;
+  return recipe.prepMinutes !== undefined && recipe.cookMinutes !== undefined && recipe.prepMinutes >= 0 && recipe.cookMinutes >= 0
+    ? recipe.prepMinutes + recipe.cookMinutes : undefined;
+}
+
 export function shoppingItemCategoryKey(item: Pick<ShoppingListItem, "name" | "canonicalName">, aliases: Record<string, string> = {}) {
   return canonicalizeIngredientName(item.canonicalName || item.name, aliases).canonicalName;
 }
@@ -1324,6 +1343,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
   const now = new Date().toISOString();
 
   return {
+    reviewAcknowledgements: draft.reviewAcknowledgements,
     sourceText: draft.sourceText ?? draft.rawText,
     id: createId("recipe"),
     title: draft.title.trim() || "Untitled recipe",
@@ -1332,7 +1352,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
     snackGroup: draft.snackGroup?.trim().replace(/\s+/g, " ") || undefined,
     prepMinutes: draft.prepMinutes,
     cookMinutes: draft.cookMinutes,
-    totalMinutes: draft.totalMinutes,
+    totalMinutes: completedTotalMinutes(draft),
     notes: draft.notes,
     tags: draft.tags,
     favorite: false,
@@ -1360,6 +1380,7 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
 
 export function recipeToDraft(recipe: Recipe): ImportDraft {
   return {
+    reviewAcknowledgements: recipe.reviewAcknowledgements,
     sourceText: recipe.sourceText,
     id: createId("draft"),
     title: recipe.title,
@@ -1368,11 +1389,11 @@ export function recipeToDraft(recipe: Recipe): ImportDraft {
     snackGroup: recipe.snackGroup,
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
-    totalMinutes: recipe.totalMinutes,
+    totalMinutes: completedTotalMinutes(recipe),
     notes: recipe.notes,
     tags: recipe.tags,
     visibility: recipe.visibility ?? "household",
-    ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, role: ingredient.role ?? "required" })),
+    ingredients: recipe.ingredients.map((ingredient) => ({ ...ingredient, canonicalName: canonicalizeIngredientName(ingredient.canonicalName || ingredient.name).canonicalName, role: ingredient.role ?? "required" })),
     instructions: [...recipe.instructions],
     source: recipe.source ?? recipe.sourceUrl,
     sourceUrl: recipe.sourceUrl,

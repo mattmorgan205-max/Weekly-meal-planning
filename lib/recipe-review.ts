@@ -1,6 +1,39 @@
 import { canonicalizeIngredientName, normalizeUnit, type ImportDraft, type Ingredient, type Recipe } from "./domain";
 
 export type ReviewIssue = { key: string; message: string; ingredientId?: string; blocking?: boolean };
+export function reviewIssueSignature(draft: ImportDraft, issue: ReviewIssue) {
+  const method = draft.instructions.map(step => step.trim()).filter(Boolean);
+  if (issue.ingredientId) {
+    const row = draft.ingredients.find(row => row.id === issue.ingredientId);
+    return JSON.stringify([issue.message, row && [row.name.trim(), row.quantity, normalizeUnit(row.unit),
+      canonicalizeIngredientName(row.canonicalName || row.name).canonicalName, row.packSize, row.packUnit,
+      row.measurementSystem, row.weightBasis, row.originalLine, Boolean(row.needsReview)]]);
+  }
+  const value = issue.key === "method" ? method
+    : issue.key === "time" ? [draft.prepMinutes, draft.cookMinutes, draft.totalMinutes]
+    : issue.key === "page" ? [draft.sourceText ?? draft.rawText, method]
+    : issue.key === "duplicate" ? [draft.title, draft.sourceUrl]
+    : issue.key.startsWith("method:") ? [method, draft.ingredients.map(row => row.name)] : issue.message;
+  return JSON.stringify([issue.message, value]);
+}
+
+export function acknowledgeReviewIssues(draft: ImportDraft, issues: ReviewIssue[]): ImportDraft {
+  return { ...draft, reviewAcknowledgements: { ...draft.reviewAcknowledgements,
+    ...Object.fromEntries(issues.filter(issue => !issue.blocking).map(issue => [issue.key, reviewIssueSignature(draft, issue)])) } };
+}
+
+export function ingredientReviewFields(issues: ReviewIssue[], id: string) {
+  const fields = new Set<string>();
+  for (const issue of issues.filter(issue => issue.ingredientId === id)) {
+    const key = issue.key.split(":").pop();
+    if (["amount", "quantity", "choice", "extraction"].includes(key!)) fields.add("quantity");
+    if (["measure", "extraction"].includes(key!)) fields.add("unit");
+    if (["name", "extraction", "choice"].includes(key!)) fields.add("name");
+    if (key === "matching" || issue.key.startsWith("repeat:")) fields.add("shoppingName");
+    if (["pack", "drained"].includes(key!)) fields.add("pack");
+  }
+  return fields;
+}
 export function ingredientIssues(ingredient: Ingredient): ReviewIssue[] {
   const issues: ReviewIssue[] = [];
   const add = (key: string, message: string, blocking = false) => issues.push({ key: `${ingredient.id}:${key}`, message, ingredientId: ingredient.id, blocking });
@@ -41,7 +74,7 @@ export function reviewRecipe(draft: ImportDraft, recipes: Recipe[] = [], editing
     if (new RegExp(`\\b${name}\\b`).test(method) && !draft.ingredients.some(row => new RegExp(`\\b${name}\\b`).test(row.name.toLowerCase()))) issues.push({ key: `method:${name}`, message: `${name} appears in the method but not the ingredient list. Check whether it is needed.` });
   }
   if (duplicate) issues.push({ key: "duplicate", message: `Possible duplicate: ${duplicate.title}. Saving will create a separate recipe.` });
-  return issues;
+  return issues.filter(issue => issue.blocking || draft.reviewAcknowledgements?.[issue.key] !== reviewIssueSignature(draft, issue));
 }
 
 export type SavedRecipeDraft = { draft: ImportDraft; editingRecipeId: string | null; tagInput: string; importMode: ImportDraft["importedFrom"]; importText: string; importUrl: string; photoRawText: string; savedAt: string };

@@ -1,9 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalizeIngredientName, draftToRecipe, generateShoppingList, ingredientIncludedInShopping, parseIngredientLine, parseRecipeText, recipeToDraft, seedState, type Ingredient } from "../lib/domain";
-import { draftStorageKey, ingredientIssues, readDraftArchive, reviewRecipe, upsertDraftArchive, type SavedRecipeDraft } from "../lib/recipe-review";
+import { canonicalizeIngredientName, completedTotalMinutes, draftToRecipe, generateShoppingList, ingredientIncludedInShopping, parseIngredientLine, parseRecipeText, recipeToDraft, seedState, type Ingredient } from "../lib/domain";
+import { acknowledgeReviewIssues, draftStorageKey, ingredientIssues, ingredientReviewFields, readDraftArchive, reviewRecipe, upsertDraftArchive, type SavedRecipeDraft } from "../lib/recipe-review";
 
 const draft = () => parseRecipeText("Test soup\nServes 4\nIngredients\n500g carrots\nMethod\nRoast until tender.", "paste");
+test("shopping names omit preparation clauses while retaining product identity and original text", () => {
+  for (const [input, expected] of [
+    ["egg lightly beaten", "egg"], ["harissa - shop-bought or see below, to serve", "harissa"],
+    ["olive oil, plus extra for greasing", "olive oil"], ["chicken breast, cut into large chunks", "chicken breast"],
+    ["Greek yogurt, at room temperature", "greek yogurt"], ["red chilli, seeds removed", "red chilli"],
+    ["lemon, zest and juice of half", "lemon"], ["icing sugar, for dusting", "icing sugar"],
+    ["parsley, leaves picked and finely chopped", "parsley"], ["egg, well whisked", "egg"],
+    ["frozen spinach, thawed", "frozen spinach"]
+  ]) assert.equal(canonicalizeIngredientName(input).canonicalName, expected, input);
+  const line = "2 eggs lightly beaten";
+  const ingredient = parseIngredientLine(line);
+  assert.equal(ingredient.originalLine, line);
+  assert.equal(ingredient.canonicalName, "egg");
+  assert.equal(shopping([{ ...ingredient, canonicalName: "egg lightly beaten" }, parseIngredientLine("2 eggs")])[0].quantity, 4);
+});
+test("review acknowledgements survive saving but relevant edits and blocking errors reopen checks", () => {
+  const initial = { ...draft(), instructions: [] };
+  const checked = acknowledgeReviewIssues(initial, reviewRecipe(initial));
+  assert.ok(!reviewRecipe(checked).some(issue => issue.key === "method"));
+  assert.ok(!reviewRecipe(recipeToDraft(draftToRecipe(checked))).some(issue => issue.key === "method"));
+  const blankStep = { ...draft(), instructions: [""] };
+  assert.ok(!reviewRecipe(recipeToDraft(draftToRecipe(acknowledgeReviewIssues(blankStep, reviewRecipe(blankStep))))).some(issue => issue.key === "method"));
+  assert.ok(reviewRecipe({ ...checked, instructions: ["Add cooking instructions."] }).some(issue => issue.key === "method"));
+  const invalid = { ...initial, title: "", servings: 0 };
+  assert.ok(reviewRecipe(acknowledgeReviewIssues(invalid, reviewRecipe(invalid))).filter(issue => issue.blocking).length >= 2);
+  const ingredient = parseIngredientLine("milk");
+  const withIngredient = { ...draft(), ingredients: [ingredient] };
+  const issues = reviewRecipe(withIngredient);
+  assert.ok(ingredientReviewFields(issues, ingredient.id).has("quantity"));
+  assert.ok(!reviewRecipe(acknowledgeReviewIssues(withIngredient, issues)).some(issue => issue.ingredientId));
+});
+test("missing totals are filled only when both durations exist and explicit totals win", () => {
+  assert.equal(completedTotalMinutes({ prepMinutes: 10, cookMinutes: 20 }), 30);
+  assert.equal(completedTotalMinutes({ prepMinutes: 0, cookMinutes: 20 }), 20);
+  assert.equal(completedTotalMinutes({ prepMinutes: 10 }), undefined);
+  assert.equal(completedTotalMinutes({ prepMinutes: 10, cookMinutes: 20, totalMinutes: 45 }), 45);
+  assert.equal(draftToRecipe({ ...draft(), prepMinutes: 10, cookMinutes: 20 }).totalMinutes, 30);
+});
 function shopping(ingredients: Ingredient[]) {
   const recipe = draftToRecipe({ ...draft(), ingredients });
   return generateShoppingList([recipe], [{ id: "meal", date: "2026-11-23", slot: "dinner", recipeId: recipe.id, peopleCount: 4 }], { ...seedState().settings, includeStaples: true }, {}, {}, []);
