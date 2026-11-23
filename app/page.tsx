@@ -131,7 +131,8 @@ import { createManualShoppingItemFromLine, oldestShoppingAddFirst } from "@/lib/
 import { addedShopExtras, attendanceForSlot, attendancePortions, changeDiners, changeShopDates, createShop, defaultAttendance, dinnerNeedsMeal, migrateGuidedState, recipeAllowedForDinner, removeMealFromPlan, requiredShopItems, requirementSignature, resolveShop, scaleMealPortions, shopDates, shopSignature, shopIsFinalized } from "@/lib/guided-shop";
 import type { DinnerAttendance, GuidedShop, SupplyCheck } from "@/lib/domain";
 import { ingredientIncludedInShopping } from "@/lib/domain";
-import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, ingredientIssues, type SavedRecipeDraft } from "@/lib/recipe-review";
+import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, acknowledgeReviewIssues, ingredientReviewFields, type ReviewIssue, type SavedRecipeDraft } from "@/lib/recipe-review";
+import { completedTotalMinutes } from "@/lib/domain";
 import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
@@ -1538,6 +1539,9 @@ export default function Home() {
   }, [hasHydratedLocalState]);
 
   function applyDraft(nextDraft: ImportDraft) {
+    if (nextDraft.id !== draft.id && !draft.title.trim() && !draft.ingredients.some(row => row.name.trim())) {
+      forgetDraft(draft.id);
+    }
     const hydratedDraft = {
       ...nextDraft,
       mealTypes: normalizeMealTypes(nextDraft.mealTypes, inferRecipeMealTypes(nextDraft)[0]),
@@ -3254,6 +3258,7 @@ export default function Home() {
               if (!forgetDraft(id)) return;
               if (draft.id === id) {
                 setDraft(emptyDraft()); setTagInput(""); setEditingRecipeId(null); setImportMode("manual"); setImportText(""); setImportUrl(""); setPhotoRawText(""); setPhotoPreview(""); setPhotoFile(null); setCompressedPhotoFile(null);
+                setDraftStorageStatus("Recipe cleared; no draft retained.");
               }
             }}
             onRestoreDraft={record => { setDraft(record.draft); setTagInput(record.tagInput); setEditingRecipeId(record.editingRecipeId && state.recipes.some(recipe => recipe.id === record.editingRecipeId) ? record.editingRecipeId : null); setImportMode(record.importMode); setImportText(record.importText); setImportUrl(record.importUrl); setPhotoRawText(record.photoRawText); setPhotoPreview(record.draft.photoDataUrl ?? ""); }}
@@ -5355,14 +5360,16 @@ function AddRecipeView({
       setPhotoPasteStatus("No image was found on the clipboard.");
     } catch (error) { setPhotoPasteStatus(error instanceof Error ? error.message : "Unable to paste image. Choose a photo instead."); }
   }
-  const [ingredientFilter, setIngredientFilter] = useState<"all" | "needs-review" | "reviewed">("all");
-  const [sourceIngredient, setSourceIngredient] = useState<string | null>(null);
+  const [ingredientFilter, setIngredientFilter] = useState<"all" | "needs-review" | "reviewed">(editingRecipeId ? "all" : "needs-review");
   const [confirmSave, setConfirmSave] = useState(false);
   const issues = reviewRecipe({ ...draft, ingredients: draft.ingredients.map(row => ({ ...row, measurementSystem: measurementSystem ?? row.measurementSystem })) }, recipes, editingRecipeId);
   const flagged = new Set(issues.flatMap(issue => issue.ingredientId ? [issue.ingredientId] : []));
   const reviewedCount = draft.ingredients.filter(ingredient => ingredient.reviewed).length;
-  const selectedSource = draft.ingredients.find(row => row.id === sourceIngredient);
-  useEffect(() => { setIngredientFilter("all"); setSourceIngredient(null); setConfirmSave(false); }, [draft.id]);
+  function acknowledgeChecks(checks: ReviewIssue[], clearWarnings = false) {
+    setDraft(current => ({ ...current, warnings: clearWarnings ? [] : current.warnings,
+      reviewAcknowledgements: acknowledgeReviewIssues({ ...current, ingredients: current.ingredients.map(row => ({ ...row, measurementSystem: measurementSystem ?? row.measurementSystem })) }, checks).reviewAcknowledgements }));
+  }
+  useEffect(() => { setIngredientFilter(editingRecipeId ? "all" : "needs-review"); setConfirmSave(false); }, [draft.id, editingRecipeId]);
   const mealImagePreview = draft.mealImageUrl ?? (draft.mealImagePath ? storedMealImageUrl : undefined);
   const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
   const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
@@ -5549,7 +5556,6 @@ function AddRecipeView({
         )}
         <section className="recipe-source-preview" aria-label="Original recipe source">
           <h3>Original source</h3>
-          {selectedSource && <blockquote>{selectedSource.originalLine || selectedSource.name}</blockquote>}
           {(draft.photoDataUrl || photoPreview) && <img src={draft.photoDataUrl || photoPreview} alt="Original recipe page" />}
           {draft.sourceUrl && /^https?:\/\//i.test(draft.sourceUrl) && <a href={draft.sourceUrl} target="_blank" rel="noreferrer">Open source recipe</a>}
           <pre>{draft.sourceText || draft.rawText || (draft.importedFrom === "photo" ? photoRawText : "") || draft.ingredients.map(row => row.originalLine).filter(Boolean).join("\n") || "No imported source"}</pre>
@@ -5558,7 +5564,7 @@ function AddRecipeView({
 
       <section className="review-panel">
         <div className="review-heading">
-          <label className="recipe-title-label">
+          <label className="recipe-title-label" data-review={issues.some(issue => issue.key === "title") || undefined}>
             <span className="eyebrow">Recipe name</span>
             <span className="recipe-title-field">
               <span aria-hidden="true">{draft.title || "Untitled recipe"}{"\n"}</span>
@@ -5573,21 +5579,23 @@ function AddRecipeView({
             {importStatus === "Saving recipe..." ? <Loader2 className="spin" size={18} /> : <Check size={18} />}
             {importStatus === "Saving recipe..." ? "Saving..." : editingRecipeId ? "Update recipe" : "Save recipe"}
           </button>
+          <button type="button" className="icon-text-button danger" title="Discard this recipe draft without saving a recipe" disabled={Boolean(importStatus)} onClick={() => onDeleteDraft(draft.id)}><Trash2 size={16} />Clear recipe</button>
         </div>
 
         <div className="recipe-review-summary" role="status"><strong>{draft.ingredients.length} ingredients · {issues.length} checks</strong><small>{draftStorageStatus}</small></div>
-        {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setSourceIngredient(issue.ingredientId!); setIngredientFilter("all"); requestAnimationFrame(() => document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" })); }}>Check source</button>}</div>)}</details>}
+        {(issues.some(issue => !issue.blocking) || draft.warnings.length > 0) && <button className="icon-text-button" type="button" onClick={() => acknowledgeChecks(issues, true)}><Check size={16} />Mark all review notes checked</button>}
+        {issues.length > 0 && <details className="recipe-issues" open><summary>Review checks ({issues.length})</summary>{issues.map(issue => <div key={issue.key}>{issue.blocking ? "Required: " : ""}{issue.message}{issue.ingredientId && <button className="text-button" type="button" onClick={() => { setIngredientFilter("all"); requestAnimationFrame(() => document.getElementById(`ingredient-${issue.ingredientId}`)?.scrollIntoView({ block: "center" })); }}>Review ingredient</button>}{!issue.blocking && <button className="icon-button" type="button" title={`Mark checked: ${issue.message}`} onClick={() => acknowledgeChecks([issue])}><Check size={15} /></button>}</div>)}</details>}
 
         {draft.warnings.length > 0 && (
           <div className="warning-list">
             {draft.warnings.map((warning) => (
-              <span key={warning}>{warning}</span>
+              <span key={warning}>{warning}<button className="icon-button" type="button" title={`Dismiss: ${warning}`} onClick={() => setDraft(current => ({ ...current, warnings: current.warnings.filter(value => value !== warning) }))}><X size={14} /></button></span>
             ))}
           </div>
         )}
 
         <div className="form-grid">
-          <label>
+          <label data-review={issues.some(issue => issue.key === "servings") || undefined}>
             Serves
             <input
               type="number"
@@ -5604,7 +5612,7 @@ function AddRecipeView({
               {defaultSnackGroups.map(group => <option key={group}>{group}</option>)}
             </select>
           </label>
-          <label>
+          <label data-review={issues.some(issue => issue.key === "prepMinutes") || undefined}>
             Prep mins
             <input
               type="number"
@@ -5613,7 +5621,7 @@ function AddRecipeView({
               onChange={(event) => setDraft((current) => ({ ...current, prepMinutes: parseNumberInput(event.target.value) }))}
             />
           </label>
-          <label>
+          <label data-review={issues.some(issue => issue.key === "cookMinutes") || undefined}>
             Cook mins
             <input
               type="number"
@@ -5622,12 +5630,12 @@ function AddRecipeView({
               onChange={(event) => setDraft((current) => ({ ...current, cookMinutes: parseNumberInput(event.target.value) }))}
             />
           </label>
-          <label>
+          <label data-review={issues.some(issue => issue.key === "totalMinutes" || issue.key === "time") || undefined}>
             Total mins (optional)
             <input
               type="number"
               min={0}
-              value={draft.totalMinutes ?? ""}
+              value={completedTotalMinutes(draft) ?? ""}
               onChange={(event) => setDraft((current) => ({ ...current, totalMinutes: parseNumberInput(event.target.value) }))}
             />
           </label>
@@ -5828,19 +5836,21 @@ function AddRecipeView({
 	            {draft.ingredients.map((ingredient) => {
                   const suggestedShoppingName = ingredient.name.trim() ? canonicalizeIngredientName(ingredient.name, ingredientAliases).canonicalName : "";
                   const shoppingName = ingredient.canonicalName ?? "";
+                  const reviewFields = ingredientReviewFields(issues, ingredient.id);
                   const variantOptions = ingredient.name.trim()
                     ? shoppingNameVariants(ingredient.name, ingredientAliases, savedShoppingNameVariants)
                     : [];
 
                   return (
 	              <div
-	                className={classNames("ingredient-row", (ingredient.confidence === "low" || ingredient.needsReview) && "needs-review", ingredient.reviewed && "is-reviewed")}
+	                className={classNames("ingredient-row", flagged.has(ingredient.id) && "needs-review", ingredient.reviewed && "is-reviewed")}
 	                key={ingredient.id}
                     id={`ingredient-${ingredient.id}`}
                     hidden={ingredientFilter === "needs-review" ? !flagged.has(ingredient.id) : ingredientFilter === "reviewed" && !ingredient.reviewed}
 	              >
 	                <input
 	                  aria-label="Quantity"
+	                  data-review={reviewFields.has("quantity") || undefined}
 	                  className="qty-input"
 	                  type="number"
 	                  min={0}
@@ -5850,6 +5860,7 @@ function AddRecipeView({
 	                />
 	                <select
 	                  aria-label="Unit"
+	                  data-review={reviewFields.has("unit") || undefined}
 	                  className="unit-input"
 	                  value={normalizeUnit(ingredient.unit)}
 	                  onChange={(event) => onUpdateIngredient(ingredient.id, { unit: event.target.value, needsReview: false })}
@@ -5863,6 +5874,7 @@ function AddRecipeView({
 	                </select>
 	                <input
 	                  aria-label="Ingredient"
+	                  data-review={reviewFields.has("name") || undefined}
 	                  value={ingredient.name}
 	                  onChange={(event) => onUpdateIngredient(ingredient.id, { name: event.target.value })}
 	                  onBlur={(event) => {
@@ -5891,6 +5903,7 @@ function AddRecipeView({
                     Shopping name
                     <input
                       aria-label="Shopping name"
+                      data-review={reviewFields.has("shoppingName") || undefined}
                       list={`shopping-names-${ingredient.id}`}
                       value={shoppingName}
                       onChange={event => onUpdateIngredient(ingredient.id, { canonicalName: event.target.value, needsReview: false })}
@@ -5903,10 +5916,9 @@ function AddRecipeView({
                   </label>
                   <div className="ingredient-review-actions">
                     <label className="toggle-line"><input type="checkbox" checked={ingredientIncludedInShopping(ingredient, excludedShoppingIngredients)} onChange={event => onUpdateIngredient(ingredient.id, { shoppingIncluded: event.target.checked })} />Include in shopping</label>
-                    <button className="text-button" type="button" onClick={() => setSourceIngredient(ingredient.id)}>Source</button>
                     <button className="text-button" type="button" aria-pressed={Boolean(ingredient.reviewed)} title={ingredient.reviewed ? "Mark ingredient as needing review" : "Confirm ingredient checked against source"} onClick={() => onUpdateIngredient(ingredient.id, { reviewed: !ingredient.reviewed, needsReview: Boolean(ingredient.reviewed) })}><Check size={14} />{ingredient.reviewed ? "Checked" : "Mark checked"}</button>
                   </div>
-                  <div className="ingredient-standard-details"><h4>Shopping details</h4><div className="ingredient-standard-row">
+                  <div className="ingredient-standard-details" data-review={reviewFields.has("pack") || undefined}><h4>Shopping details</h4><div className="ingredient-standard-row">
                     <label className="ingredient-role-control">
                       Planner use
                       <select
@@ -5924,9 +5936,10 @@ function AddRecipeView({
                   </div></div>
 	                {(ingredient.needsReview || ingredient.originalLine) && (
 	                  <small className="ingredient-review-note">
-	                    {ingredient.needsReview ? "Check this line" : "Imported line"}{ingredient.originalLine ? `: ${ingredient.originalLine}` : ""}
+	                    Imported line{ingredient.originalLine ? `: ${ingredient.originalLine}` : ""}
 	                  </small>
 	                )}
+                    {flagged.has(ingredient.id) && <ul className="ingredient-field-checks">{issues.filter(issue => issue.ingredientId === ingredient.id).map(issue => <li key={issue.key}>{issue.message}</li>)}</ul>}
 	              </div>
                   );
                 })}
@@ -5941,7 +5954,7 @@ function AddRecipeView({
               Add step
             </button>
           </div>
-          <div className="method-editor" id="recipe-method-editor">
+          <div className="method-editor" id="recipe-method-editor" data-review={issues.some(issue => issue.key === "method" || issue.key === "page" || issue.key.startsWith("method:")) || undefined}>
             {draft.instructions.map((step, index) => (
               <div className="method-row" key={`${index}-${step.slice(0, 8)}`}>
                 <span>{index + 1}</span>
