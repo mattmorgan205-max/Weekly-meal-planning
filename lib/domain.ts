@@ -187,6 +187,7 @@ export type OccasionalItem = {
 };
 
 export type AppSettings = {
+  measurementSystem?: "metric" | "uk" | "us";
   householdName: string;
   defaultPeople: number;
   hiddenSlots: MealSlot[];
@@ -1486,10 +1487,11 @@ export function generateShoppingList(
       const normalizedUnit = packed ? scaled.packUnit! : normalizeUnit(scaled.unit);
       if (packed && typeof scaled.quantity === "number") scaled.quantity *= scaled.packSize!;
       const ambiguous = ["cup", "fl oz", "pt", "qt", "gal", "tsp", "tbsp"].includes(normalizedUnit);
-      const volumeFactors = scaled.measurementSystem === "us" ? { cup: 236.588, "fl oz": 29.5735, pt: 473.176, qt: 946.353, gal: 3785.41, tsp: 4.92892, tbsp: 14.7868 }
+      const measurementSystem = settings.measurementSystem ?? scaled.measurementSystem;
+      const volumeFactors = measurementSystem === "us" ? { cup: 236.588, "fl oz": 29.5735, pt: 473.176, qt: 946.353, gal: 3785.41, tsp: 4.92892, tbsp: 14.7868 }
         : { cup: 250, "fl oz": 28.4131, pt: 568.261, qt: 1136.52, gal: 4546.09, tsp: 5, tbsp: 15 };
       const conversion = ambiguous
-        ? scaled.measurementSystem ? { family: "volume", base: "ml", factor: volumeFactors[normalizedUnit as keyof typeof volumeFactors] }
+        ? measurementSystem ? { family: "volume", base: "ml", factor: volumeFactors[normalizedUnit as keyof typeof volumeFactors] }
           : ["tsp", "tbsp"].includes(normalizedUnit) ? unitConversions[normalizedUnit] : undefined
         : unitConversions[normalizedUnit];
       const quantity = typeof scaled.quantity === "number" && conversion ? scaled.quantity * conversion.factor : scaled.quantity;

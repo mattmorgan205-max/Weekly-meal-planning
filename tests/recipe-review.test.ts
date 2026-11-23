@@ -47,6 +47,19 @@ test("shopping exclusions preserve recipe ingredients and allow explicit overrid
   assert.equal(recipeToDraft(recipe).ingredients[0].shoppingIncluded, false);
   assert.equal(recipe.ingredients.length, 1);
 });
+test("household measurement convention applies across saved recipes without rewriting source quantities", () => {
+  const ingredients: Ingredient[] = [{ ...parseIngredientLine("1 cup milk"), measurementSystem: "us" }, parseIngredientLine("100ml milk")];
+  const recipe = draftToRecipe({ ...draft(), ingredients });
+  const before = JSON.stringify(recipe);
+  const meals = [{ id: "meal", date: "2026-11-23", slot: "dinner" as const, recipeId: recipe.id, peopleCount: 4 }];
+  const settings = { ...seedState().settings, includeStaples: true };
+  const metric = generateShoppingList([recipe], meals, { ...settings, measurementSystem: "metric" }, {}, {}, []);
+  assert.equal(metric.length, 1);
+  assert.equal(metric[0].quantity, 350);
+  const us = generateShoppingList([recipe], meals, { ...settings, measurementSystem: "us" }, {}, {}, []);
+  assert.ok(Math.abs(us[0].quantity! - 336.588) < 0.00001);
+  assert.equal(JSON.stringify(recipe), before);
+});
 test("review catches duplicates, invalid values, missing method and method-only ingredients", () => {
   const recipe = draftToRecipe(draft());
   assert.ok(reviewRecipe(draft(), [recipe]).some(row => row.key === "duplicate"));

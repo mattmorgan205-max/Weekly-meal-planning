@@ -1154,8 +1154,8 @@ export default function Home() {
   }, [draft, tagInput, editingRecipeId, importMode, importText, importUrl, photoRawText, draftStorageReady, draftOwner, draftScope, activeView]);
 
   function forgetDraft(id: string) {
-    try { const records = readDraftArchive(localStorage.getItem(draftStorageKey(draftScope))).filter(row => row.draft.id !== id); localStorage.setItem(draftStorageKey(draftScope), JSON.stringify(records)); setDraftArchive(records); }
-    catch { setDraftStorageStatus("Saved draft could not be removed."); }
+    try { const records = readDraftArchive(localStorage.getItem(draftStorageKey(draftScope))).filter(row => row.draft.id !== id); localStorage.setItem(draftStorageKey(draftScope), JSON.stringify(records)); setDraftArchive(records); return true; }
+    catch { setDraftStorageStatus("Saved draft could not be removed."); return false; }
   }
   const [recipeReactions, setRecipeReactions] = useState<Record<string, RecipeReaction>>({});
   const [recipePopularity, setRecipePopularity] = useState<Record<string, RecipePopularitySummary>>({});
@@ -3251,7 +3251,7 @@ export default function Home() {
             draftArchive={draftArchive}
             measurementSystem={state.settings.measurementSystem}
             onDeleteDraft={id => {
-              forgetDraft(id);
+              if (!forgetDraft(id)) return;
               if (draft.id === id) {
                 setDraft(emptyDraft()); setTagInput(""); setEditingRecipeId(null); setImportMode("manual"); setImportText(""); setImportUrl(""); setPhotoRawText(""); setPhotoPreview(""); setPhotoFile(null); setCompressedPhotoFile(null);
               }
