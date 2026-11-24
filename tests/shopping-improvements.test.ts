@@ -89,11 +89,11 @@ test("protein filters infer missing tags and respect suppressed tags", () => {
     if (protein !== "vegetarian") assert.equal(matchesRecipeFilters(meal, { ...emptyRecipeFilters, protein: "vegetarian" }), false);
   }
   assert.equal(matchesRecipeFilters(recipe({ suppressedAutoTags: ["chicken"] }), { ...emptyRecipeFilters, protein: "chicken" }), false);
-  const sausages = recipe({ title: "Sausage casserole", ingredients: [], tags: ["pork"] });
+  const sausages = recipe({ title: "Sausage casserole", ingredients: [], confirmedTags: ["pork"] });
   assert.ok(matchesRecipeFilters(sausages, { ...emptyRecipeFilters, protein: "pork" }));
   assert.equal(matchesRecipeFilters(sausages, { ...emptyRecipeFilters, protein: "vegetarian" }), false);
   assert.equal(matchesRecipeFilters(sausages, { ...emptyRecipeFilters, tag: "vegetarian" }), false);
-  const veggieBurger = recipe({ title: "Vegetarian burger", ingredients: [], tags: ["vegetarian"] });
+  const veggieBurger = recipe({ title: "Vegetarian burger", ingredients: [], confirmedTags: ["vegetarian"] });
   assert.ok(matchesRecipeFilters(veggieBurger, { ...emptyRecipeFilters, protein: "vegetarian" }));
   assert.equal(matchesRecipeFilters(veggieBurger, { ...emptyRecipeFilters, protein: "beef" }), false);
 });

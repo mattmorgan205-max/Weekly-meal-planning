@@ -1,7 +1,15 @@
 import type { Recipe } from "./domain";
+import { canonicalTag, householdTagNames, preferenceTags } from "./recipe-tags";
+
+export function recipeForCatalog(recipe: Recipe): Recipe {
+  return { ...recipe, favorite: false, householdTags: [],
+    tags: recipe.tags.filter(tag => !householdTagNames.includes(canonicalTag(tag))),
+    confirmedTags: recipe.confirmedTags?.filter(tag => !householdTagNames.includes(canonicalTag(tag)))
+  };
+}
 
 export function catalogRecipeForHousehold(catalogRecipe: Recipe, existing?: Recipe): Recipe {
-  return { ...catalogRecipe, favorite: existing?.favorite ?? false };
+  return { ...recipeForCatalog(catalogRecipe), favorite: existing?.favorite ?? false, householdTags: existing ? preferenceTags(existing) : [] };
 }
 
 function timestamp(value?: string) {

@@ -5,6 +5,7 @@ import {
 } from "./domain";
 import { snackShoppingMeals } from "./snacks";
 import { normalizeDinerColors } from "./diner-colors";
+import { preferenceTags } from "./recipe-tags";
 
 export const guidedSteps = ["Dates & diners", "Meals", "Snacks and extras", "Check supplies", "Review & shop"];
 export const shopRangeKey = (shop: Pick<GuidedShop, "startDate" | "endDate">) => `${shop.startDate}__${shop.endDate}`;
@@ -38,7 +39,7 @@ export function dinnerNeedsMeal(attendance?: DinnerAttendance) {
 }
 export function recipeAllowedForDinner(recipe: Recipe, date: string, attendance: Record<string, DinnerAttendance> = {}, notes: Record<string, string> = {}) {
   if (!dinnerNeedsMeal(attendance[date])) return false;
-  if (!recipe.tags.some(tag => tag.trim().toLowerCase() === "not sophia friendly")) return true;
+  if (!preferenceTags(recipe).includes("not sophia friendly")) return true;
   return attendance[date]?.confirmed ? !attendance[date].sophiaEating : /\bsophia\s+nursery\b/i.test(notes[date] ?? "");
 }
 export function scaleMealPortions(meal: PlannedMeal, portions: number): PlannedMeal {

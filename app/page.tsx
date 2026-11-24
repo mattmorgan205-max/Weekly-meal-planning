@@ -66,13 +66,10 @@ import {
   generateShoppingList,
   groceryCategories,
   inferCategory,
-  inferAutomaticRecipeTags,
   inferRecipeMealTypes,
   itemsForAsdaHelper,
-  isAutomaticRecipeTag,
   labelMealSlot,
   mealSlots,
-  mergeAutomaticRecipeTags,
   normalizeIngredientAliasKey,
   normalizeMealTypes,
   normalizeSuppressedAutomaticTags,
@@ -117,9 +114,12 @@ import { installAutoAddedRecipePackV3 } from "@/lib/auto-added-recipes-v3";
 import { installAutoAddedLunchPack } from "@/lib/auto-added-lunch-recipes";
 import { installReviewedCookbookPack } from "@/lib/reviewed-cookbook-recipes";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
-import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
+import { catalogRecipeForHousehold, recipeForCatalog, shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
 import { RecipeFilterControls } from "@/components/recipe-filter-controls";
+import { RecipeTagEditor } from "@/components/recipe-tag-editor";
+import { RecipeTagCleanup } from "@/components/recipe-tag-cleanup";
+import { addRecipeTags, cleanRecipeTags, customRecipeTags, displayRecipeTags, preferenceTags, recipeSearchText, sourceTags, type TagDecisions } from "@/lib/recipe-tags";
 import { emptyRecipeFilters, hasRecipeFilters, matchesRecipeFilters, type RecipeFilters } from "@/lib/recipe-filters";
 import { GuidedShopView, ShopDatesEditor, ShopReviewActions, SupplyCheckList, HouseholdDinersEditor } from "@/components/guided-shop";
 import { SnackSelections } from "@/components/snack-selections";
@@ -1123,6 +1123,7 @@ export default function Home() {
   const [photoRawText, setPhotoRawText] = useState("");
   const [draft, setDraft] = useState<ImportDraft>(() => emptyDraft());
   const [tagInput, setTagInput] = useState("");
+  const [tagCleanupOpen, setTagCleanupOpen] = useState(false);
   const [editingRecipeId, setEditingRecipeId] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState("");
   const [manualBulkItems, setManualBulkItems] = useState("");
@@ -1235,16 +1236,11 @@ export default function Home() {
         if (recipeGroupFilter !== "all" && !recipe.mealTypes.includes(recipeGroupFilter)) return false;
         if (!matchesRecipeFilters(recipe, recipeFilters)) return false;
         if (!query) return true;
-        return (
-          recipe.title.toLowerCase().includes(query) ||
-          (recipe.source ?? recipe.sourceUrl ?? "").toLowerCase().includes(query) ||
-          recipe.tags.some((tag) => tag.toLowerCase().includes(query)) ||
-          recipe.ingredients.some((ingredient) => ingredient.name.toLowerCase().includes(query))
-        );
+        return recipeSearchText(recipe).includes(query);
       })
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.title.localeCompare(b.title));
   }, [recipeGroupFilter, recipeSearch, recipeFilters, state.recipes]);
-  const recipeTags = useMemo(() => Array.from(new Set(state.recipes.flatMap((recipe) => recipe.tags.map((tag) => tag.toLowerCase())))).sort(), [state.recipes]);
+  const recipeTags = useMemo(() => customRecipeTags(state.recipes.flatMap(recipe => recipe.tags)).sort(), [state.recipes]);
   const recipeFrequencies = useMemo(() => {
     return state.plannedMeals.reduce<Record<string, number>>((counts, meal) => {
       if (meal.recipeId) counts[meal.recipeId] = (counts[meal.recipeId] ?? 0) + 1;
@@ -1256,11 +1252,7 @@ export default function Home() {
     return state.recipes
       .filter((recipe) => {
         if (!query) return true;
-        return (
-          recipe.title.toLowerCase().includes(query) ||
-          recipe.tags.some((tag) => tag.toLowerCase().includes(query)) ||
-          recipe.ingredients.some((ingredient) => ingredient.name.toLowerCase().includes(query))
-        );
+        return recipeSearchText(recipe).includes(query);
       })
       .sort((a, b) => {
         const frequencySort = (recipeFrequencies[b.id] ?? 0) - (recipeFrequencies[a.id] ?? 0);
@@ -1565,7 +1557,7 @@ export default function Home() {
       suppressedAutoTags: normalizeSuppressedAutomaticTags(nextDraft.suppressedAutoTags)
     };
     setDraft(hydratedDraft);
-    setTagInput(hydratedDraft.tags.filter((tag) => !isAutomaticRecipeTag(tag)).join(", "));
+    setTagInput(customRecipeTags(hydratedDraft.tags).join(", "));
   }
 
   function addPlannedMeal(date: string, slot: MealSlot, recipeId: string) {
@@ -1759,6 +1751,7 @@ export default function Home() {
     const client = getSupabaseClient();
     const householdId = cloudHouseholdIdRef.current;
     if (!client || !householdId || !multiHouseholdReadyRef.current || isBundledGlobalRecipe(recipe.id)) return;
+    if (recipe.catalogSourceHouseholdId && recipe.catalogSourceHouseholdId !== householdId) return;
 
     if (recipe.visibility !== "global") {
       const { error } = await client
@@ -1770,7 +1763,7 @@ export default function Home() {
       return;
     }
 
-    const { catalogEntryId: _catalogEntryId, ...recipeData } = recipe;
+    const { catalogEntryId: _catalogEntryId, ...recipeData } = recipeForCatalog(recipe);
     const { error } = await client.from("shared_recipe_catalog").upsert({
       source_household_id: householdId,
       source_recipe_id: recipe.id,
@@ -1837,7 +1830,7 @@ export default function Home() {
         mealImageUrl = undefined;
       }
 
-      const cleanedDraft: ImportDraft = {
+      const cleanedDraft: ImportDraft = cleanRecipeTags({
         ...draft,
         mealImagePath,
         mealImageUrl,
@@ -1847,6 +1840,8 @@ export default function Home() {
         source: draft.source?.trim(),
         suppressedAutoTags: normalizeSuppressedAutomaticTags(draft.suppressedAutoTags),
         tags: parseTags(tagInput),
+        householdTags: preferenceTags(draft),
+        provenanceTags: sourceTags(draft),
         ingredients: draft.ingredients
           .filter((ingredient) => ingredient.name.trim())
           .map((ingredient) => {
@@ -1863,8 +1858,7 @@ export default function Home() {
             };
           }),
         instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
-      };
-      cleanedDraft.tags = mergeAutomaticRecipeTags(cleanedDraft.tags, cleanedDraft, cleanedDraft.suppressedAutoTags);
+      });
       const existingRecipe = editingRecipeId ? state.recipes.find((item) => item.id === editingRecipeId) : undefined;
       const recipe = {
         ...draftToRecipe(cleanedDraft),
@@ -1969,11 +1963,7 @@ export default function Home() {
     const updatedAt = new Date().toISOString();
     const updatedRecipes = state.recipes
       .filter((recipe) => selectedIds.has(recipe.id))
-      .map((recipe) => ({
-        ...recipe,
-        tags: Array.from(new Set([...recipe.tags, ...cleanTags])),
-        updatedAt
-      }));
+      .map((recipe) => ({ ...addRecipeTags(recipe, cleanTags), updatedAt }));
     const updatedById = new Map(updatedRecipes.map((recipe) => [recipe.id, recipe]));
 
     updateState((current) => ({
@@ -1992,6 +1982,16 @@ export default function Home() {
     void Promise.all(assignSnackGroup(state.recipes, ids, group, updatedAt).filter(recipe => selected.has(recipe.id)).map(syncPublishedRecipe)).catch(error => {
       setCloudMessage(error instanceof Error ? error.message : "The shared recipe columns could not be updated.");
     });
+  }
+
+  function applyTagCleanup(ids: string[], decisions: TagDecisions) {
+    const selected = new Set(ids);
+    const updatedAt = new Date().toISOString();
+    const updatedRecipes = stateRef.current.recipes.filter(recipe => selected.has(recipe.id)).map(recipe => ({ ...cleanRecipeTags(recipe, decisions), updatedAt }));
+    const updatedById = new Map(updatedRecipes.map(recipe => [recipe.id, recipe]));
+    updateState(current => ({ ...current, recipes: current.recipes.map(recipe => updatedById.get(recipe.id) ?? recipe) }));
+    setTagCleanupOpen(false);
+    void Promise.all(updatedRecipes.map(syncPublishedRecipe)).catch(error => setCloudMessage(error instanceof Error ? error.message : "The shared recipe tags could not be updated."));
   }
 
   function updateDraftIngredient(id: string, patch: Partial<Ingredient>) {
@@ -3162,6 +3162,7 @@ export default function Home() {
           />
         )}
 
+        {tagCleanupOpen && <RecipeTagCleanup recipes={state.recipes} onApply={applyTagCleanup} onClose={() => setTagCleanupOpen(false)} />}
         {activeView === "recipes" && (
           <RecipeLibrary
             recipes={filteredRecipes}
@@ -3188,6 +3189,7 @@ export default function Home() {
             onToggleFavorite={toggleFavorite}
             onBatchAddTags={batchAddRecipeTags}
             onManageGroups={() => setAssigningRecipeGroups(true)}
+            onCleanupTags={() => setTagCleanupOpen(true)}
             onOpenRecipe={setSelectedRecipeId}
           />
         )}
@@ -3390,7 +3392,7 @@ function MobileMealCard({
     : [];
   const additions = [...selectedOptionNames, ...plannedSides.map((ingredient) => ingredient.name).filter(Boolean)];
   const meta = recipe
-    ? `${recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}${recipeFrequency > 1 ? ` · planned ${recipeFrequency}x` : ""}`
+    ? `${displayRecipeTags(recipe).slice(0, 2).join(" · ") || "Saved recipe"}${recipeFrequency > 1 ? ` · planned ${recipeFrequency}x` : ""}`
     : meal.notes || "Manual plan";
 
   useEffect(() => {
@@ -4430,7 +4432,7 @@ function PlannerView({
                         const extraSideNames = plannedSides.map((ingredient) => ingredient.name).filter(Boolean);
                         const mealAdditions = [...selectedOptionNames, ...extraSideNames];
                         const mealMeta = recipe
-                          ? `${recipe.tags.slice(0, 2).join(" · ") || "Saved recipe"}${
+                          ? `${displayRecipeTags(recipe).slice(0, 2).join(" · ") || "Saved recipe"}${
                               (recipeFrequencies[recipe.id] ?? 0) > 1 ? ` · planned ${recipeFrequencies[recipe.id]}x` : ""
                             }${mealAdditions.length ? ` · with ${mealAdditions.join(", ")}` : ""}`
                           : meal.notes || "Manual plan";
@@ -4666,6 +4668,7 @@ function RecipeLibrary({
   onToggleFavorite,
   onBatchAddTags,
   onManageGroups,
+  onCleanupTags,
   onOpenRecipe
 }: {
   recipes: Recipe[];
@@ -4687,6 +4690,7 @@ function RecipeLibrary({
   onToggleFavorite: (recipeId: string) => void;
   onBatchAddTags: (recipeIds: string[], tags: string[]) => void;
   onManageGroups: () => void;
+  onCleanupTags: () => void;
   onOpenRecipe: (recipeId: string) => void;
 }) {
   const [batchTagMode, setBatchTagMode] = useState(false);
@@ -4736,6 +4740,7 @@ function RecipeLibrary({
             {batchTagMode ? "Done tagging" : "Batch tags"}
           </button>
           <button className="icon-text-button" type="button" onClick={onManageGroups}><Settings size={17} />Assign columns</button>
+          <button className="icon-text-button" type="button" onClick={onCleanupTags}><Check size={17} />Review tag cleanup</button>
           <button className="primary-button" onClick={onAddRecipe}>
             <Plus size={18} />
             New recipe
@@ -4774,7 +4779,7 @@ function RecipeLibrary({
               list="batch-recipe-tag-suggestions"
               value={batchTagInput}
               onChange={(event) => setBatchTagInput(event.target.value)}
-              placeholder="e.g. freezer friendly, family favourite"
+              placeholder="e.g. freezer-friendly, packed lunch"
             />
             <datalist id="batch-recipe-tag-suggestions">
               {tagSuggestions.map((tag) => <option value={tag} key={tag} />)}
@@ -4847,11 +4852,12 @@ function RecipeLibrary({
               <p>{recipe.mealTypes.map(labelMealSlot).join(", ")} · {recipe.ingredients.length} ingredients · serves {recipe.servings}</p>
               <div className="tag-row">
                 <span>{recipe.visibility === "global" ? "all households" : "this household"}</span>
-                {recipe.tags.map((tag) => (
+                {displayRecipeTags(recipe).slice(0, 4).map((tag) => (
                   <span key={tag}>{tag}</span>
                 ))}
                 {plannedRecipeIds.has(recipe.id) && <span>planned</span>}
               </div>
+              {!!sourceTags(recipe).length && <div className="recipe-source-labels">{sourceTags(recipe).map(tag => <span key={tag}>{tag}</span>)}</div>}
               {recipeReactions[recipe.id] || (recipePopularity[recipe.id]?.ratingCount ?? 0) >= 3 ? (
                 <div className="recipe-rating-summary">
                   <strong>{recipeReactions[recipe.id] ? recipeReactionLabels[recipeReactions[recipe.id]] : "Household ratings"}</strong>
@@ -5010,7 +5016,7 @@ function RecipePickerButton({
         <strong>{recipe.title}</strong>
         <small>
           {recipe.mealTypes.map(labelMealSlot).join(" · ")}
-          {recipe.tags.slice(0, 2).length ? ` · ${recipe.tags.slice(0, 2).join(" · ")}` : ""}
+          {displayRecipeTags(recipe).slice(0, 2).length ? ` · ${displayRecipeTags(recipe).slice(0, 2).join(" · ")}` : ""}
           {(recipeFrequencies[recipe.id] ?? 0) > 0 ? ` · chosen ${recipeFrequencies[recipe.id]}x` : ""}
         </small>
       </span>
@@ -5089,7 +5095,7 @@ function RecipeDetailModal({
 
         <div className="tag-row">
           <span>{recipe.visibility === "global" ? "all households" : "this household"}</span>
-          {recipe.tags.map((tag) => (
+          {[...displayRecipeTags(recipe), ...preferenceTags(recipe), ...sourceTags(recipe)].map((tag) => (
             <span key={tag}>{tag}</span>
           ))}
         </div>
@@ -5267,9 +5273,6 @@ function AddRecipeView({
   }
   useEffect(() => { setIngredientFilter(editingRecipeId ? "all" : "needs-review"); setConfirmSave(false); }, [draft.id, editingRecipeId]);
   const mealImagePreview = draft.mealImageUrl ?? (draft.mealImagePath ? storedMealImageUrl : undefined);
-  const suppressedAutoTags = normalizeSuppressedAutomaticTags(draft.suppressedAutoTags);
-  const automaticTags = inferAutomaticRecipeTags(draft).filter((tag) => !suppressedAutoTags.includes(tag));
-  const removedAutomaticTags = suppressedAutoTags.filter((tag) => inferAutomaticRecipeTags(draft).includes(tag));
   const ocrLines = photoRawText
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -5657,60 +5660,7 @@ function AddRecipeView({
           </div>
         </div>
 
-        <label>
-          Tags
-          <input
-            value={tagInput}
-            onChange={(event) => setTagInput(event.target.value)}
-            placeholder="family, cosy, lunch prep"
-          />
-        </label>
-        <div className="tag-helper">
-          {automaticTags.length > 0 ? (
-            <>
-              <span>Auto tags on save</span>
-              {automaticTags.map((tag) => (
-                <button
-                  className="tag-chip-button"
-                  key={tag}
-                  type="button"
-                  onClick={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      suppressedAutoTags: normalizeSuppressedAutomaticTags([...(current.suppressedAutoTags ?? []), tag])
-                    }))
-                  }
-                >
-                  {tag}
-                  <X size={14} />
-                </button>
-              ))}
-            </>
-          ) : (
-            <span>Automatic meal-type and time tags are kept up to date when saved.</span>
-          )}
-          {removedAutomaticTags.length > 0 && (
-            <>
-              <span>Removed auto tags</span>
-              {removedAutomaticTags.map((tag) => (
-                <button
-                  className="tag-chip-button muted-chip"
-                  key={tag}
-                  type="button"
-                  onClick={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      suppressedAutoTags: normalizeSuppressedAutomaticTags(current.suppressedAutoTags).filter((item) => item !== tag)
-                    }))
-                  }
-                >
-                  {tag}
-                  <Plus size={14} />
-                </button>
-              ))}
-            </>
-          )}
-        </div>
+        <RecipeTagEditor draft={draft} setDraft={setDraft} tagInput={tagInput} setTagInput={setTagInput} />
 
         </div>
         <div className="editor-section">

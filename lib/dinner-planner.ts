@@ -2,7 +2,6 @@ import {
   addDays,
   canonicalizeIngredientName,
   formatDateKey,
-  inferAutomaticRecipeTags,
   normalizeMealTypes,
   totalRecipeMinutes,
   type Ingredient,
@@ -11,6 +10,7 @@ import {
   type RecipeReaction
 } from "./domain";
 import type { DinnerAttendance } from "./domain";
+import { preferenceTags, standardRecipeTags } from "./recipe-tags";
 import { attendancePortions, dinnerNeedsMeal, recipeAllowedForDinner } from "./guided-shop";
 
 export type AutoDinnerPlanMode = "fill" | "replace";
@@ -179,11 +179,12 @@ function ingredientNamesMatch(targetName: string, ingredientName: string) {
 
 function categoryFromText(text: string): DinnerCategory {
   const normalized = text.toLowerCase();
+  if (/\b(vegan|vegetarian|plant-based|meat-free|quorn|tofu|tempeh)\b/.test(normalized)) return "vegetarian";
   if (/\b(chicken|hen|turkey)\b/.test(normalized)) return "chicken";
   if (/\b(fish|salmon|tuna|cod|haddock|trout|prawn|prawns|shrimp|mackerel|sardine|seabass|sea bass)\b/.test(normalized)) {
     return "fish";
   }
-  if (/\b(pork|bacon|ham|gammon|chorizo|prosciutto|salami|beef|steak|brisket|burger)\b/.test(normalized)) {
+  if (/\b(pork|bacon|ham|gammon|chorizo|prosciutto|salami|beef|brisket)\b/.test(normalized)) {
     return "pork-beef";
   }
   if (/\b(duck|lamb|venison)\b/.test(normalized)) return "other";
@@ -192,7 +193,7 @@ function categoryFromText(text: string): DinnerCategory {
 
 function recipeHasTag(recipe: Recipe, tagName: string) {
   const normalizedTag = tagName.trim().toLowerCase();
-  return recipe.tags.some((tag) => tag.trim().toLowerCase() === normalizedTag);
+  return [...recipe.tags, ...preferenceTags(recipe)].some((tag) => tag.trim().toLowerCase() === normalizedTag);
 }
 
 function familiarPriority(recipe: Recipe, historyCount: number) {
@@ -205,17 +206,15 @@ function classifyRecipe(recipe: Recipe, includedIngredients: Ingredient[], selec
     if (optionalCategory !== "vegetarian") return optionalCategory;
   }
 
-  const inferredTags = inferAutomaticRecipeTags({
-    title: recipe.title,
+  const inferredTags = standardRecipeTags([], {
+    ...recipe,
     ingredients: includedIngredients,
-    prepMinutes: recipe.prepMinutes,
-    cookMinutes: recipe.cookMinutes
   });
   if (inferredTags.includes("chicken")) return "chicken";
   if (inferredTags.includes("fish")) return "fish";
   if (inferredTags.includes("pork") || inferredTags.includes("beef")) return "pork-beef";
-  if (inferredTags.includes("duck")) return "other";
-  return "vegetarian";
+  if (inferredTags.includes("vegetarian") || inferredTags.includes("vegan")) return "vegetarian";
+  return "other";
 }
 
 function canonicalIngredientName(ingredient: Ingredient, ingredientAliases: Record<string, string>) {
@@ -446,7 +445,7 @@ function metricLabel(category: TargetDinnerCategory) {
 }
 
 function isNotSophiaFriendly(recipe: Recipe) {
-  return recipe.tags.some((tag) => tag.trim().toLowerCase() === "not sophia friendly");
+  return preferenceTags(recipe).includes("not sophia friendly");
 }
 
 function candidateAllowedForDate(candidate: DinnerCandidate, date: string, dayNotes: Record<string, string> = {}, attendance: Record<string, DinnerAttendance> = {}) {

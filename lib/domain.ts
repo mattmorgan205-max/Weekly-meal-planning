@@ -1,3 +1,4 @@
+import { canonicalTag, controlledTags, inferredRecipeTags, standardRecipeTags } from "./recipe-tags";
 export type MealSlot = "breakfast" | "lunch" | "dinner" | "snack";
 
 export type GroceryCategory =
@@ -45,6 +46,9 @@ export type Ingredient = {
 };
 
 export type Recipe = {
+  confirmedTags?: string[];
+  provenanceTags?: string[];
+  householdTags?: string[];
   reviewAcknowledgements?: Record<string, string>;
   sourceText?: string;
   id: string;
@@ -208,6 +212,9 @@ export type AppSettings = {
 };
 
 export type ImportDraft = {
+  confirmedTags?: string[];
+  provenanceTags?: string[];
+  householdTags?: string[];
   reviewAcknowledgements?: Record<string, string>;
   sourceText?: string;
   id: string;
@@ -521,7 +528,7 @@ export const standardIngredientUnits = [
 
 const autoMealTypeTags = ["vegetarian", "chicken", "duck", "pork", "beef", "fish"];
 const autoTimeTags = ["under 30 mins", "30-60 mins", "over 60 mins"];
-const automaticTagSet = new Set([...autoMealTypeTags, ...autoTimeTags]);
+const automaticTagSet = new Set([...autoMealTypeTags, ...autoTimeTags, ...controlledTags]);
 
 const slotLabels: Record<MealSlot, string> = {
   breakfast: "Breakfast",
@@ -1032,12 +1039,12 @@ export function parseTags(value: string) {
 }
 
 export function isAutomaticRecipeTag(tag: string) {
-  return automaticTagSet.has(tag.trim().toLowerCase());
+  return automaticTagSet.has(canonicalTag(tag));
 }
 
 export function normalizeSuppressedAutomaticTags(tags?: string[]) {
   return (tags ?? [])
-    .map((tag) => tag.trim().toLowerCase())
+    .map(canonicalTag)
     .filter((tag) => automaticTagSet.has(tag))
     .filter((tag, index, allTags) => allTags.indexOf(tag) === index);
 }
@@ -1082,39 +1089,14 @@ export function draftFromOcrText(text: string, fileName = "Recipe book import") 
   };
 }
 
-export function inferAutomaticRecipeTags(recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes" | "totalMinutes">) {
-  const text = `${recipe.title} ${recipe.ingredients.map((ingredient) => ingredient.name).join(" ")}`.toLowerCase();
-  const tags: string[] = [];
-
-  if (/\b(chicken|hen|turkey)\b/.test(text)) tags.push("chicken");
-  if (/\b(duck|duck breast|duck legs)\b/.test(text)) tags.push("duck");
-  if (/\b(pork|bacon|ham|gammon|chorizo|prosciutto|salami)\b/.test(text)) tags.push("pork");
-  if (/\b(beef|steak|mince|brisket|burger)\b/.test(text)) tags.push("beef");
-  if (/\b(fish|salmon|tuna|cod|haddock|trout|prawn|prawns|shrimp|mackerel|sardine|seabass|sea bass)\b/.test(text)) {
-    tags.push("fish");
-  }
-
-  if (!tags.length) tags.push("vegetarian");
-
-  const totalMinutes = totalRecipeMinutes(recipe);
-  if (totalMinutes > 0 && totalMinutes < 30) tags.push("under 30 mins");
-  if (totalMinutes >= 30 && totalMinutes <= 60) tags.push("30-60 mins");
-  if (totalMinutes > 60) tags.push("over 60 mins");
-
-  return tags;
-}
+export const inferAutomaticRecipeTags = inferredRecipeTags;
 
 export function mergeAutomaticRecipeTags(
   manualTags: string[],
-  recipe: Pick<Recipe, "title" | "ingredients" | "prepMinutes" | "cookMinutes" | "totalMinutes">,
+  recipe: Parameters<typeof standardRecipeTags>[1],
   suppressedAutoTags: string[] = []
 ) {
-  const suppressed = new Set(normalizeSuppressedAutomaticTags(suppressedAutoTags));
-  const manual = manualTags.map((tag) => tag.trim().toLowerCase()).filter(Boolean).filter((tag) => !suppressed.has(tag));
-  const withoutOldAutoTags = manual.filter((tag) => !automaticTagSet.has(tag));
-  const inferred = inferAutomaticRecipeTags(recipe).filter((tag) => !suppressed.has(tag));
-  const merged = [...withoutOldAutoTags, ...inferred];
-  return merged.filter((tag, index, tags) => tags.indexOf(tag) === index);
+  return standardRecipeTags(manualTags, recipe, suppressedAutoTags);
 }
 
 export function inferRecipeMealTypes(recipe: Pick<Recipe, "title" | "tags" | "ingredients">) {
@@ -1346,6 +1328,9 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
   const now = new Date().toISOString();
 
   return {
+    confirmedTags: draft.confirmedTags,
+    provenanceTags: draft.provenanceTags,
+    householdTags: draft.householdTags,
     reviewAcknowledgements: draft.reviewAcknowledgements,
     sourceText: draft.sourceText ?? draft.rawText,
     id: createId("recipe"),
@@ -1383,6 +1368,9 @@ export function draftToRecipe(draft: ImportDraft): Recipe {
 
 export function recipeToDraft(recipe: Recipe): ImportDraft {
   return {
+    confirmedTags: recipe.confirmedTags,
+    provenanceTags: recipe.provenanceTags,
+    householdTags: recipe.householdTags,
     reviewAcknowledgements: recipe.reviewAcknowledgements,
     sourceText: recipe.sourceText,
     id: createId("draft"),
