@@ -5,6 +5,7 @@ import { Check, Copy, Settings, UserPlus, UserMinus, X } from "lucide-react";
 import { formatDateKey, type AppState, type DinnerAttendance } from "@/lib/domain";
 import { allDinersSelected, attendanceForSlot, attendancePortions, copyAttendanceToDates, dayNoteForDate, setAttendance, shopDates, toggleAllDiners } from "@/lib/guided-shop";
 import { mealCalendarDays } from "@/lib/guided-planning";
+import { DinerSwatch } from "./diner-badge";
 
 type Slot = "lunch" | "dinner";
 type Target = { date: string; slot: Slot };
@@ -42,7 +43,7 @@ export function DinerCalendar({ state, updateState, children }: {
             const allInSlot = allDinersSelected(state, date, [slot]);
             return <div key={slot} className={`diner-calendar-slot ${slot}`} aria-label={`${slot} diners on ${date}`}>
               <div className="diner-calendar-slot-heading"><strong>{slot === "lunch" ? "Lunch" : "Dinner"}</strong>{selected && <span>{portions ? `${portions} portions` : "No diners"}</span>}</div>
-              {selected && <><div className="diner-calendar-people">{diners.map(diner => <label key={diner.id}><input type="checkbox" aria-label={`${diner.name} eating ${slot} on ${date}`} checked={Object.hasOwn(attendance.portions, diner.id)} onChange={event => { const next = { ...attendance.portions }; if (event.target.checked) next[diner.id] = diner.portions; else delete next[diner.id]; change(date, slot, { portions: next }); }} />{diner.name || "Unnamed diner"}</label>)}</div>
+              {selected && <><div className="diner-calendar-people">{diners.map((diner, index) => <label key={diner.id}><input type="checkbox" aria-label={`${diner.name} eating ${slot} on ${date}`} checked={Object.hasOwn(attendance.portions, diner.id)} onChange={event => { const next = { ...attendance.portions }; if (event.target.checked) next[diner.id] = diner.portions; else delete next[diner.id]; change(date, slot, { portions: next }); }} /><DinerSwatch diner={diner} index={index} />{diner.name || "Unnamed diner"}</label>)}</div>
                 {attendance.guests > 0 && <small>{attendance.guests} guest portions</small>}
                 <div className="diner-calendar-actions"><button className="icon-button" type="button" title={`${allInSlot ? "Deselect" : "Select"} all ${slot} diners on ${date}`} disabled={!diners.length} onClick={() => updateState(current => toggleAllDiners(current, date, [slot]))}>{allInSlot ? <UserMinus size={13} /> : <UserPlus size={13} />}</button><button className="icon-button" type="button" title={`Edit ${slot} portions and guests on ${date}`} onClick={() => setEditing({ date, slot })}><Settings size={13} /></button><button className="icon-button" type="button" title={`Copy ${slot} diners from ${date}`} onClick={() => { setCopy({ date, slot }); setTargets(dates.filter(day => day !== date)); }}><Copy size={13} /></button></div>
               </>}

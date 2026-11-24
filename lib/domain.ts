@@ -91,7 +91,7 @@ export type PlannedMeal = {
   extraPortions?: number;
 };
 
-export type HouseholdDiner = { id: string; name: string; portions: number; usual: boolean };
+export type HouseholdDiner = { id: string; name: string; portions: number; usual: boolean; color?: string };
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type WeeklyDayDefault = { lunch?: string[]; dinner?: string[]; note?: string };
 export type DinnerAttendance = {

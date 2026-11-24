@@ -8,6 +8,7 @@ import { ShopCalendar } from "./shop-calendar";
 import { GuidedMealWorkspace } from "./guided-meal-workspace";
 import { GuidedMealCalendar } from "./guided-meal-calendar";
 import { DinerCalendar } from "./diner-calendar";
+import { dinerColor, nextDinerColor } from "@/lib/diner-colors";
 
 type UpdateState = (updater: (current: AppState) => AppState) => void;
 const dateLabel = (date: string) => new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
@@ -35,13 +36,14 @@ export function ShopDatesEditor({ shop, extrasCount, onApply }: { shop: GuidedSh
 
 export function HouseholdDinersEditor({ diners, onChange }: { diners: HouseholdDiner[]; onChange: (diners: HouseholdDiner[]) => void }) {
   return <details className="shop-diners-settings"><summary><Settings size={16} />Household diners</summary>
-    {diners.map(diner => <div className="shop-diner-edit" key={diner.id}>
+    {diners.map((diner, index) => <div className="shop-diner-edit" key={diner.id}>
       <label>Name<input aria-label={`Name for ${diner.name}`} value={diner.name} onChange={event => onChange(diners.map(row => row.id === diner.id ? { ...row, name: event.target.value } : row))} /></label>
+      <label className="diner-color-control">Colour<input type="color" aria-label={`Colour for ${diner.name || "Unnamed diner"}`} title={`Colour for ${diner.name || "Unnamed diner"}`} value={dinerColor(diner, index)} onChange={event => onChange(diners.map(row => row.id === diner.id ? { ...row, color: event.target.value } : row))} /></label>
       <label>Default portions<input type="number" min="0" max="20" step="0.25" value={diner.portions} onChange={event => onChange(diners.map(row => row.id === diner.id ? { ...row, portions: Math.max(0, Number(event.target.value)) } : row))} /></label>
       <label className="toggle-line"><input type="checkbox" checked={diner.usual} onChange={event => onChange(diners.map(row => row.id === diner.id ? { ...row, usual: event.target.checked } : row))} />Usually eating</label>
       <button type="button" className="icon-button danger" title={`Remove diner ${diner.name}`} onClick={() => onChange(diners.filter(row => row.id !== diner.id))}><Trash2 size={16} /></button>
     </div>)}
-    <button type="button" className="icon-text-button" onClick={() => onChange([...diners, { id: createId("diner"), name: "New diner", portions: 1, usual: true }])}><Plus size={16} />Add diner</button>
+    <button type="button" className="icon-text-button" onClick={() => onChange([...diners, { id: createId("diner"), name: "New diner", portions: 1, usual: true, color: nextDinerColor(diners) }])}><Plus size={16} />Add diner</button>
   </details>;
 }
 

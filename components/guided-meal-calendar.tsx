@@ -6,6 +6,7 @@ import { addDays, formatDateKey, type AppState, type DinnerAttendance, type Meal
 import { attendanceForSlot, attendancePortions, dinnerNeedsMeal, recipeAllowedForDinner, scaleMealPortions } from "@/lib/guided-shop";
 import { mealCalendarDays, mealSource } from "@/lib/guided-planning";
 import type { GuidedDragControls } from "./guided-meal-workspace";
+import { DinerBadge } from "./diner-badge";
 
 const dayLabel = (date: string) => new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
 
@@ -51,13 +52,17 @@ export function GuidedMealCalendar({ state, updateState, controls, onOpenMeal, o
               const meals = state.plannedMeals.filter(meal => meal.date === date && meal.slot === slot);
               const attendance = attendanceForSlot(state, date, slot);
               const names = diners.filter(diner => (attendance.portions[diner.id] ?? 0) > 0).map(diner => diner.name).join(", ");
-              const summary = `${names || "No diners"}${attendance.guests ? ` + ${attendance.guests} guest portions` : ""}`;
+              const summary = [names, attendance.guests ? `${attendance.guests} guest portions` : ""].filter(Boolean).join(" + ") || "No diners";
               const allowed = selected && dinnerNeedsMeal(attendance);
               const drop = selected ? controls.dropProps(date, slot) : {};
               const noDiners = selected && attendancePortions(attendance, 0) === 0;
               return <div {...drop} className={`meal-calendar-slot ${slot} ${noDiners ? "no-diners" : ""} ${drop.className ?? ""}`} key={slot} aria-label={`${slot} on ${date}`}>
                 <div className="meal-calendar-slot-heading"><span>{slot === "lunch" ? "Lunch" : "Dinner"}</span>{allowed && <button className="icon-button" type="button" title={`Add ${slot} on ${date}`} onClick={() => onOpenMeal(date, slot)}><Plus size={13} /></button>}</div>
-                {selected && <small className="meal-slot-diners" title={`${slot}: ${summary}`}>{summary}</small>}
+                {selected && <div className="meal-slot-diners" aria-label={`${slot} diners: ${summary}`}>
+                  {diners.map((diner, index) => (attendance.portions[diner.id] ?? 0) > 0 && <DinerBadge key={diner.id} diner={diner} index={index} />)}
+                  {attendance.guests > 0 && <span className="diner-guest-badge">{attendance.guests} guest portions</span>}
+                  {!names && !attendance.guests && <span>No diners</span>}
+                </div>}
                 {meals.map(meal => {
                   const recipe = state.recipes.find(row => row.id === meal.recipeId), title = recipe?.title ?? meal.manualTitle ?? "Meal";
                   const placeholder = meal.notes === "Guided dinner status", source = mealSource(recipe);

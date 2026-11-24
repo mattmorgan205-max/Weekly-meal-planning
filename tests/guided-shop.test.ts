@@ -7,6 +7,7 @@ import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange,
 import { assignSnackGroup, defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 import { copyAttendanceToDates } from "../lib/guided-shop";
 import { allDinersSelected, dayNoteForDate, planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, toggleAllDiners, weekdayForDate } from "../lib/guided-shop";
+import { dinerColor, dinerPalette, dinerTextColor, nextDinerColor, normalizeDinerColors } from "../lib/diner-colors";
 
 const start = "2026-11-23", end = "2026-11-29";
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
@@ -15,6 +16,37 @@ const item = (id = "carrots", quantity: number | undefined = 600, unit = "g"): S
 const recipe = (id: string, restricted = false): Recipe => ({ id, title: id, servings: 2, mealTypes: ["dinner"], prepMinutes: 5, cookMinutes: 15, tags: restricted ? ["Not Sophia friendly"] : [], favorite: false, ingredients: [{ id: `${id}-carrot`, name: "carrots", quantity: 600, unit: "g", category: "Produce" }], instructions: ["Cook"], createdAt: "2026-11-01", updatedAt: "2026-11-01" });
 const meal = (id = "m", peopleCount = 2): PlannedMeal => ({ id, date: start, slot: "dinner", recipeId: "r", peopleCount, extraSideIngredients: [{ id: "side", name: "rice", quantity: 200, unit: "g", category: "Pantry", role: "side" }] });
 function state(): AppState { const initial = seedState(); return migrateGuidedState({ ...initial, recipes: [recipe("r")], plannedMeals: [], settings: { ...initial.settings, diners }, manualShoppingItems: [], shoppingChecks: {}, asdaShoppingStatus: {} }, start, end); }
+
+test("legacy diners gain distinct persistent colours and existing choices survive migration", () => {
+  const current = state();
+  const rows = current.settings.diners!;
+  assert.equal(new Set(rows.map(row => row.color)).size, rows.length);
+  rows[1].color = "#ffee00";
+  const restored = migrateGuidedState(JSON.parse(JSON.stringify(current)), start, end);
+  assert.deepEqual(restored.settings.diners, rows);
+  assert.equal(normalizeDinerColors([...rows].reverse())[1].color, rows[0].color);
+  assert.ok(!rows.some(row => row.color === nextDinerColor(rows)));
+  assert.equal(dinerColor({ ...rows[0], color: "invalid" }, 2), dinerPalette[2]);
+});
+
+test("diner badges use readable foregrounds for custom and palette colours", () => {
+  assert.equal(dinerTextColor("#ffffff"), "#000000");
+  assert.equal(dinerTextColor("#000000"), "#ffffff");
+  assert.equal(dinerTextColor("#ffff00"), "#000000");
+  assert.equal(dinerTextColor("#0000ff"), "#ffffff");
+  for (const color of dinerPalette) assert.ok(["#ffffff", "#000000"].includes(dinerTextColor(color)));
+});
+
+test("changing only a diner colour leaves meals, attendance and weekly defaults untouched", () => {
+  const current = state();
+  current.plannedMeals = [{ ...meal(), portionSource: "diners" }];
+  current.settings.weeklyDefaults = { mon: { dinner: ["adult"] } };
+  const next = changeDiners(current, current.settings.diners!.map(diner => ({ ...diner, color: "#ffee00" })));
+  assert.equal(next.plannedMeals, current.plannedMeals);
+  assert.equal(next.dinnerAttendance, current.dinnerAttendance);
+  assert.equal(next.settings.weeklyDefaults, current.settings.weeklyDefaults);
+  assert.equal(next.settings.diners![0].color, "#ffee00");
+});
 
 test("all-diner toggles select everyone from partial or empty days, then clear both slots", () => {
   let current = state();

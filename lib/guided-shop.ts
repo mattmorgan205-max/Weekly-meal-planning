@@ -4,6 +4,7 @@ import {
   type HouseholdDiner, type PlannedMeal, type Recipe, type ShoppingListItem, type SupplyCheck, type Weekday
 } from "./domain";
 import { snackShoppingMeals } from "./snacks";
+import { normalizeDinerColors } from "./diner-colors";
 
 export const guidedSteps = ["Dates & diners", "Meals", "Snacks and extras", "Check supplies", "Review & shop"];
 export const shopRangeKey = (shop: Pick<GuidedShop, "startDate" | "endDate">) => `${shop.startDate}__${shop.endDate}`;
@@ -156,7 +157,7 @@ export function requirementSignature(item: ShoppingListItem) {
 }
 
 export function migrateGuidedState(state: AppState, startDate: string, endDate: string): AppState {
-  const diners = state.settings.diners ?? defaultDiners(state.settings.defaultPeople);
+  const diners = normalizeDinerColors(state.settings.diners ?? defaultDiners(state.settings.defaultPeople));
   const attendance = { ...state.dinnerAttendance };
   for (const date of shopDates(state.guidedShop?.startDate ?? startDate, state.guidedShop?.endDate ?? endDate)) attendance[date] ??= defaultAttendance(diners);
   if (state.guidedShop) return { ...state, dinnerAttendance: attendance, settings: { ...state.settings, diners } };
@@ -198,7 +199,10 @@ export function shopSignature(items: ShoppingListItem[], shop: GuidedShop) {
 export function shopIsFinalized(items: ShoppingListItem[], shop: GuidedShop) { return shop.finalizedSignature === shopSignature(items, shop); }
 
 export function changeDiners(state: AppState, diners: HouseholdDiner[]): AppState {
+  diners = normalizeDinerColors(diners);
   let next: AppState = { ...state, settings: { ...state.settings, diners } };
+  const attendanceFields = (rows: HouseholdDiner[]) => rows.map(({ id, name, portions, usual }) => [id, name, portions, usual]);
+  if (JSON.stringify(attendanceFields(diners)) === JSON.stringify(attendanceFields(state.settings.diners ?? []))) return next;
   for (const slot of ["lunch", "dinner"] as const) for (const [date, attendance] of Object.entries((slot === "lunch" ? state.lunchAttendance : state.dinnerAttendance) ?? {})) {
     const portions = Object.fromEntries(Object.entries(attendance.portions).filter(([id]) => diners.some(diner => diner.id === id)));
     const updated = attendance.confirmed ? { ...attendance, portions } : { ...defaultAttendance(diners), dinnerStatus: attendance.dinnerStatus };

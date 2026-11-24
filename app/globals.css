@@ -737,19 +737,6 @@ h3 {
   background: #fffefa;
 }
 
-.copy-notes-control {
-  display: inline-grid;
-  grid-template-columns: auto auto;
-  gap: 5px;
-  align-items: center;
-}
-
-.copy-notes-control select {
-  min-height: 40px;
-  width: 104px;
-  padding: 0 8px;
-}
-
 .meal-slot {
   display: grid;
   gap: 8px;
@@ -2893,16 +2880,6 @@ h3 {
     font-size: 0.74rem;
   }
 
-  .mobile-copy-notes-control {
-    grid-template-columns: 94px minmax(0, 1fr);
-  }
-
-  .mobile-copy-notes-control select,
-  .mobile-copy-notes-control .icon-text-button {
-    width: 100%;
-    min-height: 38px;
-  }
-
   .batch-tag-panel {
     grid-template-columns: 1fr;
     align-items: stretch;
@@ -3416,9 +3393,10 @@ h3 {
 .shop-diners-settings { padding-block: 10px; border-block: 1px solid var(--line); }
 .shop-diners-settings summary, .bulk-extras summary, .shopping-supplies summary { cursor: pointer; font-weight: 600; padding: 9px 0; }
 .shop-diners-settings summary svg { vertical-align: middle; margin-right: 6px; }
-.shop-diner-edit { display: grid; grid-template-columns: minmax(100px, 1fr) 120px 160px 36px; align-items: end; gap: 10px; padding: 8px 0; }
+.shop-diner-edit { display: grid; grid-template-columns: minmax(100px, 1fr) 48px 120px 160px 36px; align-items: end; gap: 10px; padding: 8px 0; }
 .shop-diner-edit input { min-width: 0; }
 .shop-diner-edit label { font-size: 0.8rem; }
+.shop-diner-edit .diner-color-control input { width: 38px; height: 38px; min-height: 38px; padding: 3px; cursor: pointer; }
 .shop-notice { background: #edf5f0; border-left: 3px solid #226b55; padding: 12px; font-size: 0.85rem; overflow-wrap: anywhere; }
 .shop-notice p { margin-block: 6px 10px; }
 .shop-warning { color: #853f12; background: #fff2d9; padding: 8px; font-size: 0.8rem; overflow-wrap: anywhere; }
@@ -3486,9 +3464,9 @@ h3 {
   .guided-meals-tools { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .guided-footer { bottom: calc(64px + env(safe-area-inset-bottom)); margin-bottom: 0; }
   .guided-footer button { min-height: 40px; font-size: 0.8rem; }
-  .shop-diner-edit { grid-template-columns: minmax(0, 1fr) 90px 36px; gap: 6px; }
-  .shop-diner-edit .toggle-line { grid-column: 1 / 3; grid-row: 2; }
-  .shop-diner-edit > button { grid-column: 3; grid-row: 1; }
+  .shop-diner-edit { grid-template-columns: minmax(0, 1fr) 40px 80px 30px; gap: 6px; }
+  .shop-diner-edit .toggle-line { grid-column: 1 / 5; grid-row: 2; }
+  .shop-diner-edit > button { grid-column: 4; grid-row: 1; width: 30px; padding: 3px; }
   .shop-dates-editor .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .shop-dates-editor .segmented-control { grid-column: 1 / -1; }
   .supply-category-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3657,7 +3635,10 @@ h3 {
 .diner-copy-dialog { width: min(480px, 100%); }
 .diner-copy-days { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .diner-copy-days label { display: flex; align-items: center; gap: 6px; }
-.meal-slot-diners { display: block; color: #53665a; font-size: 0.68rem; line-height: 1.25; overflow-wrap: anywhere; margin-bottom: 5px; }
+.meal-slot-diners { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 3px; color: #53665a; font-size: 0.7rem; line-height: 1.25; overflow-wrap: anywhere; margin-bottom: 7px; }
+.diner-badge, .diner-guest-badge { display: inline-block; max-width: 100%; min-width: 0; border: 1px solid rgb(0 0 0 / 15%); border-radius: 4px; padding: 2px 5px; font-weight: 600; overflow-wrap: anywhere; }
+.diner-guest-badge { background: #e7e9e8; color: #424944; }
+.diner-swatch { display: inline-block; flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%; border: 1px solid rgb(0 0 0 / 20%); }
 .meal-calendar-day-meta { min-height: 34px; margin: 3px 0 6px; }
 .meal-calendar-day-meta small, .meal-calendar-day-meta p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 0.72rem; line-height: 1.3; margin: 0; overflow-wrap: anywhere; }
 .meal-calendar-day-meta small { color: #53665a; }

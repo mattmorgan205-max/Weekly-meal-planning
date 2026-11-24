@@ -3,6 +3,7 @@
 import { RotateCcw, UserMinus, UserPlus } from "lucide-react";
 import type { AppSettings, WeeklyDayDefault } from "@/lib/domain";
 import { weekdays } from "@/lib/guided-shop";
+import { DinerSwatch } from "./diner-badge";
 
 export function WeeklyDinerSettings({ settings, onChange }: {
   settings: AppSettings; onChange: (patch: Partial<AppSettings>) => void;
@@ -27,7 +28,7 @@ export function WeeklyDinerSettings({ settings, onChange }: {
               const all = diners.length > 0 && diners.every(diner => ids.includes(diner.id));
               return <div className={`diner-calendar-slot ${slot}`} key={slot}>
                 <div className="diner-calendar-slot-heading"><strong>{slot === "lunch" ? "Lunch" : "Dinner"}</strong><button className="icon-button" type="button" title={`${all ? "Deselect" : "Select"} all ${label} ${slot} defaults`} disabled={!diners.length} onClick={() => change({ [slot]: all ? [] : diners.map(diner => diner.id) })}>{all ? <UserMinus size={14} /> : <UserPlus size={14} />}</button></div>
-                <div className="diner-calendar-people">{diners.map(diner => <label key={diner.id}><input type="checkbox" aria-label={`${diner.name} default ${slot} on ${label}`} checked={ids.includes(diner.id)} onChange={event => change({ [slot]: event.target.checked ? [...ids, diner.id] : ids.filter(id => id !== diner.id) })} />{diner.name || "Unnamed diner"}</label>)}</div>
+                <div className="diner-calendar-people">{diners.map((diner, index) => <label key={diner.id}><input type="checkbox" aria-label={`${diner.name} default ${slot} on ${label}`} checked={ids.includes(diner.id)} onChange={event => change({ [slot]: event.target.checked ? [...ids, diner.id] : ids.filter(id => id !== diner.id) })} /><DinerSwatch diner={diner} index={index} />{diner.name || "Unnamed diner"}</label>)}</div>
               </div>;
             })}
             <label className="weekly-note-label">Day note<textarea rows={3} aria-label={`Recurring note for ${label}`} value={defaults.note ?? ""} onChange={event => change({ note: event.target.value })} /></label>

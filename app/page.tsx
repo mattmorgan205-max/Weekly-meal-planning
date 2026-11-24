@@ -136,7 +136,7 @@ import { completedTotalMinutes } from "@/lib/domain";
 import { actionableImportWarnings } from "@/lib/recipe-review";
 import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
 import { WeeklyDinerSettings } from "@/components/weekly-diner-settings";
-import { dayNoteForDate, planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, weekdayForDate } from "@/lib/guided-shop";
+import { planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, weekdayForDate } from "@/lib/guided-shop";
 
 type View = "guided" | "planner" | "recipes" | "add" | "shopping" | "settings";
 type ImportMode = "manual" | "paste" | "url" | "photo";
@@ -1099,7 +1099,7 @@ export default function Home() {
   const [hasHydratedLocalState, setHasHydratedLocalState] = useState(false);
   const [activeView, setActiveView] = useState<View>("planner");
   const [weekStart, setWeekStart] = useState(() => formatDateKey(startOfWeek(new Date())));
-  const [plannerDayCount, setPlannerDayCount] = useState<7 | 14>(7);
+  const [plannerDayCount, setPlannerDayCount] = useState<7 | 14>(14);
   const activeShop = state.guidedShop ?? createShop(formatDateKey(startOfWeek(new Date())), formatDateKey(addDays(startOfWeek(new Date()), 6)), "initial");
   const shoppingStartDate = activeShop.startDate, shoppingEndDate = activeShop.endDate;
   const [returnToGuided, setReturnToGuided] = useState(false);
@@ -1753,59 +1753,6 @@ export default function Home() {
 
       return { ...current, dayNotes };
     });
-  }
-
-  function duplicateWeekToNext() {
-    const nextWeek = addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount);
-    const newMeals = weekMeals.map((meal) => ({
-      ...meal,
-      id: createId("meal"),
-      date: formatDateKey(addDays(nextWeek, days.findIndex((day) => formatDateKey(day) === meal.date)))
-    }));
-    const newDayNotes = days.reduce<Record<string, string>>((notes, day, index) => {
-      const sourceDate = formatDateKey(day);
-      const note = dayNoteForDate(state, sourceDate);
-      if (note) notes[formatDateKey(addDays(nextWeek, index))] = note;
-      return notes;
-    }, {});
-
-    updateState((current) => ({
-      ...current,
-      plannedMeals: [...current.plannedMeals, ...newMeals],
-      dayNotes: { ...current.dayNotes, ...newDayNotes }
-    }));
-    setWeekStart(formatDateKey(nextWeek));
-  }
-
-  function copyDayNotesForward(weekCount: number) {
-    const sourceDays = days.slice(0, 7);
-    const safeWeekCount = Math.max(1, Math.min(12, Math.round(weekCount)));
-
-    updateState((current) => {
-      const dayNotes = { ...current.dayNotes };
-      sourceDays.forEach((day) => {
-        const sourceDate = formatDateKey(day);
-        const note = dayNoteForDate(current, sourceDate).trim();
-        if (!note) return;
-
-        for (let week = 1; week <= safeWeekCount; week += 1) {
-          const targetDate = formatDateKey(addDays(day, week * 7));
-          if (!Object.hasOwn(dayNotes, targetDate)) dayNotes[targetDate] = note;
-        }
-      });
-
-      return { ...current, dayNotes };
-    });
-  }
-
-  function clearWeek() {
-    const dayKeys = new Set(days.map(formatDateKey));
-    updateState((current) => ({
-      ...current,
-      plannedMeals: current.plannedMeals.filter((meal) => !dayKeys.has(meal.date)),
-      dayNotes: Object.fromEntries(Object.entries(current.dayNotes).filter(([date]) => !dayKeys.has(date))),
-      shoppingChecks: {}
-    }));
   }
 
   async function syncPublishedRecipe(recipe: Recipe) {
@@ -3208,13 +3155,10 @@ export default function Home() {
             onSetPlannerStart={setWeekStart}
             onSetPlannerDayCount={setPlannerDayCount}
             onUpdateDayNote={updateDayNote}
-            onCopyDayNotesForward={copyDayNotesForward}
             onUpdateUseUpIngredients={(value) =>
               updateState((current) => ({ ...current, useUpIngredients: value.split(/\r?\n/) }))
             }
             onThisWeek={() => setWeekStart(formatDateKey(startOfWeek(new Date())))}
-            onDuplicateWeek={duplicateWeekToNext}
-            onClearWeek={clearWeek}
           />
         )}
 
@@ -3691,11 +3635,8 @@ function PlannerView({
   onSetPlannerStart,
   onSetPlannerDayCount,
   onUpdateDayNote,
-  onCopyDayNotesForward,
   onUpdateUseUpIngredients,
-  onThisWeek,
-  onDuplicateWeek,
-  onClearWeek
+  onThisWeek
 }: {
   days: Date[];
   weekStart: string;
@@ -3724,11 +3665,8 @@ function PlannerView({
   onSetPlannerStart: (date: string) => void;
   onSetPlannerDayCount: (dayCount: 7 | 14) => void;
   onUpdateDayNote: (date: string, note: string) => void;
-  onCopyDayNotesForward: (weekCount: number) => void;
   onUpdateUseUpIngredients: (value: string) => void;
   onThisWeek: () => void;
-  onDuplicateWeek: () => void;
-  onClearWeek: () => void;
 }) {
   const [dragOverSlot, setDragOverSlot] = useState<string | null>(null);
   const [todayKey, setTodayKey] = useState(() => formatDateKey(new Date()));
@@ -3742,7 +3680,6 @@ function PlannerView({
   const [selectedMobileDate, setSelectedMobileDate] = useState(weekStart);
   const [mobilePlannerTool, setMobilePlannerTool] = useState<MobilePlannerTool | null>(null);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
-  const [notesCopyWeeks, setNotesCopyWeeks] = useState(4);
   const [autoPlanStart, setAutoPlanStart] = useState(weekStart);
   const [autoPlanEnd, setAutoPlanEnd] = useState(() =>
     formatDateKey(addDays(new Date(`${weekStart}T12:00:00`), plannerDayCount - 1))
@@ -3985,30 +3922,6 @@ function PlannerView({
           <button className="icon-button" title="Next range" onClick={() => onMoveWeek(1)}>
             <Plus size={18} />
           </button>
-          <button className="icon-text-button" onClick={onDuplicateWeek}>
-            <Copy size={18} />
-            Repeat
-          </button>
-          <div className="copy-notes-control">
-            <select
-              aria-label="Weeks to copy day notes forward"
-              value={notesCopyWeeks}
-              onChange={(event) => setNotesCopyWeeks(Number(event.target.value))}
-            >
-              <option value={1}>1 week</option>
-              <option value={4}>4 weeks</option>
-              <option value={8}>8 weeks</option>
-              <option value={12}>12 weeks</option>
-            </select>
-            <button className="icon-text-button" type="button" onClick={() => onCopyDayNotesForward(notesCopyWeeks)}>
-              <Copy size={18} />
-              Copy notes
-            </button>
-          </div>
-          <button className="ghost-danger" onClick={onClearWeek}>
-            <CircleOff size={18} />
-            Clear
-          </button>
         </div>
       </section>
 
@@ -4057,30 +3970,6 @@ function PlannerView({
                 <button className="icon-text-button" type="button" onClick={() => { onThisWeek(); setMobileOptionsOpen(false); }}>
                   <CalendarDays size={16} />
                   This week
-                </button>
-                <button className="icon-text-button" type="button" onClick={() => { onDuplicateWeek(); setMobileOptionsOpen(false); }}>
-                  <Copy size={16} />
-                  Repeat
-                </button>
-                <button className="ghost-danger" type="button" onClick={() => { onClearWeek(); setMobileOptionsOpen(false); }}>
-                  <CircleOff size={16} />
-                  Clear
-                </button>
-              </div>
-              <div className="copy-notes-control mobile-copy-notes-control">
-                <select
-                  aria-label="Weeks to copy day notes forward"
-                  value={notesCopyWeeks}
-                  onChange={(event) => setNotesCopyWeeks(Number(event.target.value))}
-                >
-                  <option value={1}>1 week</option>
-                  <option value={4}>4 weeks</option>
-                  <option value={8}>8 weeks</option>
-                  <option value={12}>12 weeks</option>
-                </select>
-                <button className="icon-text-button" type="button" onClick={() => onCopyDayNotesForward(notesCopyWeeks)}>
-                  <Copy size={16} />
-                  Copy day notes
                 </button>
               </div>
             </div>
