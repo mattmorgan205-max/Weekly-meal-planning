@@ -114,8 +114,9 @@ import { installAutoAddedRecipePackV3 } from "@/lib/auto-added-recipes-v3";
 import { installAutoAddedLunchPack } from "@/lib/auto-added-lunch-recipes";
 import { installReviewedCookbookPack } from "@/lib/reviewed-cookbook-recipes";
 import { installGreenRoastingTinRecipePack } from "@/lib/green-roasting-tin-recipes";
-import { catalogRecipeForHousehold, recipeForCatalog, shouldReplaceRecipeWithCatalog } from "@/lib/recipe-sync";
+import { catalogRecipeForHousehold, recipeForCatalog, shouldReplaceRecipeWithCatalog, mergeEditedRecipe } from "@/lib/recipe-sync";
 import { getSupabaseClient } from "@/lib/supabase-client";
+import { HouseholdSync, jsonState, same, mergeHousehold, type Checkpoint, type Snapshot, type ConflictDetail } from "@/lib/household-sync";
 import { RecipeFilterControls } from "@/components/recipe-filter-controls";
 import { RecipeTagEditor } from "@/components/recipe-tag-editor";
 import { RecipeTagCleanup } from "@/components/recipe-tag-cleanup";
@@ -1125,6 +1126,7 @@ export default function Home() {
   const [tagInput, setTagInput] = useState("");
   const [tagCleanupOpen, setTagCleanupOpen] = useState(false);
   const [editingRecipeId, setEditingRecipeId] = useState<string | null>(null);
+  const editingRecipeBaseRef = useRef<Recipe | null>(null);
   const [importStatus, setImportStatus] = useState("");
   const [manualBulkItems, setManualBulkItems] = useState("");
   const [cloudEmail, setCloudEmail] = useState("");
@@ -1151,7 +1153,7 @@ export default function Home() {
   useEffect(() => {
     if (!draftStorageReady || draftOwner !== draftScope || activeView !== "add") return;
     if (!draft.title.trim() && !draft.ingredients.some(row => row.name.trim()) && !(importMode === "paste" && importText.trim()) && !(importMode === "url" && importUrl.trim())) return;
-    const record: SavedRecipeDraft = { draft, tagInput, editingRecipeId, importMode, importText, importUrl, photoRawText, savedAt: new Date().toISOString() };
+    const record: SavedRecipeDraft = { draft, tagInput, editingRecipeId, editingBaseRecipe: editingRecipeId ? editingRecipeBaseRef.current ?? undefined : undefined, importMode, importText, importUrl, photoRawText, savedAt: new Date().toISOString() };
     try {
       const records = upsertDraftArchive(readDraftArchive(localStorage.getItem(draftStorageKey(draftScope))), record);
       localStorage.setItem(draftStorageKey(draftScope), JSON.stringify(records)); setDraftArchive(records); setDraftStorageStatus("Draft saved on this device");
@@ -1170,9 +1172,11 @@ export default function Home() {
   const cloudHouseholdIdRef = useRef<string | null>(null);
   const multiHouseholdReadyRef = useRef(false);
   const cloudLoadedRef = useRef(false);
-  const suppressNextCloudSaveRef = useRef(false);
+  const householdSyncRef = useRef<HouseholdSync | null>(null);
+  const connectEpochRef = useRef(0);
+  const [syncConflicts, setSyncConflicts] = useState<ConflictDetail[]>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSavedJsonRef = useRef("");
+
   const migratingRecipeImagesRef = useRef(false);
 
   useEffect(() => {
@@ -1279,6 +1283,7 @@ export default function Home() {
   useEffect(() => {
     stateRef.current = state;
     if (!hasHydratedLocalState) return;
+    householdSyncRef.current?.remember();
     const saved = writeLocalStorage(storageKey, JSON.stringify(state));
     const pendingDraft = pendingSavedDraftRef.current;
     if (saved && pendingDraft?.scope === draftScope && state.recipes.some(recipe => recipe.id === pendingDraft.recipeId)) {
@@ -1300,8 +1305,8 @@ export default function Home() {
 
     let active = true;
 
-    client.auth.getUser().then(({ data }) => {
-      if (!active) return;
+    client.auth.getUser().then(({ data, error }) => {
+      if (!active || error) return;
       void connectCloudUser(data.user);
     });
 
@@ -1315,6 +1320,8 @@ export default function Home() {
     return () => {
       active = false;
       subscription.unsubscribe();
+      connectEpochRef.current++;
+      householdSyncRef.current?.close(); householdSyncRef.current = null;
     };
   }, [hasHydratedLocalState]);
 
@@ -1327,32 +1334,21 @@ export default function Home() {
 
     if (!cloudLoadedRef.current) return;
 
-    if (suppressNextCloudSaveRef.current) {
-      suppressNextCloudSaveRef.current = false;
-      return;
-    }
-
-    if (!navigator.onLine) {
-      setSyncStatus("offline");
-      return;
-    }
-
-    const json = JSON.stringify(state);
-    if (json === lastSavedJsonRef.current) {
-      setSyncStatus("saved");
-      return;
-    }
-
+    if (!navigator.onLine) { setSyncStatus("offline"); return; }
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    setSyncStatus("saving");
-    saveTimerRef.current = setTimeout(() => {
-      void saveCloudSnapshotForUser(cloudHouseholdIdRef.current!, stateRef.current);
-    }, 900);
-
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
+    saveTimerRef.current = setTimeout(() => { void householdSyncRef.current?.sync(); }, 900);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [hasHydratedLocalState, state, supabaseConfigured]);
+
+  useEffect(() => {
+    const sync = () => { if (navigator.onLine && document.visibilityState === "visible") void householdSyncRef.current?.sync(); };
+    const offline = () => { householdSyncRef.current?.remember(); if (cloudHouseholdIdRef.current) setSyncStatus("offline"); };
+    const timer = setInterval(sync, 10000);
+    window.addEventListener("online", sync); window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync); window.addEventListener("offline", offline);
+    window.addEventListener("pagehide", offline);
+    return () => { clearInterval(timer); window.removeEventListener("online", sync); window.removeEventListener("focus", sync); document.removeEventListener("visibilitychange", sync); window.removeEventListener("offline", offline); window.removeEventListener("pagehide", offline); };
+  }, []);
 
   useEffect(() => {
     if (!hasHydratedLocalState || !cloudUser || !cloudLoaded) return;
@@ -1371,11 +1367,16 @@ export default function Home() {
   }, [cloudLoaded, cloudUser, hasHydratedLocalState, state.recipes]);
 
   function updateState(updater: (current: AppState) => AppState) {
-    setState((current) => {
-      const next = updater(current);
-      if (next.guidedShop?.id !== current.guidedShop?.id && next.guidedShop) return migrateGuidedState(next, next.guidedShop.startDate, next.guidedShop.endDate);
-      return next;
-    });
+    if (cloudHouseholdIdRef.current && !householdSyncRef.current?.ready) {
+      setCloudMessage("Wait for the household to load before changing it. Your recipe draft can still be edited.");
+      return;
+    }
+    const current = stateRef.current;
+    let next = updater(current);
+    if (next.guidedShop?.id !== current.guidedShop?.id && next.guidedShop) next = migrateGuidedState(next, next.guidedShop.startDate, next.guidedShop.endDate);
+    stateRef.current = next;
+    setState(next);
+    householdSyncRef.current?.remember();
   }
 
   async function createRecipeImageSignedUrl(path: string) {
@@ -1423,11 +1424,11 @@ export default function Home() {
       blob = await dataUrlToBlob(compressedDataUrl);
     }
 
-    const path = `${snapshotOwnerId}/${recipeId}.jpg`;
+    const path = `${snapshotOwnerId}/${recipeId}-${crypto.randomUUID()}.jpg`;
     const { error } = await client.storage.from(recipeImageBucket).upload(path, blob, {
       cacheControl: "3600",
       contentType: blob.type || "image/jpeg",
-      upsert: true
+      upsert: false
     });
 
     if (error) {
@@ -1444,21 +1445,23 @@ export default function Home() {
 
   async function migrateEmbeddedRecipeImages(recipes: Recipe[]) {
     migratingRecipeImagesRef.current = true;
+    const householdId = cloudHouseholdIdRef.current;
     const migratedPaths = new Map<string, string>();
 
     try {
       for (const recipe of recipes) {
+        if (householdId !== cloudHouseholdIdRef.current) return;
         if (!recipe.mealImageUrl?.startsWith("data:image/")) continue;
         const path = await uploadRecipeImage(recipe.id, recipe.mealImageUrl);
         migratedPaths.set(recipe.id, path);
       }
 
-      if (migratedPaths.size > 0) {
+      if (migratedPaths.size > 0 && householdId === cloudHouseholdIdRef.current) {
         updateState((current) => ({
           ...current,
           recipes: current.recipes.map((recipe) => {
             const mealImagePath = migratedPaths.get(recipe.id);
-            return mealImagePath ? { ...recipe, mealImagePath, mealImageUrl: undefined } : recipe;
+            return mealImagePath && recipe.mealImageUrl === recipes.find(original => original.id === recipe.id)?.mealImageUrl ? { ...recipe, mealImagePath, mealImageUrl: undefined } : recipe;
           })
         }));
         setCloudMessage(`Moved ${migratedPaths.size} saved recipe photo${migratedPaths.size === 1 ? "" : "s"} into private cloud image storage.`);
@@ -1748,30 +1751,10 @@ export default function Home() {
   }
 
   async function syncPublishedRecipe(recipe: Recipe) {
-    const client = getSupabaseClient();
     const householdId = cloudHouseholdIdRef.current;
-    if (!client || !householdId || !multiHouseholdReadyRef.current || isBundledGlobalRecipe(recipe.id)) return;
+    if (!householdId || !multiHouseholdReadyRef.current || isBundledGlobalRecipe(recipe.id)) return;
     if (recipe.catalogSourceHouseholdId && recipe.catalogSourceHouseholdId !== householdId) return;
-
-    if (recipe.visibility !== "global") {
-      const { error } = await client
-        .from("shared_recipe_catalog")
-        .delete()
-        .eq("source_household_id", householdId)
-        .eq("source_recipe_id", recipe.id);
-      if (error) throw new Error(`The shared recipe could not be removed: ${error.message}`);
-      return;
-    }
-
-    const { catalogEntryId: _catalogEntryId, ...recipeData } = recipeForCatalog(recipe);
-    const { error } = await client.from("shared_recipe_catalog").upsert({
-      source_household_id: householdId,
-      source_recipe_id: recipe.id,
-      recipe_data: { ...recipeData, favorite: false, visibility: "global", catalogSourceHouseholdId: householdId },
-      active: true,
-      updated_at: new Date().toISOString()
-    }, { onConflict: "source_household_id,source_recipe_id" });
-    if (error) throw new Error(`The recipe could not be shared to all households: ${error.message}`);
+    await householdSyncRef.current?.sync();
   }
 
   async function updateRecipeReaction(recipeId: string, reaction?: RecipeReaction) {
@@ -1821,6 +1804,8 @@ export default function Home() {
     setImportStatus("Saving recipe...");
 
     try {
+      if (cloudHouseholdIdRef.current && !householdSyncRef.current?.ready) throw new Error("Load your cloud household before saving this recipe. Your draft is retained.");
+      const saveScope = cloudHouseholdIdRef.current;
       const recipeId = editingRecipeId ?? createId("recipe");
       let mealImagePath = draft.mealImagePath;
       let mealImageUrl = draft.mealImageUrl;
@@ -1829,6 +1814,7 @@ export default function Home() {
         mealImagePath = await uploadRecipeImage(recipeId, mealImageUrl);
         mealImageUrl = undefined;
       }
+      if (saveScope !== cloudHouseholdIdRef.current) throw new Error("Household changed while saving. Reopen your draft in its original household.");
 
       const cleanedDraft: ImportDraft = cleanRecipeTags({
         ...draft,
@@ -1860,7 +1846,7 @@ export default function Home() {
         instructions: draft.instructions.map((step) => step.trim()).filter(Boolean)
       });
       const existingRecipe = editingRecipeId ? state.recipes.find((item) => item.id === editingRecipeId) : undefined;
-      const recipe = {
+      let recipe: Recipe = {
         ...draftToRecipe(cleanedDraft),
         id: recipeId,
         favorite: existingRecipe?.favorite ?? cleanedDraft.tags.includes("favorite"),
@@ -1869,6 +1855,14 @@ export default function Home() {
         catalogSourceHouseholdId: existingRecipe?.catalogSourceHouseholdId,
         catalogEntryId: existingRecipe?.catalogEntryId
       };
+
+      if (editingRecipeId && !editingRecipeBaseRef.current) throw new Error("This older draft has no saved comparison version. Save it as a new recipe, or reopen the latest recipe before editing, to avoid overwriting another device's changes.");
+      if (editingRecipeId && editingRecipeBaseRef.current?.id === editingRecipeId) {
+        const currentRecipe = stateRef.current.recipes.find(item => item.id === editingRecipeId);
+        const merged = mergeEditedRecipe(editingRecipeBaseRef.current, recipe, currentRecipe);
+        if (merged.conflicts.length || !merged.recipe) throw new Error(`This recipe changed on another device while you were editing (${merged.conflicts.join(", ") || "recipe removed"}). Your draft is retained. Compare it with the latest recipe before updating it.`);
+        recipe = merged.recipe;
+      }
 
       updateState((current) => {
         if (editingRecipeId) {
@@ -1908,6 +1902,7 @@ export default function Home() {
   }
 
   function editRecipe(recipe: Recipe) {
+    editingRecipeBaseRef.current = structuredClone(recipe);
     const fromAnotherHousehold =
       Boolean(recipe.catalogSourceHouseholdId) && recipe.catalogSourceHouseholdId !== cloudHouseholdIdRef.current;
     applyDraft({
@@ -2661,6 +2656,7 @@ export default function Home() {
     const recipeIndex = new Map(recipes.map((recipe, index) => [recipe.id, index]));
 
     data.forEach((row) => {
+      if (row.source_household_id === cloudHouseholdIdRef.current) return;
       if (!row.recipe_data || typeof row.recipe_data !== "object") return;
       const rawRecipe = row.recipe_data as Recipe;
       if (typeof rawRecipe.id !== "string" || !rawRecipe.title) return;
@@ -2682,36 +2678,12 @@ export default function Home() {
       const catalogOwnsExisting =
         existing.visibility === "global" &&
         (!existing.catalogSourceHouseholdId || existing.catalogSourceHouseholdId === catalogRecipe.catalogSourceHouseholdId);
-      if (catalogOwnsExisting && shouldReplaceRecipeWithCatalog(existing, catalogRecipe, row.updated_at)) {
+      if (catalogOwnsExisting && catalogRecipe.catalogSourceHouseholdId !== cloudHouseholdIdRef.current && shouldReplaceRecipeWithCatalog(existing, catalogRecipe, row.updated_at)) {
         recipes[existingIndex] = catalogRecipeForHousehold(catalogRecipe, existing);
       }
     });
 
     return { ...snapshot, recipes };
-  }
-
-  async function publishExistingGlobalRecipes(householdId: string, recipes: Recipe[]) {
-    const client = getSupabaseClient();
-    if (!client || !multiHouseholdReadyRef.current) return;
-    const publishableRecipes = recipes.filter(
-      (recipe) =>
-        recipe.visibility === "global" &&
-        !isBundledGlobalRecipe(recipe.id) &&
-        (!recipe.catalogSourceHouseholdId || recipe.catalogSourceHouseholdId === householdId)
-    );
-    if (publishableRecipes.length === 0) return;
-
-    const rows = publishableRecipes.map((recipe) => {
-      const { catalogEntryId: _catalogEntryId, ...recipeData } = recipe;
-      return {
-        source_household_id: householdId,
-        source_recipe_id: recipe.id,
-        recipe_data: { ...recipeData, favorite: false, visibility: "global", catalogSourceHouseholdId: householdId },
-        active: true,
-        updated_at: new Date().toISOString()
-      };
-    });
-    await client.from("shared_recipe_catalog").upsert(rows, { onConflict: "source_household_id,source_recipe_id" });
   }
 
   async function loadRecipeCommunityData(householdId: string, recipes: Recipe[]) {
@@ -2728,6 +2700,7 @@ export default function Home() {
         .eq("user_id", accountId),
       client.rpc("get_weekwise_recipe_popularity", { recipe_ids: recipeIds })
     ]);
+    if (accountId !== cloudAccountIdRef.current || householdId !== cloudHouseholdIdRef.current) return;
 
     if (!reactionResult.error && Array.isArray(reactionResult.data)) {
       const reactions = Object.fromEntries(
@@ -2764,6 +2737,11 @@ export default function Home() {
   }
 
   async function connectCloudUser(user: { id: string; email?: string | null } | null) {
+    if (user && cloudAccountIdRef.current === user.id && householdSyncRef.current) { void householdSyncRef.current.sync(); return; }
+    const epoch = ++connectEpochRef.current;
+    householdSyncRef.current?.close(); householdSyncRef.current = null;
+    cloudLoadedRef.current = false; setSyncConflicts([]);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     setCloudUser(user?.email ?? null);
 
     if (!user) {
@@ -2787,7 +2765,22 @@ export default function Home() {
     const { data, error } = client
       ? await client.rpc("bootstrap_weekwise_households")
       : { data: null, error: new Error("Cloud sync is not configured.") };
+    if (epoch !== connectEpochRef.current) return;
     const households = parseCloudHouseholds(data);
+
+    if (error && !("code" in error && error.code === "PGRST202")) {
+      // A network outage is not evidence that the multi-household schema is
+      // missing. Reuse the selected household and its journal while offline.
+      const storedHouseholdId = localStorage.getItem(`${activeHouseholdStoragePrefix}:${user.id}`);
+      if (storedHouseholdId) {
+        multiHouseholdReadyRef.current = true; setMultiHouseholdReady(true);
+        cloudHouseholdIdRef.current = storedHouseholdId; setActiveHouseholdId(storedHouseholdId);
+        await loadCloudSnapshotForUser(storedHouseholdId);
+      } else {
+        setSyncStatus("error"); setCloudMessage("Could not load your households. Reconnect and sign in again; your local data has not been replaced.");
+      }
+      return;
+    }
 
     if (!error && households.length > 0) {
       multiHouseholdReadyRef.current = true;
@@ -2808,6 +2801,7 @@ export default function Home() {
     setMultiHouseholdReady(false);
     setCloudHouseholds([]);
     const snapshotOwnerId = await resolveSnapshotOwnerForUser(user.id, user.email);
+    if (epoch !== connectEpochRef.current) return;
     cloudHouseholdIdRef.current = snapshotOwnerId;
     setActiveHouseholdId(snapshotOwnerId);
     setCloudMessage(
@@ -2835,108 +2829,99 @@ export default function Home() {
     setCloudMessage(error ? error.message : "Check your email for the sign-in link.");
   }
 
-  async function saveCloudSnapshotForUser(userId: string, snapshot: AppState, message?: string) {
-    const client = getSupabaseClient();
-    if (!client) {
-      setSyncStatus("local");
-      return setCloudMessage("Cloud sync is not configured yet.");
-    }
-
-    if (!navigator.onLine) {
-      setSyncStatus("offline");
-      return setCloudMessage("You are offline. Changes are saved locally and will sync when you reconnect.");
-    }
-
-    setSyncStatus("saving");
-    const updatedAt = new Date().toISOString();
-    const { error } = multiHouseholdReadyRef.current
-      ? await client.from("household_app_snapshots").upsert({
-          household_id: userId,
-          app_state: snapshot,
-          updated_at: updatedAt
-        })
-      : await client.from("household_snapshots").upsert({
-          user_id: userId,
-          app_state: snapshot,
-          updated_at: updatedAt
-        });
-
-    if (error) {
-      setSyncStatus("error");
-      setCloudMessage(error.message);
-      return;
-    }
-
-    lastSavedJsonRef.current = JSON.stringify(snapshot);
-    if (multiHouseholdReadyRef.current) {
-      const activeHousehold = cloudHouseholds.find((household) => household.id === userId);
-      if (activeHousehold?.role === "owner" && activeHousehold.name !== snapshot.settings.householdName.trim()) {
-        const nextName = snapshot.settings.householdName.trim() || "Home";
-        const { error: renameError } = await client.from("households").update({ name: nextName }).eq("id", userId);
-        if (!renameError) {
-          setCloudHouseholds((current) => current.map((household) => household.id === userId ? { ...household, name: nextName } : household));
-        }
-      }
-    }
-    setSyncStatus("saved");
-    if (message) setCloudMessage(message);
+  async function saveCloudSnapshotForUser(userId: string, _snapshot: AppState, message?: string) {
+    if (userId !== cloudHouseholdIdRef.current || !householdSyncRef.current) return false;
+    const saved = await householdSyncRef.current.sync();
+    if (saved && message) setCloudMessage(message);
+    return saved;
   }
 
   async function loadCloudSnapshotForUser(userId: string, manual = false, initialState?: AppState) {
     const client = getSupabaseClient();
-    if (!client) return setCloudMessage("Cloud sync is not configured yet.");
-
-    setCloudBusy(manual);
-    setSyncStatus("loading");
-
-    const snapshotTable = multiHouseholdReadyRef.current ? "household_app_snapshots" : "household_snapshots";
-    const idColumn = multiHouseholdReadyRef.current ? "household_id" : "user_id";
-    const { data, error } = await client
-      .from(snapshotTable)
-      .select("app_state, updated_at")
-      .eq(idColumn, userId)
-      .maybeSingle();
-
-    setCloudBusy(false);
-
-    if (error) {
-      setSyncStatus("error");
-      return setCloudMessage(error.message);
-    }
-
-    if (!data?.app_state) {
-      const nextState = await loadCatalogRecipes(initialState ?? stateRef.current);
-      stateRef.current = nextState;
-      suppressNextCloudSaveRef.current = true;
-      setState(nextState);
-      cloudLoadedRef.current = true;
-      setCloudLoaded(true);
-      setCloudMessage("No cloud snapshot yet. This device will create one automatically.");
-      await saveCloudSnapshotForUser(userId, nextState, "Created your cloud household.");
-      await loadRecipeCommunityData(userId, nextState.recipes);
-      return;
-    }
-
-    const legacyHydratedState = hydrateState(data.app_state);
-    if (multiHouseholdReadyRef.current) await publishExistingGlobalRecipes(userId, legacyHydratedState.recipes);
-    const hydratedState = await loadCatalogRecipes(legacyHydratedState);
-    writeLocalStorage(
-      backupStorageKey,
-      JSON.stringify({
-        backedUpAt: new Date().toISOString(),
-        reason: "before-cloud-load",
-        appState: stateRef.current
-      })
-    );
-    suppressNextCloudSaveRef.current = true;
-    cloudLoadedRef.current = true;
-    setCloudLoaded(true);
-    lastSavedJsonRef.current = JSON.stringify(hydratedState);
-    stateRef.current = hydratedState;
-    setState(hydratedState);
-    await loadRecipeCommunityData(userId, hydratedState.recipes);
-    setSyncStatus("saved");
-    setCloudMessage(`Loaded cloud snapshot${data.updated_at ? ` from ${new Date(data.updated_at).toLocaleString()}` : ""}.`);
+    const account = cloudAccountIdRef.current;
+    if (!client || !account) return;
+    if (manual && householdSyncRef.current?.ready) { await householdSyncRef.current.sync(); return; }
+    householdSyncRef.current?.close();
+    cloudLoadedRef.current = false; setCloudLoaded(false); setSyncConflicts([]);
+    setCloudBusy(true); setSyncStatus("loading");
+    const legacy = !multiHouseholdReadyRef.current;
+    const ownerKey = `${account}:${legacy ? "legacy" : "household"}:${userId}`;
+    const previousOwner = localStorage.getItem("weekwise-local-owner");
+    const initial = initialState ?? (!previousOwner || previousOwner === ownerKey ? stateRef.current : hydrateState(seedState()));
+    // Separate journals for each account, household and tab retain offline edits
+    // across reloads without mixing households or clobbering another open tab.
+    let tab = sessionStorage.getItem("weekwise-sync-tab");
+    if (!tab) { tab = crypto.randomUUID(); sessionStorage.setItem("weekwise-sync-tab", tab); }
+    const key = `weekwise-sync-v2:${account}:${legacy ? "legacy" : "household"}:${userId}:${tab}`;
+    let checkpoint: Checkpoint | undefined;
+    let recoveredKey: string | undefined;
+    let recoveredRaw: string | undefined;
+    try {
+      const parseCheckpoint = (raw: string | null): Checkpoint | undefined => {
+        try {
+          const saved = JSON.parse(raw ?? "null");
+          if (saved && Number.isSafeInteger(saved.version) && saved.version >= 0 && saved.local?.recipes && (saved.base === null || saved.base?.recipes)) return saved;
+        } catch { /* A damaged journal must not prevent reading other backups. */ }
+      };
+      checkpoint = parseCheckpoint(localStorage.getItem(key));
+      if (!checkpoint) {
+        const prefix = `weekwise-sync-v2:${ownerKey}:`;
+        const pending = Object.keys(localStorage).filter(name => name.startsWith(prefix)).flatMap(name => {
+          const raw = localStorage.getItem(name), saved = parseCheckpoint(raw);
+          return raw && saved && !same(saved.base, saved.local) ? [{ name, raw, saved }] : [];
+        }).sort((a, b) => (b.saved.savedAt ?? 0) - (a.saved.savedAt ?? 0));
+        if (pending[0]) { checkpoint = pending[0].saved; recoveredKey = pending[0].name; recoveredRaw = pending[0].raw; }
+      }
+    } catch { setCloudMessage("Could not read the sync journal. The previous local backup has been retained."); }
+    writeLocalStorage(backupStorageKey, JSON.stringify({ backedUpAt: new Date().toISOString(), reason: "before-safe-sync", appState: stateRef.current }));
+    const request = async (version?: number, state?: unknown): Promise<Snapshot> => {
+      const catalogRecipes = state && !legacy ? (state as AppState).recipes.filter(recipe => recipe.visibility === "global" && !isBundledGlobalRecipe(recipe.id) && (!recipe.catalogSourceHouseholdId || recipe.catalogSourceHouseholdId === userId)).map(recipeForCatalog) : null;
+      const { data, error } = await client.rpc("sync_weekwise_household", { target_id: userId, legacy, expected_revision: version ?? null, new_state: state ?? null, catalog_recipes: catalogRecipes });
+      if (error) throw new Error(error.code === "PGRST202" ? "Cloud sync needs the conflict-safe-sync.sql migration. Local changes are retained; old unsafe writes are disabled." : error.message);
+      if (!data || !Number.isSafeInteger(data.version) || data.version < 0 || typeof data.applied !== "boolean" || (data.state !== null && (!data.state || typeof data.state !== "object"))) throw new Error("Invalid sync response. Local changes are retained.");
+      return data as Snapshot;
+    };
+    const session = new HouseholdSync({
+      read: () => request(),
+      write: (version, state) => request(version, state),
+      getLocal: () => jsonState(stateRef.current),
+      setLocal: value => {
+        if (householdSyncRef.current !== session) return;
+        const next = hydrateState(value as AppState);
+        if (!same(jsonState(stateRef.current), jsonState(next))) { stateRef.current = next; setState(next); }
+      },
+      persist: value => {
+        if (!writeLocalStorage(key, JSON.stringify({ ...value, savedAt: Date.now() }))) throw new Error("Device storage is full. Keep this tab open until your changes are synced.");
+        if (recoveredKey && same(value.base, value.local) && localStorage.getItem(recoveredKey) === recoveredRaw) {
+          localStorage.removeItem(recoveredKey); recoveredKey = undefined;
+        }
+      },
+      report: (status, message) => {
+        if (householdSyncRef.current !== session) return;
+        setSyncStatus(status === "conflict" ? "error" : !navigator.onLine ? "offline" : status);
+        setSyncConflicts(session.conflict?.details ?? []);
+        if (message) setCloudMessage(message);
+      }
+    });
+    householdSyncRef.current = session;
+    try {
+      await session.open(jsonState(initial), checkpoint);
+      if (householdSyncRef.current !== session) return;
+      writeLocalStorage("weekwise-local-owner", ownerKey);
+      cloudLoadedRef.current = true; setCloudLoaded(true);
+      const beforeCatalog = stateRef.current;
+      const catalogState = await loadCatalogRecipes(beforeCatalog);
+      if (householdSyncRef.current !== session) return;
+      const combined = mergeHousehold(jsonState(beforeCatalog), jsonState(stateRef.current), jsonState(catalogState));
+      if (!combined.conflicts.length && !same(combined.state, jsonState(stateRef.current))) updateState(() => combined.state as AppState);
+      await loadRecipeCommunityData(userId, stateRef.current.recipes);
+    } catch (error) {
+      if (householdSyncRef.current === session) {
+        cloudLoadedRef.current = session.ready; setCloudLoaded(session.ready);
+        setSyncStatus(navigator.onLine ? "error" : "offline");
+        setCloudMessage(error instanceof Error ? error.message : "Unable to load household data.");
+      }
+    } finally { if (householdSyncRef.current === session) setCloudBusy(false); }
   }
 
   async function saveCloudSnapshot() {
@@ -2949,6 +2934,7 @@ export default function Home() {
 
   async function loadCloudSnapshot() {
     const userId = cloudHouseholdIdRef.current;
+    if (!userId && cloudAccountIdRef.current) { await connectCloudUser({ id: cloudAccountIdRef.current, email: cloudUser }); return; }
     if (!userId) return setCloudMessage("Sign in before loading cloud data.");
     await loadCloudSnapshotForUser(userId, true);
   }
@@ -2962,12 +2948,13 @@ export default function Home() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     const previousHouseholdId = cloudHouseholdIdRef.current;
     if (previousHouseholdId && cloudLoadedRef.current) {
-      await saveCloudSnapshotForUser(previousHouseholdId, stateRef.current);
+      if (!await saveCloudSnapshotForUser(previousHouseholdId, stateRef.current)) { setCloudBusy(false); return; }
     }
     writeLocalStorage(
       backupStorageKey,
       JSON.stringify({ backedUpAt: new Date().toISOString(), reason: "before-household-switch", appState: stateRef.current })
     );
+    householdSyncRef.current?.close(); householdSyncRef.current = null;
     cloudHouseholdIdRef.current = householdId;
     setActiveHouseholdId(householdId);
     setRecipeReactions({});
@@ -2977,7 +2964,7 @@ export default function Home() {
     if (cloudAccountIdRef.current) {
       window.localStorage.setItem(`${activeHouseholdStoragePrefix}:${cloudAccountIdRef.current}`, householdId);
     }
-    await loadCloudSnapshotForUser(householdId, false);
+    await loadCloudSnapshotForUser(householdId, false, hydrateState({ ...seedState(), plannedMeals: [], settings: { ...seedState().settings, householdName: nextHousehold.name } }));
     setCloudMessage(`Switched to ${nextHousehold.name}.`);
     setCloudBusy(false);
   }
@@ -2988,6 +2975,7 @@ export default function Home() {
       return setCloudMessage("Run supabase/multi-household.sql before creating another household.");
     }
     setCloudBusy(true);
+    if (householdSyncRef.current && !await householdSyncRef.current.sync()) { setCloudBusy(false); return; }
     const { data, error } = await client.rpc("create_weekwise_household", { household_name: name });
     if (error || typeof data !== "string") {
       setCloudBusy(false);
@@ -3038,6 +3026,8 @@ export default function Home() {
   async function signOutCloud() {
     const client = getSupabaseClient();
     if (!client) return;
+    if (householdSyncRef.current && !await householdSyncRef.current.sync()) { setCloudMessage("Sync or resolve your pending changes before signing out."); return; }
+    householdSyncRef.current?.close(); householdSyncRef.current = null;
     await client.auth.signOut();
     setCloudMessage("Signed out. This device will continue using its local backup.");
   }
@@ -3096,7 +3086,7 @@ export default function Home() {
         </div>
       </aside>
 
-      <section className="workspace">
+      <section className="workspace" inert={Boolean(cloudUser && !cloudLoaded && syncStatus === "loading")} aria-busy={Boolean(cloudUser && !cloudLoaded && syncStatus === "loading")}>
         <header className="topbar">
           <div>
             <p className="eyebrow">{state.settings.householdName}</p>
@@ -3111,6 +3101,26 @@ export default function Home() {
           </div>
         </header>
 
+        {cloudUser && syncStatus === "error" && syncConflicts.length === 0 && <section className="sync-conflict-notice" role="alert">
+          <h2>Changes waiting to sync</h2>
+          <p>{cloudMessage || "Could not reach your household. Your changes remain on this device."}</p>
+          <button className="icon-text-button" disabled={cloudBusy} onClick={() => { void loadCloudSnapshot(); }}><RefreshCw size={16} />Retry sync</button>
+        </section>}
+        {syncConflicts.length > 0 && <section className="sync-conflict-notice" role="alert">
+          <h2>Changes need your choice</h2>
+          <p>Another device edited the same information. Neither version has been discarded. Independent changes will still be combined.</p>
+          <div className="sync-conflict-list">{syncConflicts.map(conflict => <details key={conflict.path} open>
+            <summary>{conflict.path.replace(/\[([^\]]+)\]/g, (_, id: string) => `: ${state.recipes.find(recipe => recipe.id === id)?.title ?? id}`).replace(/\./g, " / ")}</summary>
+            <div className="sync-conflict-versions">
+              <div><strong>This device</strong><pre>{conflict.local === undefined ? "Removed" : typeof conflict.local === "string" ? conflict.local : JSON.stringify(conflict.local, null, 2)}</pre></div>
+              <div><strong>Shared version</strong><pre>{conflict.remote === undefined ? "Removed" : typeof conflict.remote === "string" ? conflict.remote : JSON.stringify(conflict.remote, null, 2)}</pre></div>
+            </div>
+          </details>)}</div>
+          <div className="button-row">
+            <button className="primary-button" onClick={() => { void householdSyncRef.current?.resolve("local"); }}>Keep this device's conflicting changes</button>
+            <button className="text-button" onClick={() => { void householdSyncRef.current?.resolve("remote"); }}>Use shared conflicting changes</button>
+          </div>
+        </section>}
         {activeView === "guided" && state.guidedShop && <>
           <GuidedShopView state={planningState} updateState={updateState} onDates={applyShoppingDates}
             onOpenMeal={(date, slot) => { setMealPicker({ date, slot }); setMealPickerQuery(""); }}
@@ -3210,7 +3220,7 @@ export default function Home() {
                 setDraftStorageStatus("Recipe cleared; no draft retained.");
               }
             }}
-            onRestoreDraft={record => { setDraft(record.draft); setTagInput(record.tagInput); setEditingRecipeId(record.editingRecipeId && state.recipes.some(recipe => recipe.id === record.editingRecipeId) ? record.editingRecipeId : null); setImportMode(record.importMode); setImportText(record.importText); setImportUrl(record.importUrl); setPhotoRawText(record.photoRawText); setPhotoPreview(record.draft.photoDataUrl ?? ""); }}
+            onRestoreDraft={record => { editingRecipeBaseRef.current = record.editingBaseRecipe ?? null; setDraft(record.draft); setTagInput(record.tagInput); setEditingRecipeId(record.editingRecipeId && state.recipes.some(recipe => recipe.id === record.editingRecipeId) ? record.editingRecipeId : null); setImportMode(record.importMode); setImportText(record.importText); setImportUrl(record.importUrl); setPhotoRawText(record.photoRawText); setPhotoPreview(record.draft.photoDataUrl ?? ""); }}
             importMode={importMode}
             setImportMode={setImportMode}
             importText={importText}
@@ -3287,7 +3297,7 @@ export default function Home() {
             onCreateHousehold={createCloudHousehold}
             onInviteHouseholdMember={inviteCloudHouseholdMember}
             onSignOut={signOutCloud}
-            onResetDemo={() => setState(hydrateState(seedState()))}
+            onResetDemo={() => updateState(() => hydrateState(seedState()))}
           />
           </>
         )}

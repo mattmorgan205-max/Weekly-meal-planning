@@ -1,5 +1,13 @@
 import type { Recipe } from "./domain";
-import { canonicalTag, householdTagNames, preferenceTags } from "./recipe-tags";
+import { canonicalTag, householdTagNames, preferenceTags, cleanRecipeTags } from "./recipe-tags";
+import { jsonState, mergeHousehold } from "./household-sync";
+
+export function mergeEditedRecipe(base: Recipe, edited: Recipe, latest?: Recipe) {
+  // Derived tags must be normalised on all sides: changing a title can change
+  // automatic tags even when neither person has edited the tags themselves.
+  const merged = mergeHousehold(jsonState(cleanRecipeTags(base)), jsonState(cleanRecipeTags(edited)), latest ? jsonState(cleanRecipeTags(latest)) : undefined);
+  return { conflicts: merged.conflicts, recipe: merged.state ? cleanRecipeTags(merged.state as Recipe) : undefined };
+}
 
 export function recipeForCatalog(recipe: Recipe): Recipe {
   return { ...recipe, favorite: false, householdTags: [],

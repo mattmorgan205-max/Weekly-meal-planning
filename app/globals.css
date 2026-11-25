@@ -3365,6 +3365,15 @@ h3 {
 
 }
 
+.sync-conflict-notice { margin-bottom: 20px; padding: 16px; border: 1px solid #b07520; background: #fff9ea; color: #302817; }
+.sync-conflict-notice h2 { font-size: 18px; margin: 0 0 8px; }
+.sync-conflict-list { max-height: 320px; overflow: auto; margin: 12px 0; }
+.sync-conflict-list details { border-top: 1px solid #dbcbaa; padding: 10px 0; }
+.sync-conflict-list summary { overflow-wrap: anywhere; }
+.sync-conflict-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 10px; }
+.sync-conflict-versions pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 160px; overflow: auto; }
+.sync-conflict-notice .button-row { flex-wrap: wrap; }
+@media (max-width: 600px) { .sync-conflict-versions { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
 @media print {
   .sidebar,
   .topbar,

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Recipe } from "../lib/domain";
-import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog } from "../lib/recipe-sync";
+import { catalogRecipeForHousehold, shouldReplaceRecipeWithCatalog, mergeEditedRecipe } from "../lib/recipe-sync";
+import { cleanRecipeTags } from "../lib/recipe-tags";
 
 function recipe(overrides: Partial<Recipe> = {}): Recipe {
   return {
@@ -73,4 +74,21 @@ test("new catalogue imports do not inherit the publishing household's favourite"
   const catalog = recipe({ favorite: true });
   assert.equal(catalogRecipeForHousehold(catalog).favorite, false);
   assert.equal(catalog.favorite, true);
+});
+
+test("an open editor merges servings with a remote title and its automatic tags", () => {
+  const base = recipe();
+  const local = cleanRecipeTags({ ...base, servings: 7, updatedAt: "2026-10-01" });
+  const remote = cleanRecipeTags({ ...base, title: "Black bean soup", updatedAt: "2026-10-02" });
+  const merged = mergeEditedRecipe(base, local, remote);
+  assert.deepEqual(merged.conflicts, []);
+  assert.equal(merged.recipe?.title, "Black bean soup");
+  assert.equal(merged.recipe?.servings, 7);
+  assert.ok(merged.recipe?.tags.includes("soup / stew"));
+});
+
+test("an open editor cannot overwrite a concurrently changed title or deleted recipe", () => {
+  const base = recipe(), edited = recipe({ title: "Local" });
+  assert.ok(mergeEditedRecipe(base, edited, recipe({ title: "Shared" })).conflicts.includes("title"));
+  assert.ok(mergeEditedRecipe(base, edited).conflicts.length);
 });

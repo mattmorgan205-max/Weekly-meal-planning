@@ -86,7 +86,7 @@ export function reviewRecipe(draft: ImportDraft, recipes: Recipe[] = [], editing
   return issues.filter(issue => issue.blocking || draft.reviewAcknowledgements?.[issue.key] !== reviewIssueSignature(draft, issue));
 }
 
-export type SavedRecipeDraft = { draft: ImportDraft; editingRecipeId: string | null; tagInput: string; importMode: ImportDraft["importedFrom"]; importText: string; importUrl: string; photoRawText: string; savedAt: string };
+export type SavedRecipeDraft = { draft: ImportDraft; editingRecipeId: string | null; editingBaseRecipe?: Recipe; tagInput: string; importMode: ImportDraft["importedFrom"]; importText: string; importUrl: string; photoRawText: string; savedAt: string };
 export const draftStorageKey = (scope: string) => `weekwise-recipe-drafts-v1:${encodeURIComponent(scope)}`;
 export function readDraftArchive(value: string | null): SavedRecipeDraft[] {
   if (!value) return [];
