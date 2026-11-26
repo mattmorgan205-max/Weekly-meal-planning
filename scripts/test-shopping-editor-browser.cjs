@@ -19,6 +19,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
         { id: "test3", name: "carrot", quantity: 2, unit: "item", category: "Produce" }
       ];
       state.plannedMeals = [{ id: "test", date: state.guidedShop.startDate, recipeId: recipe.id, peopleCount: recipe.servings, slot: "dinner" }];
+      state.manualShoppingItems = [{ id: "extra", name: "yoghrt", canonicalName: "yoghrt", displayQuantity: "50 g",
+        quantity: 50, unit: "g", category: "Dairy & Eggs", shoppingRangeKey: state.guidedShop.startDate + "__" + state.guidedShop.endDate,
+        manual: true, checked: false, sourceMeals: ["Manual"] }];
       localStorage.setItem(key, JSON.stringify(state));
     });
     await page.reload();
@@ -59,6 +62,20 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     assert.equal(await editor.getByLabel("Amount", { exact: true }).count(), 2);
     await page.keyboard.press("Escape");
     await editor.waitFor({ state: "detached" });
+    await page.locator(".supply-row").getByRole("button", { name: "Edit yoghrt", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Merge with..." }).click();
+    const picker = page.getByLabel("Merge with", { exact: true });
+    const target = picker.locator("option").filter({ hasText: "750 g" });
+    await picker.selectOption(await target.getAttribute("value"));
+    await page.getByRole("button", { name: "Merge and remember" }).click();
+    await page.locator(".supply-row").getByText("800 g", { exact: true }).waitFor();
+    await page.locator('[data-view="shopping"]').click();
+    await page.reload();
+    await buy.getByText("800 g", { exact: true }).waitFor();
+    await buy.locator(".shopping-item").filter({ hasText: "800 g" }).getByTitle(/^Edit /).click();
+    await page.getByRole("button", { name: /^Forget yoghrt/ }).click();
+    await buy.getByText("750 g", { exact: true }).waitFor();
+    await buy.getByTitle("Edit yoghrt", { exact: true }).waitFor();
     assert.deepEqual(failures, []);
     console.log("Shopping edit, merge, cross-view persistence, tab reloads and responsive buy list passed.");
   } finally { await browser.close(); }

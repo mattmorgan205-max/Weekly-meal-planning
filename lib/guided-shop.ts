@@ -6,6 +6,7 @@ import {
 import { snackShoppingMeals } from "./snacks";
 import { normalizeDinerColors } from "./diner-colors";
 import { preferenceTags } from "./recipe-tags";
+import { compatibleMatch, matchName, matchParts, projectShoppingMatches, rememberMatch } from "./shopping-matches";
 
 export const guidedSteps = ["Dates & diners", "Meals", "Snacks and extras", "Check supplies", "Review & shop"];
 export const shopRangeKey = (shop: Pick<GuidedShop, "startDate" | "endDate">) => `${shop.startDate}__${shop.endDate}`;
@@ -145,7 +146,8 @@ function shoppingItemsForMeals(state: AppState, shop: GuidedShop, meals: Planned
 export function requiredShopItems(state: AppState, shop: GuidedShop) {
   const dinnersIncluded = state.plannedMeals.filter(meal => meal.date >= shop.startDate && meal.date <= shop.endDate
     && ((meal.slot !== "dinner" && meal.slot !== "lunch") || dinnerNeedsMeal(attendanceForSlot(state, meal.date, meal.slot))));
-  return shoppingItemsForMeals(state, shop, [...dinnersIncluded, ...snackShoppingMeals(shop)]);
+  const items = shoppingItemsForMeals(state, shop, [...dinnersIncluded, ...snackShoppingMeals(shop)]);
+  return projectShoppingMatches(items, state.settings, state.hiddenShoppingItems, shopRangeKey(shop) + "__");
 }
 
 // This is a projection, not a second shopping list: only snack contributions and manual extras.
@@ -169,16 +171,54 @@ export function correctShoppingIngredients(state: AppState, range: string, sourc
   const after = requiredShopItems(next, shop);
   const visible = new Set(after.flatMap(row => (row.ingredientSources ?? []).map(s => s.key)));
   if (Object.keys(edits).some(key => !visible.has(key))) throw new Error("The matching item is hidden. Restore hidden items before merging.");
+  return reconcileShopEdit(next, shop, range, before, after);
+}
 
-  const oldRows = new Map(before.map(row => [row.id, requirementSignature(row)]));
-  const newRows = new Map(after.map(row => [row.id, requirementSignature(row)]));
-  const supplyChecks = { ...shop.supplyChecks }, basketChecks = { ...shop.basketChecks }, statuses = { ...state.asdaShoppingStatus };
+function matchVersion(row: ShoppingListItem) {
+  return JSON.stringify([requirementSignature(row), matchParts(row).map(part => [part.id, requirementSignature(part)]).sort()]);
+}
+
+export function changeShoppingMatch(state: AppState, range: string, source: ShoppingListItem, target: ShoppingListItem | string): AppState {
+  const shop = state.guidedShop;
+  if (!shop || shopRangeKey(shop) !== range) throw new Error("Shop dates changed. Reopen the ingredient.");
+  const before = requiredShopItems(state, shop);
+  function findCurrent(snapshot: ShoppingListItem) {
+    const row = before.find(item => item.id === snapshot.id || matchParts(item).some(p => p.id === snapshot.id));
+    const part = row?.id === snapshot.id ? row : row && matchParts(row).find(p => p.id === snapshot.id);
+    if (!row || !part || matchVersion(part) !== matchVersion(snapshot)) throw new Error("The list changed. Reopen the ingredient and choose again.");
+    return row;
+  }
+  const from = findCurrent(source), rules = { ...state.settings.shoppingMatches };
+  let shoppingMatches = rules;
+  if (typeof target === "string") {
+    if (!Object.hasOwn(rules, target) || rules[target] !== matchName(from)) throw new Error("This match has already changed.");
+    delete shoppingMatches[target];
+  } else {
+    const to = findCurrent(target);
+    if (from.id === to.id) throw new Error("These ingredients are already together.");
+    if (!compatibleMatch(from, to, state.settings)) throw new Error("Edit the amounts and units first. These quantities cannot be added safely.");
+    shoppingMatches = rememberMatch(rules, matchName(from), matchName(to));
+  }
+  const next = { ...state, settings: { ...state.settings, shoppingMatches } };
+  const after = requiredShopItems(next, shop);
+  if (typeof target !== "string" && !after.some(row =>
+    [...matchParts(from), ...matchParts(target)].every(part => matchParts(row).some(p => p.id === part.id)))) {
+    throw new Error("The combined row is hidden. Restore hidden items before merging.");
+  }
+  return reconcileShopEdit(next, shop, range, before, after);
+}
+
+function reconcileShopEdit(next: AppState, shop: GuidedShop, range: string, before: ShoppingListItem[], after: ShoppingListItem[]) {
+  const oldRows = new Map(before.map(row => [row.id, matchVersion(row)]));
+  const newRows = new Map(after.map(row => [row.id, matchVersion(row)]));
+  const newAmounts = new Map(after.map(row => [row.id, requirementSignature(row)]));
+  const supplyChecks = { ...shop.supplyChecks }, basketChecks = { ...shop.basketChecks }, statuses = { ...next.asdaShoppingStatus };
   for (const id of new Set([...oldRows.keys(), ...newRows.keys()])) {
     if (oldRows.get(id) === newRows.get(id)) continue;
     delete basketChecks[id];
     delete statuses[`asda__${range}__${id}`];
     // Keep a changed total's supply check as a review prompt, never as already covered.
-    if (!oldRows.has(id) || !newRows.has(id)) delete supplyChecks[id];
+    if (!oldRows.has(id) || !newRows.has(id) || supplyChecks[id]?.requirement === newAmounts.get(id)) delete supplyChecks[id];
   }
   return { ...next, asdaShoppingStatus: statuses, guidedShop: { ...shop, supplyChecks, basketChecks } };
 }

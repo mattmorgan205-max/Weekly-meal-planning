@@ -22,6 +22,7 @@ import {
   Loader2,
   MoreHorizontal,
   Minus,
+  Merge,
   Move,
   Pencil,
   Plus,
@@ -137,7 +138,8 @@ import { completedTotalMinutes } from "@/lib/domain";
 import { actionableImportWarnings } from "@/lib/recipe-review";
 import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
 import { ShoppingIngredientEditor } from "@/components/shopping-ingredient-editor";
-import { correctShoppingIngredients } from "@/lib/guided-shop";
+import { changeShoppingMatch, correctShoppingIngredients } from "@/lib/guided-shop";
+import { ShoppingMatchDialog } from "@/components/shopping-match-dialog";
 import { WeeklyDinerSettings } from "@/components/weekly-diner-settings";
 import { planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, weekdayForDate } from "@/lib/guided-shop";
 
@@ -1101,7 +1103,7 @@ export default function Home() {
   const [state, setState] = useState<AppState>(() => seedState());
   const [hasHydratedLocalState, setHasHydratedLocalState] = useState(false);
   const [activeView, setActiveView] = useState<View>("planner");
-  const [editingShopItem, setEditingShopItem] = useState<{ item: ShoppingListItem; range: string } | null>(null);
+  const [editingShopItem, setEditingShopItem] = useState<{ item: ShoppingListItem; range: string; merge?: boolean } | null>(null);
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem("weekwise.activeView");
@@ -3047,6 +3049,12 @@ export default function Home() {
   }
 
   const editShopItem = (item: ShoppingListItem) => setEditingShopItem({ item, range: shoppingRangeKey });
+  const openMerge = () => {
+    if (!editingShopItem) return;
+    const id = editingShopItem.item.id;
+    const full = requiredShoppingItems.find(row => row.id === id || row.matchedParts?.some(part => part.id === id));
+    setEditingShopItem({ ...editingShopItem, item: full ?? editingShopItem.item, merge: true });
+  };
   const supplies = <SupplyCheckList items={requiredShoppingItems} shop={activeShop} onChange={updateSupply} onEdit={editShopItem}
     renderCategory={item => <SupplyCategoryControl item={item} onChange={category => updateShoppingItemCategory(item, category)} />} />;
   const reviewActions = <ShopReviewActions items={requiredShoppingItems} shop={activeShop} onFinish={completeShoppingList}
@@ -3073,10 +3081,15 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      {editingShopItem && (editingShopItem.item.manual ? <ManualShoppingItemModal item={editingShopItem.item}
+      {editingShopItem && (editingShopItem.merge || editingShopItem.item.matchedParts ? <ShoppingMatchDialog source={editingShopItem.item}
+        items={requiredShoppingItems} settings={state.settings} onClose={() => setEditingShopItem(null)} onEdit={editShopItem}
+        onChange={choice => {
+          if (cloudHouseholdIdRef.current && !householdSyncRef.current?.ready) throw new Error("Wait for the household to finish loading.");
+          updateState(current => changeShoppingMatch(current, editingShopItem.range, editingShopItem.item, choice));
+        }} /> : editingShopItem.item.manual ? <ManualShoppingItemModal item={editingShopItem.item} onMerge={openMerge}
         onClose={() => setEditingShopItem(null)} onSave={patch => { updateManualShoppingItem(editingShopItem.item.id, patch); setEditingShopItem(null); }}
         onDelete={() => { deleteShoppingItem(editingShopItem.item); setEditingShopItem(null); }} />
-        : <ShoppingIngredientEditor item={editingShopItem.item} names={requiredShoppingItems.filter(row => !row.manual).map(row => row.name)}
+        : <ShoppingIngredientEditor item={editingShopItem.item} onMerge={openMerge} names={requiredShoppingItems.filter(row => !row.manual).map(row => row.name)}
           onClose={() => setEditingShopItem(null)} onSave={edits => {
             if (cloudHouseholdIdRef.current && !householdSyncRef.current?.ready) throw new Error("Wait for the household to finish loading.");
             updateState(current => correctShoppingIngredients(current, editingShopItem.range, editingShopItem.item.ingredientSources ?? [], edits));
@@ -5942,14 +5955,8 @@ function ShoppingView({
   const dueIds = new Set(dueEssentials.map(item => item.id));
   const visibleEssentials = showAllEssentials ? [...dueEssentials, ...oldestShoppingAddFirst(occasionalItemsForProfile(settings, commonExtraProfileKey).filter(item => !dueIds.has(item.id)))] : dueEssentials;
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const manualItems = requiredItems
-    .filter((item) => item.manual)
-    .sort((first, second) => {
-      const categoryDifference = groceryCategories.indexOf(first.category) - groceryCategories.indexOf(second.category);
-      return categoryDifference || first.name.localeCompare(second.name);
-    });
+  const manualItemCount = addedExtras.filter(item => item.manual).length;
   const hasExtra = (name: string) => shoppingListIncludesExtra(requiredItems, name, settings.ingredientAliases);
-  const manualItemCount = manualItems.length;
   const checkedItemCount = items.filter((item) => item.checked).length;
   const asdaAddedCount = items.filter((item) => asdaShoppingStatus[item.id] === "added").length;
   const pendingAsdaItems = exportBlocked ? [] : itemsForAsdaHelper(resolveShop(requiredItems, shop).flatMap(row => row.buy ? [row.buy] : []), asdaShoppingStatus);
@@ -6527,6 +6534,7 @@ function ShoppingCategoryPicker({ item, open, onOpen, onClose, onChange, onDetai
 
 function ManualShoppingItemModal({
   item,
+  onMerge,
   onClose,
   onSave,
   onDelete
@@ -6534,6 +6542,7 @@ function ManualShoppingItemModal({
   item: ShoppingListItem;
   onClose: () => void;
   onSave: (patch: Partial<ShoppingListItem>) => void;
+  onMerge: () => void;
   onDelete: () => void;
 }) {
   const [name, setName] = useState(item.name);
@@ -6588,6 +6597,7 @@ function ManualShoppingItemModal({
         </div>
 
         <div className="button-row">
+          <button className="icon-text-button" type="button" onClick={onMerge} disabled={name !== item.name || quantity !== item.displayQuantity || category !== item.category} title="Merge with another shopping ingredient (save any edits first)"><Merge size={16} />Merge with...</button>
           <button className="primary-button" type="submit">
             <Check size={18} />
             Save

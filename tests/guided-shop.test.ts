@@ -6,7 +6,7 @@ import { buildAutoDinnerPlan } from "../lib/dinner-planner";
 import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange, mealCalendarDays, mealFromDinnerEntry, mealSource, placeGuidedMeal, removeDinnerPreviewEntry } from "../lib/guided-planning";
 import { assignSnackGroup, defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 import { copyAttendanceToDates } from "../lib/guided-shop";
-import { correctShoppingIngredients, shopRangeKey } from "../lib/guided-shop";
+import { changeShoppingMatch, correctShoppingIngredients, shopRangeKey } from "../lib/guided-shop";
 import { convertShoppingAmount } from "../lib/domain";
 import { allDinersSelected, dayNoteForDate, planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, toggleAllDiners, weekdayForDate } from "../lib/guided-shop";
 import { dinerColor, dinerPalette, dinerTextColor, nextDinerColor, normalizeDinerColors } from "../lib/diner-colors";
@@ -57,6 +57,51 @@ const item = (id = "carrots", quantity: number | undefined = 600, unit = "g"): S
 const recipe = (id: string, restricted = false): Recipe => ({ id, title: id, servings: 2, mealTypes: ["dinner"], prepMinutes: 5, cookMinutes: 15, tags: restricted ? ["Not Sophia friendly"] : [], favorite: false, ingredients: [{ id: `${id}-carrot`, name: "carrots", quantity: 600, unit: "g", category: "Produce" }], instructions: ["Cook"], createdAt: "2026-11-01", updatedAt: "2026-11-01" });
 const meal = (id = "m", peopleCount = 2): PlannedMeal => ({ id, date: start, slot: "dinner", recipeId: "r", peopleCount, extraSideIngredients: [{ id: "side", name: "rice", quantity: 200, unit: "g", category: "Pantry", role: "side" }] });
 function state(): AppState { const initial = seedState(); return migrateGuidedState({ ...initial, recipes: [recipe("r")], plannedMeals: [], settings: { ...initial.settings, diners }, manualShoppingItems: [], shoppingChecks: {}, asdaShoppingStatus: {} }, start, end); }
+
+test("explicit household match combines generated and manual amounts without changing extras history; forget splits again", () => {
+  const s = state(), shop = s.guidedShop!, range = shopRangeKey(shop);
+  s.plannedMeals = [meal()];
+  s.manualShoppingItems = [{ ...item("carrott", 0.25, "kg"), id: "extra", manual: true, shoppingRangeKey: range }];
+  const before = requiredShopItems(s, shop), from = before.find(row => row.manual)!, to = before.find(row => row.name === "carrot")!;
+  shop.basketChecks[to.id] = requirementSignature(to);
+  shop.supplyChecks[from.id] = { requirement: requirementSignature(from), status: "enough" };
+  const next = changeShoppingMatch(s, range, from, to);
+  const merged = requiredShopItems(next, next.guidedShop!).find(row => row.name === "carrot")!;
+  assert.equal(merged.quantity, 850);
+  assert.equal(merged.matchedParts?.length, 2);
+  assert.equal(resolveSupply(merged, next.guidedShop!).buy?.checked, false);
+  assert.deepEqual(next.guidedShop!.basketChecks, {});
+  assert.deepEqual(next.guidedShop!.supplyChecks, {});
+  assert.equal(next.manualShoppingItems, s.manualShoppingItems);
+  assert.equal(addedShopExtras(next, shop)[0].id, "extra");
+  const counted = recordCompletedShoppingList(next.settings, "local", "test", [merged]);
+  assert.equal(commonExtraUsageForProfile(counted, "local", "carrott")?.count, 1);
+  const separate = changeShoppingMatch(next, range, merged, "carrott");
+  assert.deepEqual(requiredShopItems(separate, shop), before);
+  assert.throws(() => changeShoppingMatch(s, range, from, { ...to, quantity: 100 }), /changed/);
+});
+
+test("remembered matches work with new shops and new recipe IDs, without guessing units or weight basis", () => {
+  const s = state(), shop = s.guidedShop!, range = shopRangeKey(shop);
+  s.plannedMeals = [meal()];
+  const base = s.recipes[0].ingredients[0];
+  s.recipes[0].ingredients.push({ ...base, id: "typo", name: "carrott" });
+  const [to, from] = ["carrot", "carrott"].map(name => requiredShopItems(s, shop).find(row => row.name === name)!);
+  const saved = changeShoppingMatch(s, range, from, to);
+  const future = JSON.parse(JSON.stringify(saved)) as AppState;
+  future.guidedShop = createShop("2026-12-07", "2026-12-13");
+  const other = recipe("other");
+  other.ingredients.push({ ...base, id: "a", name: "carrott", canonicalName: "carrott", quantity: 150 },
+    { ...base, id: "b", name: "carrott", unit: "ml", quantity: 10 },
+    { ...base, id: "c", name: "carrott", weightBasis: "drained", quantity: 50 });
+  future.recipes = [other];
+  future.plannedMeals = [{ ...meal(), recipeId: other.id, date: future.guidedShop.startDate }];
+  const carrots = requiredShopItems(future, future.guidedShop).filter(row => row.name === "carrot");
+  assert.deepEqual(carrots.map(row => row.quantity).sort((a,b) => a! - b!), [10, 50, 750]);
+  assert.throws(() => changeShoppingMatch(future, shopRangeKey(future.guidedShop!), carrots[0], carrots[1]), /cannot be added safely/);
+  assert.equal(s.settings.shoppingMatches, undefined);
+  assert.equal(other.ingredients[1].name, "carrott");
+});
 
 test("legacy diners gain distinct persistent colours and existing choices survive migration", () => {
   const current = state();

@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, X } from "lucide-react";
+import { Check, Merge, X } from "lucide-react";
 import { canonicalizeIngredientName, convertShoppingAmount, normalizeIngredientAliasKey, standardIngredientUnits, type ShoppingCorrection, type ShoppingListItem } from "@/lib/domain";
 
-export function ShoppingIngredientEditor({ item, names, onSave, onClose }: {
+export function ShoppingIngredientEditor({ item, names, onSave, onClose, onMerge }: {
   item: ShoppingListItem;
   names: string[];
   onSave: (edits: Record<string, ShoppingCorrection>) => void;
   onClose: () => void;
+  onMerge: () => void;
 }) {
   const sources = item.ingredientSources ?? [];
   const dialog = useRef<HTMLDialogElement>(null);
@@ -40,6 +41,8 @@ export function ShoppingIngredientEditor({ item, names, onSave, onClose }: {
         <button type="button" className="icon-button" aria-label="Close ingredient editor" onClick={onClose}><X size={18} /></button></div>
       <label>Shopping name<input required autoFocus list="shopping-existing-names" value={name} onChange={event => setName(event.target.value)} /></label>
       <datalist id="shopping-existing-names">{[...new Set(names)].sort().map(n => <option key={n} value={n} />)}</datalist>
+      <button type="button" className="icon-text-button" onClick={onMerge} title="Merge with another shopping ingredient (save any edits first)"
+        disabled={name !== item.name || rows.some((r, i) => r.unit !== sources[i].unit || r.amount !== (sources[i].quantity?.toString() ?? ""))}><Merge size={16} />Merge with...</button>
       {sources.map((source, i) => <fieldset key={source.key}><legend>{source.label}</legend>
         <div className="form-grid"><label>Amount<input type="number" min="0" step="any" value={rows[i].amount}
           required={source.quantity !== undefined && rows[i].unit !== source.unit}

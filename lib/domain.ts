@@ -160,6 +160,7 @@ export type ShoppingListItem = {
   sourceRecipeIds?: string[];
   sourceIngredients?: string[];
   ingredientSources?: ShoppingIngredientSource[];
+  matchedParts?: ShoppingListItem[];
   conversionNotes?: string[];
   mergeWarnings?: string[];
   mergeSuggestion?: {
@@ -214,6 +215,7 @@ export type AppSettings = {
   shoppingNameVariants: Record<string, string[]>;
   shoppingCategoryOverrides?: Record<string, GroceryCategory>;
   shoppingCorrections?: Record<string, ShoppingCorrection>;
+  shoppingMatches?: Record<string, string>;
   commonExtraItems: string[];
   commonExtraProfiles: Record<string, CommonExtraProfile>;
   splitShoppingItems: Record<string, boolean>;
@@ -471,14 +473,15 @@ export function recordCompletedShoppingList(
   settings: AppSettings,
   profileKey: string,
   rangeKey: string,
-  items: Pick<ShoppingListItem, "name" | "manual">[],
+  items: Pick<ShoppingListItem, "name" | "manual" | "matchedParts">[],
   completedAt = new Date().toISOString()
 ) {
   if (!rangeKey) return settings;
   const profile = commonExtraProfile(settings, profileKey);
   const previous = profile.completedShops?.[rangeKey];
-  const extraKeys = uniqueCommonExtraItems(items.filter(item => item.manual).map(item => item.name)).map(commonExtraKey).sort();
-  const itemKeys = uniqueCommonExtraItems(items.map(item => item.name)).map(commonExtraKey).sort();
+  const parts = items.flatMap(item => item.matchedParts ?? [item]);
+  const extraKeys = uniqueCommonExtraItems(parts.filter(item => item.manual).map(item => item.name)).map(commonExtraKey).sort();
+  const itemKeys = uniqueCommonExtraItems([...items, ...parts].map(item => item.name)).map(commonExtraKey).sort();
   if (previous && JSON.stringify([...previous.extraKeys].sort()) === JSON.stringify(extraKeys) && JSON.stringify([...previous.itemKeys].sort()) === JSON.stringify(itemKeys)) return settings;
   const records = { ...profile.completedShops };
   const baseline = profile.usageBaseline ?? Object.fromEntries(Object.entries(profile.usage).flatMap(([key, usage]) => {
@@ -493,7 +496,7 @@ export function recordCompletedShoppingList(
     (record.itemKeys.map(itemKey => profile.usage[itemKey]?.lastAddedAt ?? occasional.find(item => commonExtraKey(item.name) === itemKey)?.lastAddedAt ?? "").sort().at(-1) || completedAt) };
   records[rangeKey] = { extraKeys, itemKeys, includedAt: records[rangeKey]?.includedAt || completedAt };
   const usage: Record<string, CommonExtraUsage> = Object.fromEntries(Object.entries(baseline).map(([key, value]) => [key, { ...value }]));
-  const names = Object.fromEntries(items.map(item => [commonExtraKey(item.name), item.name.trim()]));
+  const names = Object.fromEntries([...items, ...parts].map(item => [commonExtraKey(item.name), item.name.trim()]));
   for (const record of Object.values(records)) for (const key of record.extraKeys) {
     const current = usage[key];
     usage[key] = { name: names[key] || profile.usage[key]?.name || key, count: (current?.count ?? 0) + 1,
@@ -1454,7 +1457,7 @@ function isStaple(name: string, staples: string[]) {
   return staples.some((staple) => normalName.includes(normalizeIngredientName(staple)));
 }
 
-function shoppingConversion(unit: string, system?: Ingredient["measurementSystem"]) {
+export function shoppingConversion(unit: string, system?: Ingredient["measurementSystem"]) {
   if (!["cup", "fl oz", "pt", "qt", "gal", "tsp", "tbsp"].includes(unit)) return unitConversions[unit];
   if (!system) return ["tsp", "tbsp"].includes(unit) ? unitConversions[unit] : undefined;
   const factors = system === "us" ? { cup: 236.588, "fl oz": 29.5735, pt: 473.176, qt: 946.353, gal: 3785.41, tsp: 4.92892, tbsp: 14.7868 }
