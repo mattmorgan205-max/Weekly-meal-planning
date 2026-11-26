@@ -136,6 +136,8 @@ import { draftStorageKey, readDraftArchive, upsertDraftArchive, reviewRecipe, ac
 import { completedTotalMinutes } from "@/lib/domain";
 import { actionableImportWarnings } from "@/lib/recipe-review";
 import { RecipeSaveDialog } from "@/components/recipe-save-dialog";
+import { ShoppingIngredientEditor } from "@/components/shopping-ingredient-editor";
+import { correctShoppingIngredients } from "@/lib/guided-shop";
 import { WeeklyDinerSettings } from "@/components/weekly-diner-settings";
 import { planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, weekdayForDate } from "@/lib/guided-shop";
 
@@ -1099,6 +1101,18 @@ export default function Home() {
   const [state, setState] = useState<AppState>(() => seedState());
   const [hasHydratedLocalState, setHasHydratedLocalState] = useState(false);
   const [activeView, setActiveView] = useState<View>("planner");
+  const [editingShopItem, setEditingShopItem] = useState<{ item: ShoppingListItem; range: string } | null>(null);
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("weekwise.activeView");
+      if (saved === "guided" || saved === "planner" || saved === "shopping" || saved === "recipes" || saved === "add" || saved === "settings") setActiveView(saved);
+    } catch { /* Storage may be unavailable in private browsing. */ }
+  }, []);
+  useEffect(() => {
+    if (hasHydratedLocalState) {
+      try { sessionStorage.setItem("weekwise.activeView", activeView); } catch { /* Navigation still works without storage. */ }
+    }
+  }, [activeView, hasHydratedLocalState]);
   const [weekStart, setWeekStart] = useState(() => formatDateKey(startOfWeek(new Date())));
   const [plannerDayCount, setPlannerDayCount] = useState<7 | 14>(14);
   const activeShop = state.guidedShop ?? createShop(formatDateKey(startOfWeek(new Date())), formatDateKey(addDays(startOfWeek(new Date()), 6)), "initial");
@@ -3032,7 +3046,8 @@ export default function Home() {
     setCloudMessage("Signed out. This device will continue using its local backup.");
   }
 
-  const supplies = <SupplyCheckList items={requiredShoppingItems} shop={activeShop} onChange={updateSupply}
+  const editShopItem = (item: ShoppingListItem) => setEditingShopItem({ item, range: shoppingRangeKey });
+  const supplies = <SupplyCheckList items={requiredShoppingItems} shop={activeShop} onChange={updateSupply} onEdit={editShopItem}
     renderCategory={item => <SupplyCategoryControl item={item} onChange={category => updateShoppingItemCategory(item, category)} />} />;
   const reviewActions = <ShopReviewActions items={requiredShoppingItems} shop={activeShop} onFinish={completeShoppingList}
     onComplete={() => updateState(current => ({ ...current, guidedShop: { ...current.guidedShop!, completedAt: new Date().toISOString() } }))}
@@ -3051,13 +3066,21 @@ export default function Home() {
     onAddBulkManualItems={addBulkManualShoppingItems} onAddCommonManualItem={addCommonManualShoppingItem}
     onClearManualItems={clearManualShoppingItemsForRange} onUpdateCommonExtras={updateCommonExtraItems}
     onManageOccasionalItems={() => { setReturnToGuided(activeView === "guided"); setActiveView("settings"); }}
-    onToggleItem={toggleShoppingItem} onUnselectAll={unselectAllShoppingItems} onUpdateManualItem={updateManualShoppingItem}
+    onToggleItem={toggleShoppingItem} onUnselectAll={unselectAllShoppingItems} onEditItem={editShopItem}
     onUpdateCategory={updateShoppingItemCategory} onDeleteItem={deleteShoppingItem} onOpenRecipe={setSelectedRecipeId}
     onUpdateAsdaProductLink={updateAsdaProductLink} onUpdateAsdaShoppingStatus={updateAsdaShoppingStatus} onResetAsdaRun={resetCurrentAsdaRun}
     onCopy={copyShoppingList} onPrint={() => window.print()} onRestoreGenerated={restoreHiddenGeneratedShoppingItems} />;
 
   return (
     <main className="app-shell">
+      {editingShopItem && (editingShopItem.item.manual ? <ManualShoppingItemModal item={editingShopItem.item}
+        onClose={() => setEditingShopItem(null)} onSave={patch => { updateManualShoppingItem(editingShopItem.item.id, patch); setEditingShopItem(null); }}
+        onDelete={() => { deleteShoppingItem(editingShopItem.item); setEditingShopItem(null); }} />
+        : <ShoppingIngredientEditor item={editingShopItem.item} names={requiredShoppingItems.filter(row => !row.manual).map(row => row.name)}
+          onClose={() => setEditingShopItem(null)} onSave={edits => {
+            if (cloudHouseholdIdRef.current && !householdSyncRef.current?.ready) throw new Error("Wait for the household to finish loading.");
+            updateState(current => correctShoppingIngredients(current, editingShopItem.range, editingShopItem.item.ingredientSources ?? [], edits));
+          }} />)}
       {assigningRecipeGroups && <BatchRecipeGroups recipes={state.recipes} onAssign={batchAssignRecipeGroups} onClose={() => setAssigningRecipeGroups(false)} />}
       <aside className="sidebar">
         <div className="brand">
@@ -5856,7 +5879,7 @@ function ShoppingView({
   onManageOccasionalItems,
   onToggleItem,
   onUnselectAll,
-  onUpdateManualItem,
+  onEditItem,
   onUpdateCategory,
   onDeleteItem,
   onOpenRecipe,
@@ -5893,7 +5916,7 @@ function ShoppingView({
   onManageOccasionalItems: () => void;
   onToggleItem: (id: string, checked: boolean) => void;
   onUnselectAll: () => void;
-  onUpdateManualItem: (id: string, patch: Partial<ShoppingListItem>) => void;
+  onEditItem: (item: ShoppingListItem) => void;
   onUpdateCategory: (item: ShoppingListItem, category: GroceryCategory) => void;
   onDeleteItem: (item: ShoppingListItem) => void;
   onOpenRecipe: (recipeId: string) => void;
@@ -5908,7 +5931,6 @@ function ShoppingView({
     () => commonExtraItemsForProfile(settings, commonExtraProfileKey),
     [commonExtraProfileKey, settings]
   );
-  const [editingManualItemId, setEditingManualItemId] = useState<string | null>(null);
   const [editingCategoryItemId, setEditingCategoryItemId] = useState<string | null>(null);
   const [addingMoreExtra, setAddingMoreExtra] = useState<string | null>(null);
   const [extraQuantity, setExtraQuantity] = useState("");
@@ -5920,7 +5942,6 @@ function ShoppingView({
   const dueIds = new Set(dueEssentials.map(item => item.id));
   const visibleEssentials = showAllEssentials ? [...dueEssentials, ...oldestShoppingAddFirst(occasionalItemsForProfile(settings, commonExtraProfileKey).filter(item => !dueIds.has(item.id)))] : dueEssentials;
   const asdaHelperTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const editingManualItem = requiredItems.find((item) => item.manual && item.id === editingManualItemId) ?? null;
   const manualItems = requiredItems
     .filter((item) => item.manual)
     .sort((first, second) => {
@@ -6233,12 +6254,12 @@ function ShoppingView({
                         ) : null}
                       </div>
                     </div>
-                    {item.manual && <><button className="icon-button" type="button" title={`Edit ${item.name}`} onClick={() => setEditingManualItemId(item.id)}>
+                    <button className="icon-button" type="button" title={`Edit ${item.name}`} onClick={() => onEditItem(item)}>
                       <Pencil size={16} />
                     </button>
-                    <button className="icon-button danger" type="button" title={`Delete ${item.name}`} onClick={() => onDeleteItem(item)}>
+                    {item.manual && <button className="icon-button danger" type="button" title={`Delete ${item.name}`} onClick={() => onDeleteItem(item)}>
                       <Trash2 size={16} />
-                    </button></>}
+                    </button>}
                   </div>
                 );
               })}
@@ -6361,7 +6382,7 @@ function ShoppingView({
                   if (item.category === "Other") {
                     setEditingCategoryItemId(item.id);
                   } else if (item.manual) {
-                    setEditingManualItemId(item.id);
+                    onEditItem(item);
                   } else if (sourceRecipeId) {
                     onOpenRecipe(sourceRecipeId);
                   }
@@ -6405,9 +6426,10 @@ function ShoppingView({
                     </div>
 
                     <div className="shopping-item-actions">
+                      <button className="icon-button" type="button" title={`Edit ${item.name}`} onClick={() => onEditItem(item)}><Pencil size={16} /></button>
                       <ShoppingCategoryPicker item={item} open={editingCategoryItemId === item.id}
                         onOpen={() => setEditingCategoryItemId(item.id)} onClose={() => setEditingCategoryItemId(null)}
-                        onDetails={item.manual ? () => setEditingManualItemId(item.id) : sourceRecipeId ? () => onOpenRecipe(sourceRecipeId) : undefined}
+                        onDetails={item.manual ? () => onEditItem(item) : sourceRecipeId ? () => onOpenRecipe(sourceRecipeId) : undefined}
                         onChange={(category) => { onUpdateCategory(item, category); setEditingCategoryItemId(null); }} />
                       <button className="icon-button danger" title={item.manual ? "Delete item" : "Hide generated item"} onClick={() => onDeleteItem(item)}>
                         <Trash2 size={16} />
@@ -6421,21 +6443,6 @@ function ShoppingView({
         ))}
       </section></>}
 
-      {editingManualItem && (
-        <ManualShoppingItemModal
-          key={editingManualItem.id}
-          item={editingManualItem}
-          onClose={() => setEditingManualItemId(null)}
-          onSave={(patch) => {
-            onUpdateManualItem(editingManualItem.id, patch);
-            setEditingManualItemId(null);
-          }}
-          onDelete={() => {
-            onDeleteItem(editingManualItem);
-            setEditingManualItemId(null);
-          }}
-        />
-      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Check, Copy, Plus, Settings, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, Pencil, Plus, Settings, Trash2 } from "lucide-react";
 import { addDays, createId, formatDateKey, groceryCategories, type AppState, type GuidedShop, type HouseholdDiner, type MealSlot, type PlannedMeal, type RecipeReaction, type ShoppingListItem, type SupplyCheck } from "@/lib/domain";
 import { changeDiners as updateDiners, createShop, guidedSteps, requiredShopItems, requirementSignature, resolveShop, shopDates, shopIsFinalized, type SupplyResult } from "@/lib/guided-shop";
 import { ShopCalendar } from "./shop-calendar";
@@ -87,7 +87,8 @@ export function GuidedShopView({ state, updateState, onDates, onOpenMeal, onRemo
   </div>;
 }
 
-export function SupplyCheckList({ items, shop, onChange, renderCategory }: {
+export function SupplyCheckList({ items, shop, onChange, onEdit, renderCategory }: {
+  onEdit: (item: ShoppingListItem) => void;
   items: ShoppingListItem[]; shop: GuidedShop; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; renderCategory: (item: ShoppingListItem) => ReactNode;
 }) {
   const [hideCovered, setHideCovered] = useState(false);
@@ -102,16 +103,16 @@ export function SupplyCheckList({ items, shop, onChange, renderCategory }: {
   return <div className="supply-check-list"><div className="supply-list-heading"><p className="muted" role="status">{results.filter(row => !row.buy).length} already got · {results.filter(row => row.buy).length} to buy</p>
     <label className="toggle-line"><input type="checkbox" checked={hideCovered} onChange={event => setHideCovered(event.target.checked)} />Hide already got</label></div><div className="supply-category-columns">{columns.map((column, index) => <div className="supply-category-column" key={index}>{column.groups.map(({ category, rows: allRows }) => {
       const rows = allRows.filter(row => !hideCovered || row.buy || row.reviewReason);
-      return rows.length ? <section className="supply-category" key={category}><h3>{category}</h3>{rows.map(row => <SupplyRow key={row.required.id} row={row} onChange={onChange} category={renderCategory(row.required)} />)}</section> : null;
+      return rows.length ? <section className="supply-category" key={category}><h3>{category}</h3>{rows.map(row => <SupplyRow key={row.required.id} row={row} onChange={onChange} onEdit={onEdit} category={renderCategory(row.required)} />)}</section> : null;
     })}</div>)}</div>{!items.length ? <p className="muted">No ingredients or extras for these dates.</p> : hideCovered && !results.some(row => row.buy || row.reviewReason) && <p className="muted">All supplies already covered.</p>}</div>;
 }
 
-function SupplyRow({ row, onChange, category }: { row: SupplyResult; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; category: ReactNode }) {
+function SupplyRow({ row, onChange, onEdit, category }: { row: SupplyResult; onChange: (item: ShoppingListItem, check: SupplyCheck) => void; onEdit: (item: ShoppingListItem) => void; category: ReactNode }) {
   const item = row.required, covered = !row.buy && !row.reviewReason;
   const save = (status: "need" | "enough") => onChange(item, { status, requirement: requirementSignature(item) });
   return <article className={`supply-row ${covered ? "is-covered" : ""} ${row.reviewReason ? "needs-review" : ""}`}>
     <button type="button" className="supply-toggle" aria-label={`Already got ${item.name}`} aria-pressed={covered} title={covered ? "Need to buy" : "Already got"} onClick={() => save(covered ? "need" : "enough")}><Check size={17} /></button>
-    <div className="supply-item-name"><strong>{item.name}</strong>{item.staple && <small>Staple</small>}
+    <div className="supply-item-name"><button type="button" className="supply-edit-name" title={`Edit ${item.name}`} aria-label={`Edit ${item.name}`} onClick={() => onEdit(item)}><strong>{item.name}</strong> <Pencil size={12} /></button>{item.staple && <small>Staple</small>}
       <small className="supply-meal-sources">{item.manual ? "Manual extra" : item.sourceMeals.join(", ")}</small></div>
     <span className="supply-quantity">{item.displayQuantity || "As needed"}</span>{category}
     {row.reviewReason && <div className="shop-warning" role="alert">{row.reviewReason}<button className="text-button" type="button" onClick={() => save("need")}>Need to buy</button></div>}

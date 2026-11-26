@@ -2208,9 +2208,23 @@ h3 {
 
 .shopping-groups {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: 14px;
+  align-items: start;
 }
+
+.shopping-groups > .section-heading { grid-column: 1 / -1; flex-wrap: wrap; }
+.shopping-group, .shopping-list, .shopping-text { min-width: 0; }
+.shopping-text { overflow-wrap: anywhere; }
+.shopping-edit-dialog { width: min(480px, calc(100% - 24px)); }
+.shopping-edit-dialog:not([open]) { display: none; }
+.shopping-edit-dialog::backdrop { background: rgba(21, 31, 26, 0.55); }
+.shopping-edit-dialog form { display: grid; gap: 12px; }
+.shopping-edit-dialog fieldset { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+.shopping-edit-dialog legend { overflow-wrap: anywhere; max-width: 100%; font-weight: 600; }
+.supply-edit-name { min-width: 0; min-height: 26px; border: 0; background: none; padding: 0; text-align: left; color: inherit; }
+.supply-edit-name svg { vertical-align: middle; color: var(--green); }
+.supply-edit-name:hover strong { text-decoration: underline; }
 
 .shopping-group {
   display: grid;
@@ -2603,7 +2617,6 @@ h3 {
 
   .form-grid,
   .settings-layout,
-  .shopping-groups,
   .recipe-detail-grid {
     grid-template-columns: 1fr;
   }
@@ -3802,6 +3815,7 @@ h3 {
   .guided-tool-heading { flex-wrap: wrap; }
 }
 @media print {
+  .shopping-item-actions, .shopping-edit-dialog { display: none !important; }
   .guided-shop-heading, .guided-steps, .guided-footer, .shop-review-actions, .shopping-supplies, .bulk-extras { display: none !important; }
   .asda-shop-panel, .extra-items-layout, .manual-items-heading, .shopping-item.checked, .shopping-groups > .section-heading { display: none !important; }
   .print-shop-heading { display: block; }

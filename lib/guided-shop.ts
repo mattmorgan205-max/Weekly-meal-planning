@@ -1,7 +1,7 @@
 import {
   addDays, createId, formatDateKey, generateShoppingList, normalizeUnit,
   type AppState, type DinnerAttendance, type GuidedShop,
-  type HouseholdDiner, type PlannedMeal, type Recipe, type ShoppingListItem, type SupplyCheck, type Weekday
+  type HouseholdDiner, type PlannedMeal, type Recipe, type ShoppingListItem, type ShoppingIngredientSource, type ShoppingCorrection, type SupplyCheck, type Weekday
 } from "./domain";
 import { snackShoppingMeals } from "./snacks";
 import { normalizeDinerColors } from "./diner-colors";
@@ -155,6 +155,32 @@ export function addedShopExtras(state: AppState, shop: GuidedShop) {
 
 export function requirementSignature(item: ShoppingListItem) {
   return JSON.stringify([item.canonicalName || item.name.toLowerCase(), item.quantity ?? null, normalizeUnit(item.unit), item.displayQuantity]);
+}
+
+export function correctShoppingIngredients(state: AppState, range: string, sources: ShoppingIngredientSource[], edits: Record<string, ShoppingCorrection>): AppState {
+  const shop = state.guidedShop;
+  if (!shop || shopRangeKey(shop) !== range) throw new Error("The shop dates changed. Reopen the ingredient to edit it.");
+  const before = requiredShopItems(state, shop);
+  const currentSources = new Map(before.flatMap(row => (row.ingredientSources ?? []).map(s => [s.key, s] as const)));
+  for (const source of sources) {
+    if (JSON.stringify(currentSources.get(source.key)) !== JSON.stringify(source)) throw new Error("This ingredient changed. Reopen it to see the latest amount.");
+  }
+  const next = { ...state, settings: { ...state.settings, shoppingCorrections: { ...state.settings.shoppingCorrections, ...edits } } };
+  const after = requiredShopItems(next, shop);
+  const visible = new Set(after.flatMap(row => (row.ingredientSources ?? []).map(s => s.key)));
+  if (Object.keys(edits).some(key => !visible.has(key))) throw new Error("The matching item is hidden. Restore hidden items before merging.");
+
+  const oldRows = new Map(before.map(row => [row.id, requirementSignature(row)]));
+  const newRows = new Map(after.map(row => [row.id, requirementSignature(row)]));
+  const supplyChecks = { ...shop.supplyChecks }, basketChecks = { ...shop.basketChecks }, statuses = { ...state.asdaShoppingStatus };
+  for (const id of new Set([...oldRows.keys(), ...newRows.keys()])) {
+    if (oldRows.get(id) === newRows.get(id)) continue;
+    delete basketChecks[id];
+    delete statuses[`asda__${range}__${id}`];
+    // Keep a changed total's supply check as a review prompt, never as already covered.
+    if (!oldRows.has(id) || !newRows.has(id)) delete supplyChecks[id];
+  }
+  return { ...next, asdaShoppingStatus: statuses, guidedShop: { ...shop, supplyChecks, basketChecks } };
 }
 
 export function migrateGuidedState(state: AppState, startDate: string, endDate: string): AppState {

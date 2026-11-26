@@ -137,6 +137,14 @@ export type AsdaProductSelection = {
   lastSeenAt: string;
 };
 
+export type ShoppingCorrection = { original: string; name: string; unit: string; quantity?: number };
+export type ShoppingIngredientSource = ShoppingCorrection & {
+  key: string;
+  label: string;
+  system?: Ingredient["measurementSystem"];
+  packLabel?: string;
+};
+
 export type ShoppingListItem = {
   id: string;
   shoppingRangeKey?: string;
@@ -151,6 +159,7 @@ export type ShoppingListItem = {
   sourceMeals: string[];
   sourceRecipeIds?: string[];
   sourceIngredients?: string[];
+  ingredientSources?: ShoppingIngredientSource[];
   conversionNotes?: string[];
   mergeWarnings?: string[];
   mergeSuggestion?: {
@@ -204,6 +213,7 @@ export type AppSettings = {
   excludedShoppingIngredients?: string[];
   shoppingNameVariants: Record<string, string[]>;
   shoppingCategoryOverrides?: Record<string, GroceryCategory>;
+  shoppingCorrections?: Record<string, ShoppingCorrection>;
   commonExtraItems: string[];
   commonExtraProfiles: Record<string, CommonExtraProfile>;
   splitShoppingItems: Record<string, boolean>;
@@ -1444,6 +1454,20 @@ function isStaple(name: string, staples: string[]) {
   return staples.some((staple) => normalName.includes(normalizeIngredientName(staple)));
 }
 
+function shoppingConversion(unit: string, system?: Ingredient["measurementSystem"]) {
+  if (!["cup", "fl oz", "pt", "qt", "gal", "tsp", "tbsp"].includes(unit)) return unitConversions[unit];
+  if (!system) return ["tsp", "tbsp"].includes(unit) ? unitConversions[unit] : undefined;
+  const factors = system === "us" ? { cup: 236.588, "fl oz": 29.5735, pt: 473.176, qt: 946.353, gal: 3785.41, tsp: 4.92892, tbsp: 14.7868 }
+    : { cup: 250, "fl oz": 28.4131, pt: 568.261, qt: 1136.52, gal: 4546.09, tsp: 5, tbsp: 15 };
+  return { family: "volume", base: "ml", factor: factors[unit as keyof typeof factors] };
+}
+
+export function convertShoppingAmount(amount: number | undefined, from: string, to: string, system?: Ingredient["measurementSystem"]) {
+  if (amount === undefined || from === to) return amount;
+  const a = shoppingConversion(normalizeUnit(from), system), b = shoppingConversion(normalizeUnit(to), system);
+  return a && b && a.family === b.family ? Number((amount * a.factor / b.factor).toPrecision(12)) : undefined;
+}
+
 export function generateShoppingList(
   recipes: Recipe[],
   plannedMeals: PlannedMeal[],
@@ -1466,6 +1490,7 @@ export function generateShoppingList(
     sourceMeals: Set<string>;
     sourceRecipeIds: Set<string>;
     sourceIngredients: Set<string>;
+    sources: Map<string, ShoppingIngredientSource>;
     conversionNotes: Set<string>;
     mergeWarnings: Set<string>;
     mergeSuggestion?: ShoppingListItem["mergeSuggestion"];
@@ -1487,25 +1512,30 @@ export function generateShoppingList(
     const factor = meal.peopleCount / Math.max(1, plannedRecipe.servings);
     const selectedIngredientIds = new Set(meal.selectedIngredientIds ?? []);
 
-    function addIngredientToBuckets(ingredient: Ingredient, ingredientFactor: number) {
+    function addIngredientToBuckets(ingredient: Ingredient, ingredientFactor: number, side = false) {
       if (!ingredientIncludedInShopping(ingredient, settings.excludedShoppingIngredients)) return;
-      const scaled = scaleIngredient(ingredient, ingredientFactor);
+      const sourceKey = JSON.stringify([side ? "side" : "recipe", side ? meal.id : plannedRecipe.id, ingredient.id]);
+      const original = JSON.stringify([ingredient.name, ingredient.canonicalName, ingredient.quantity, ingredient.unit, ingredient.packSize, ingredient.packUnit, ingredient.weightBasis]);
+      const saved = settings.shoppingCorrections?.[sourceKey];
+      const edit = saved?.original === original ? saved : undefined;
+      const input = edit ? { ...ingredient, canonicalName: edit.name, unit: edit.unit, quantity: edit.quantity,
+        packSize: edit.unit === normalizeUnit(ingredient.unit) ? ingredient.packSize : undefined } : ingredient;
+      const scaled = scaleIngredient(input, ingredientFactor);
       const savedShoppingName = scaled.canonicalName ? singularizeIngredientName(normalizeIngredientAliasKey(scaled.canonicalName)) : "";
       const canonical = savedShoppingName
         ? { canonicalName: savedShoppingName, normalizedName: savedShoppingName }
         : canonicalizeIngredientName(scaled.name, settings.ingredientAliases ?? {});
       const nameKey = canonical.canonicalName;
+      const source: ShoppingIngredientSource = {
+        key: sourceKey, original, name: nameKey, quantity: input.quantity, unit: scaled.unit,
+        system: settings.measurementSystem ?? input.measurementSystem,
+        label: side ? `${plannedRecipe.title} (side, ${meal.date})` : `${plannedRecipe.title} (serves ${plannedRecipe.servings})`,
+        packLabel: input.packSize && input.packUnit ? `${input.packSize} ${input.packUnit} per ${scaled.unit}` : undefined
+      };
       const packed = scaled.packSize && scaled.packUnit && ["can", "pack", "jar", "bottle"].includes(normalizeUnit(scaled.unit));
       const normalizedUnit = packed ? scaled.packUnit! : normalizeUnit(scaled.unit);
       if (packed && typeof scaled.quantity === "number") scaled.quantity *= scaled.packSize!;
-      const ambiguous = ["cup", "fl oz", "pt", "qt", "gal", "tsp", "tbsp"].includes(normalizedUnit);
-      const measurementSystem = settings.measurementSystem ?? scaled.measurementSystem;
-      const volumeFactors = measurementSystem === "us" ? { cup: 236.588, "fl oz": 29.5735, pt: 473.176, qt: 946.353, gal: 3785.41, tsp: 4.92892, tbsp: 14.7868 }
-        : { cup: 250, "fl oz": 28.4131, pt: 568.261, qt: 1136.52, gal: 4546.09, tsp: 5, tbsp: 15 };
-      const conversion = ambiguous
-        ? measurementSystem ? { family: "volume", base: "ml", factor: volumeFactors[normalizedUnit as keyof typeof volumeFactors] }
-          : ["tsp", "tbsp"].includes(normalizedUnit) ? unitConversions[normalizedUnit] : undefined
-        : unitConversions[normalizedUnit];
+      const conversion = shoppingConversion(normalizedUnit, source.system);
       const quantity = typeof scaled.quantity === "number" && conversion ? scaled.quantity * conversion.factor : scaled.quantity;
       const family = conversion?.family ?? (scaled.unit ? `raw-${scaled.unit}` : "no-unit");
       const baseUnit = conversion?.base ?? scaled.unit ?? "";
@@ -1523,6 +1553,7 @@ export function generateShoppingList(
         bucket.sourceMeals.add(plannedRecipe.title);
         bucket.sourceRecipeIds.add(plannedRecipe.id);
         bucket.sourceIngredients.add(scaled.name);
+        bucket.sources.set(sourceKey, source);
         if (note) bucket.conversionNotes.add(note);
       }
 
@@ -1545,6 +1576,7 @@ export function generateShoppingList(
           sourceMeals: new Set([plannedRecipe.title]),
           sourceRecipeIds: new Set([plannedRecipe.id]),
           sourceIngredients: new Set([scaled.name]),
+          sources: new Map([[sourceKey, source]]),
           conversionNotes: new Set(note ? [note] : []),
           mergeWarnings: new Set(),
           staple
@@ -1564,6 +1596,7 @@ export function generateShoppingList(
           sourceMeals: new Set([plannedRecipe.title]),
           sourceRecipeIds: new Set([plannedRecipe.id]),
           sourceIngredients: new Set([scaled.name]),
+          sources: new Map([[sourceKey, source]]),
           conversionNotes: new Set(note ? [note] : []),
           mergeWarnings: new Set(["This ingredient has another quantity or unit that could not be combined safely."]),
           incompatible: true,
@@ -1577,7 +1610,7 @@ export function generateShoppingList(
       .forEach((ingredient) => addIngredientToBuckets(ingredient, factor));
     (meal.extraSideIngredients ?? [])
       .filter((ingredient) => ingredient.name.trim())
-      .forEach((ingredient) => addIngredientToBuckets(ingredient, 1));
+      .forEach((ingredient) => addIngredientToBuckets(ingredient, 1, true));
   });
 
   const generated = Array.from(buckets.values()).map<ShoppingListItem>((bucket) => {
@@ -1595,6 +1628,7 @@ export function generateShoppingList(
       sourceMeals: Array.from(bucket.sourceMeals),
       sourceRecipeIds: Array.from(bucket.sourceRecipeIds),
       sourceIngredients: Array.from(bucket.sourceIngredients),
+      ingredientSources: Array.from(bucket.sources.values()),
       conversionNotes: Array.from(bucket.conversionNotes),
       mergeWarnings: Array.from(bucket.mergeWarnings),
       mergeSuggestion: undefined,

@@ -6,10 +6,51 @@ import { buildAutoDinnerPlan } from "../lib/dinner-planner";
 import { addLeftoverMeal, applyGuidedDinnerPreview, calendarDays, calendarRange, mealCalendarDays, mealFromDinnerEntry, mealSource, placeGuidedMeal, removeDinnerPreviewEntry } from "../lib/guided-planning";
 import { assignSnackGroup, defaultSnackGroups, setSnackSelection, snackColumn, snackRecipeGroups } from "../lib/snacks";
 import { copyAttendanceToDates } from "../lib/guided-shop";
+import { correctShoppingIngredients, shopRangeKey } from "../lib/guided-shop";
+import { convertShoppingAmount } from "../lib/domain";
 import { allDinersSelected, dayNoteForDate, planningDefaultsForDates, recipeAllowedForState, refreshDinerPortions, toggleAllDiners, weekdayForDate } from "../lib/guided-shop";
 import { dinerColor, dinerPalette, dinerTextColor, nextDinerColor, normalizeDinerColors } from "../lib/diner-colors";
 
 const start = "2026-11-23", end = "2026-11-29";
+
+test("household shopping corrections merge compatible names and units, retaining recipe quantities and meal scaling", () => {
+  const s = state(), shop = s.guidedShop!;
+  s.plannedMeals = [meal("one"), meal("two", 1)];
+  const misspelt = { ...s.recipes[0].ingredients[0], id: "typo", name: "carrott", unit: "pack", quantity: 1 };
+  s.recipes[0].ingredients.push(misspelt);
+  const before = requiredShopItems(s, shop);
+  const typo = before.find(row => row.name === "carrott")!;
+  const carrots = before.find(row => row.name === "carrot")!;
+  shop.basketChecks[carrots.id] = requirementSignature(carrots);
+  shop.supplyChecks[carrots.id] = { status: "enough", requirement: requirementSignature(carrots) };
+  s.asdaShoppingStatus[`asda__${shopRangeKey(shop)}__${carrots.id}`] = "added";
+  const sources = typo.ingredientSources!, source = sources[0];
+  assert.equal(sources.length, 1);
+  assert.equal(source.quantity, 1);
+  const edits = { [source.key]: { original: source.original, name: "carrot", quantity: 0.2, unit: "kg" } };
+  const next = correctShoppingIngredients(s, shopRangeKey(shop), sources, edits);
+  const after = requiredShopItems(next, next.guidedShop!);
+  const combined = after.find(row => row.name === "carrot")!;
+  assert.equal(combined.quantity, 1200);
+  assert.equal(combined.unit, "g");
+  assert.equal(combined.ingredientSources?.length, 2);
+  assert.equal(after.some(row => row.name === "carrott"), false);
+  assert.equal(next.recipes, s.recipes);
+  assert.equal(next.guidedShop!.basketChecks[combined.id], undefined);
+  assert.deepEqual(next.asdaShoppingStatus, {});
+  assert.ok(resolveSupply(combined, next.guidedShop!).reviewReason);
+  assert.throws(() => correctShoppingIngredients(next, shopRangeKey(shop), sources, edits), /changed/);
+  assert.throws(() => correctShoppingIngredients(s, "another range", sources, edits), /dates changed/);
+  s.hiddenShoppingItems[`${shopRangeKey(shop)}__${carrots.id}`] = true;
+  assert.throws(() => correctShoppingIngredients(s, shopRangeKey(shop), sources, edits), /hidden/);
+});
+
+test("shopping units convert only when compatible and use the recipe or household convention", () => {
+  assert.equal(convertShoppingAmount(250, "g", "kg"), 0.25);
+  assert.equal(convertShoppingAmount(1, "pack", "kg"), undefined);
+  assert.equal(convertShoppingAmount(1, "cup", "ml"), undefined);
+  assert.equal(convertShoppingAmount(1, "cup", "ml", "us"), 236.588);
+});
 const diners = [{ id: "adult", name: "Matt", portions: 1, usual: true }, { id: "child", name: "Sophia", portions: 0.5, usual: true }];
 const attendance = (sophia: boolean): DinnerAttendance => ({ confirmed: true, portions: { adult: 1, ...(sophia ? { child: 0.5 } : {}) }, guests: 0, sophiaEating: sophia });
 const item = (id = "carrots", quantity: number | undefined = 600, unit = "g"): ShoppingListItem => ({ id, name: id, canonicalName: id, quantity, unit, displayQuantity: quantity === undefined ? "as needed" : `${quantity} ${unit}`, category: "Produce", checked: false, sourceMeals: ["Test"] });
