@@ -52,9 +52,26 @@
 }
 
 #weekwise-asda-helper .weekwise-body {
+  max-height: calc(100dvh - 84px);
+  overflow: auto;
   display: grid;
   gap: 10px;
   padding: 10px;
+}
+
+#weekwise-asda-helper .weekwise-choices {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid #d9decf;
+}
+
+#weekwise-asda-helper .weekwise-choices label {
+  display: block;
+  padding: 5px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
 }
 
 #weekwise-asda-helper .weekwise-item {

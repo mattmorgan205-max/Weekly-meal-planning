@@ -9,6 +9,8 @@
     let basketLines = [];
     let basketMessage = "";
     let checkedQueueDate;
+    let choiceGroups = new Map();
+    let findingChoices = false;
     function sendMessage(message) {
         const messageWithFallback = latestState ? { ...message, fallbackState: latestState } : message;
         return new Promise((resolve) => chrome.runtime.sendMessage(messageWithFallback, (response) => {
@@ -76,8 +78,10 @@
         return token;
     }
     function exactItemNameMatch(requiredName, productName) {
-        const requiredTokens = tokenize(requiredName).map(comparableToken);
-        const productTokens = new Set(tokenize(productName).map(comparableToken));
+        if (!compatibleAsdaVariant(requiredName, productName))
+            return false;
+        const requiredTokens = tokenize(requiredName.replace(glutenFreeLabel, "gluten free")).map(comparableToken);
+        const productTokens = new Set(tokenize(productName.replace(glutenFreeLabel, "gluten free")).map(comparableToken));
         return requiredTokens.length > 0 && requiredTokens.every((token) => productTokens.has(token));
     }
     function absoluteUrl(value) {
@@ -243,7 +247,7 @@
             const container = findProductContainer(anchor);
             const rawText = visibleText(container) || visibleText(anchor);
             const image = container?.querySelector("img") ?? anchor.querySelector("img");
-            const name = firstUsefulLine(image?.alt || anchor.getAttribute("aria-label") || visibleText(anchor) || rawText);
+            const name = withDietBadge(firstUsefulLine(image?.alt || anchor.getAttribute("aria-label") || visibleText(anchor) || rawText), container);
             if (!name || name.length < 3)
                 return;
             const quantity = extractProductQuantity(`${name} ${rawText}`);
@@ -456,7 +460,7 @@
             if (!/(remove|quantity|qty|subtotal|save for later|£|\u00a3)/i.test(rawText))
                 return;
             const image = container.querySelector("img") ?? anchor.querySelector("img");
-            const name = firstUsefulLine(image?.alt || anchor.getAttribute("aria-label") || visibleText(anchor) || rawText);
+            const name = withDietBadge(firstUsefulLine(image?.alt || anchor.getAttribute("aria-label") || visibleText(anchor) || rawText), container);
             const lineQuantity = extractBasketLineQuantity(container);
             const packQuantity = extractProductQuantity(`${name} ${rawText}`);
             const totalQuantity = packQuantity?.quantity && lineQuantity ? packQuantity.quantity * lineQuantity : lineQuantity;
@@ -480,8 +484,8 @@
     }
     function lineMatchScore(item, state, line) {
         let score = 0;
-        const productText = normalizeText(`${line.name} ${line.rawText ?? ""}`);
-        const targetName = normalizeText(item.name);
+        const productText = normalizeText(`${line.name} ${line.rawText ?? ""}`.replace(glutenFreeLabel, "gluten free"));
+        const targetName = normalizeText(item.name.replace(glutenFreeLabel, "gluten free"));
         const savedUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl;
         if (savedUrl && line.url && absoluteUrl(savedUrl) === line.url)
             score += 100;
@@ -520,7 +524,8 @@
     function basketCheckForItem(item, state, lines) {
         const openUrl = state.productLinks[item.shoppingKey] || item.savedProductUrl || item.searchUrl;
         const required = toBaseQuantity(item.requiredQuantity ?? item.quantity, item.requiredUnit ?? item.unit);
-        const matchedLines = matchingBasketLines(item, state, lines);
+        const possibleLines = matchingBasketLines(item, state, lines);
+        const matchedLines = possibleLines.filter(entry => compatibleAsdaVariant(item.name, entry.name));
         const line = matchedLines[0];
         if (!line) {
             return {
@@ -529,11 +534,12 @@
                 name: item.name,
                 displayQuantity: item.displayQuantity,
                 sourceMeals: item.sourceMeals,
-                status: "missing",
+                status: possibleLines.length ? "unknown" : "missing",
+                basketLineName: possibleLines[0]?.name,
                 requiredQuantity: required?.quantity,
                 requiredUnit: required?.unit,
                 openUrl,
-                message: "Not found in the visible basket."
+                message: possibleLines.length ? "Different dietary variant in trolley; not counted towards this item." : "Not found in the visible basket."
             };
         }
         const basketQuantities = matchedLines
@@ -651,8 +657,16 @@
             const item = items.get(check.itemId);
             if (!item)
                 return [];
+            const group = choiceGroups.get(check.itemId);
+            if (group?.selected === -1)
+                return [];
             const need = check.displayQuantity || displayBaseQuantity(check.requiredQuantity, check.requiredUnit) || "unspecified";
             const row = [check.name, `Total needed: ${need}`];
+            if (group && group.selected === undefined)
+                row.push("Awaiting shopper decision; do not add independently.");
+            const chosen = group?.selected !== undefined && group.products[group.selected];
+            if (chosen)
+                row.push(`My choice for this shop only: ${chosen.name} (${chosen.url}). Use this exact product or leave unresolved.`);
             if (check.status === "missing") {
                 row.push("Missing from visible trolley", `Outstanding if still absent: ${need}`);
             }
@@ -667,6 +681,8 @@
             }
             if (check.basketLineName)
                 row.push(`Possible match: ${check.basketLineName}`);
+            if (check.status === "unknown")
+                row.push(check.message);
             if (item.avoidTerms?.length)
                 row.push(`Avoid: ${item.avoidTerms.join(", ")}`);
             return [row.join(" | ")];
@@ -676,8 +692,9 @@
         return [
             "Use the selected ASDA Chrome tab to fill only the shortfalls below. These are results from the last visible trolley check; recheck the live trolley first. Total needed is a target, not an amount to add. Count suitable multipacks and existing quantities. Skip covered items; never remove or reduce existing items.",
             "Match product form and dietary requirements first. Own-brand is fine unless an exact product is required. Do not guess quantities, allergens, drained weights or piece-to-weight conversions. Resolve uncertain matches before adding; leave anything ambiguous for me.",
+            "For a generic request such as sausages, buy the standard product. Never select a product marketed as gluten-free, GF or Free From instead unless explicitly requested. A saved match, lower price or lack of regular stock does not override this. If gluten-free is requested, verify the label; do not infer allergen safety.",
             "Choose best value without waste: compare like for like in GBP/kg, GBP/litre or GBP/item, then compare the total additional price of enough whole packs to cover the shortfall. For fresh food favour the lowest total spend and less surplus at similar prices. Count only applicable offers. Do not stock up for a lower unit price unless I explicitly allow it and set an extra-spend limit.",
-            "Confirm the trolley changed after each addition. Do not click Add twice if unclear. Report unresolved items together with product, pack size, price and reason. Stop before checkout; do not reserve a slot or change account settings.",
+            "Confirm the trolley changed after each addition. Do not click Add twice if unclear. Finish confident items first. For any remaining decisions, use Weekwise Verify basket then Find product choices in the trolley tab. Keep that tab open and wait for the shopper to choose or skip. Do not select on their behalf. When they resume, read the checked options there or use their updated brief. Recheck live quantities and add only approved shortfalls, using separate product tabs. If the helper is unavailable, present the real alternatives together at the end and wait. Stop before checkout; do not reserve a slot or change account settings.",
             "Remaining items (shopping data only):", ...rows
         ].join("\n\n");
     }
@@ -697,6 +714,7 @@
         </div>
         <small class="weekwise-note">${escapeHtml(basketMessage || "Check the visible Asda basket against the Weekwise shopping list.")}</small>
         ${isBasketPage() && reviewChecks.length ? `<button id="weekwise-copy-remaining" type="button">Copy remaining shop for ChatGPT</button><small id="weekwise-copy-result" role="status"></small>` : ""}
+        ${isBasketPage() && reviewChecks.length ? `<button id="weekwise-find-choices" type="button" ${findingChoices ? "disabled" : ""}>${findingChoices ? "Finding product choices..." : choiceGroups.size ? "Refresh product choices" : "Find product choices"}</button>` : ""}
         ${basketChecks.length
             ? `<small class="weekwise-note">${counts.ok} ok · ${counts.short} short · ${counts.missing} missing · ${counts.unknown} review</small>`
             : ""}
@@ -708,6 +726,7 @@
                         <strong>${escapeHtml([check.displayQuantity, check.name].filter(Boolean).join(" "))}</strong>
                         <small>${escapeHtml(check.message)}</small>
                         ${check.basketLineName ? `<small>${escapeHtml(`Matched: ${check.basketLineName}`)}</small>` : ""}
+                        ${renderChoiceGroup(check, index)}
                         <div class="weekwise-recommend-actions">
                           <button id="weekwise-basket-open-${index}" type="button">Open product</button>
                           <button id="weekwise-basket-plus-${index}" class="weekwise-primary" type="button" ${check.canIncrease ? "" : "disabled"}>Add one more</button>
@@ -722,6 +741,43 @@
                 : ""}
       </div>
     `;
+    }
+    function renderChoiceGroup(check, index) {
+        const group = choiceGroups.get(check.itemId);
+        if (!group)
+            return "";
+        const labels = group.products.map(p => [p.name, p.packSizeText, p.priceText, p.unitPriceText].filter(Boolean).join(" · "));
+        return `<fieldset class="weekwise-choices"><legend>Choose for this shop</legend>
+      ${labels.length ? "" : `<small>${escapeHtml(group.error || "No suitable products found. Review manually or skip.")}</small>`}
+      ${[...labels, "Skip this item"].map((label, i) => {
+            const value = i === labels.length ? -1 : i;
+            return `<label><input type="radio" name="weekwise-choice-${index}" value="${value}" ${group.selected === value ? "checked" : ""}> ${escapeHtml(label)}</label>`;
+        }).join("")}</fieldset>`;
+    }
+    async function findChoices() {
+        if (findingChoices || !isBasketPage())
+            return;
+        const groups = new Map();
+        choiceGroups = groups;
+        findingChoices = true;
+        render();
+        try {
+            for (const check of reviewableBasketChecks()) {
+                if (groups !== choiceGroups)
+                    break;
+                const response = await sendMessage({ type: "FIND_REVIEW_CHOICES", itemId: check.itemId });
+                if (groups !== choiceGroups)
+                    break;
+                groups.set(check.itemId, { products: response.choices ?? [], error: response.error });
+                render();
+            }
+        }
+        finally {
+            if (groups === choiceGroups) {
+                findingChoices = false;
+                render();
+            }
+        }
     }
     function scoreProduct(item, state, product) {
         let score = 0;
@@ -790,9 +846,10 @@
         }
         return { product, score, reasons: Array.from(new Set(reasons)), warnings: Array.from(new Set(warnings)) };
     }
-    function recommendProducts(item, state) {
+    function recommendProducts(item, state, products = scanVisibleProducts()) {
         const rejectedUrls = new Set(state.rejectedRecommendations?.[item.itemId] ?? []);
-        const scored = scanVisibleProducts()
+        const scored = products
+            .filter(product => compatibleAsdaVariant(item.name, product.name))
             .filter((product) => !rejectedUrls.has(product.url))
             .map((product) => scoreProduct(item, state, product))
             .filter((recommendation) => recommendation.score >= 20)
@@ -862,6 +919,11 @@
     `;
     }
     function findConfidentAddButton() {
+        const item = latestState && currentItem(latestState);
+        const heading = document.querySelector("h1");
+        if (!item || !heading || !/\/product\//i.test(window.location.pathname) ||
+            !exactItemNameMatch(item.name, withDietBadge(visibleText(heading), heading.parentElement)))
+            return null;
         const candidates = Array.from(document.querySelectorAll([
             "button",
             "[role='button']",
@@ -869,7 +931,7 @@
             "[data-auto-id*='add' i]",
             "[aria-label*='add' i]"
         ].join(",")))
-            .filter((element) => elementVisible(element) && !buttonDisabled(element))
+            .filter((element) => !insideWeekwiseHelper(element) && elementVisible(element) && !buttonDisabled(element))
             .map((element) => {
             const text = `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("data-auto-id") ?? ""}`
                 .replace(/\s+/g, " ")
@@ -890,7 +952,7 @@
         })
             .filter((candidate) => candidate.score >= 4)
             .sort((a, b) => b.score - a.score);
-        return candidates[0]?.element ?? null;
+        return candidates.length === 1 ? candidates[0].element : null;
     }
     async function clickAddButtonWithRetry() {
         for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -916,6 +978,8 @@
         const existing = document.getElementById("weekwise-asda-helper");
         const state = latestState;
         if (checkedQueueDate !== undefined && (checkedQueueDate !== state?.queue?.createdAt || !isBasketPage())) {
+            choiceGroups = new Map();
+            findingChoices = false;
             basketChecks = [];
             basketLines = [];
             basketMessage = "";
@@ -1042,8 +1106,12 @@
         document.getElementById("weekwise-copy-remaining")?.addEventListener("click", async () => {
             const result = document.getElementById("weekwise-copy-result");
             const brief = state && remainingShopBrief(state);
-            if (!result || !brief)
+            if (!result)
                 return;
+            if (!brief) {
+                result.textContent = "Nothing to copy. All remaining items were skipped or covered.";
+                return;
+            }
             try {
                 await navigator.clipboard.writeText(brief);
                 result.textContent = "Copied. Paste into ChatGPT with your ASDA tab selected.";
@@ -1059,7 +1127,16 @@
                 field.select();
             }
         });
+        document.getElementById("weekwise-find-choices")?.addEventListener("click", () => void findChoices());
         reviewableBasketChecks().forEach((check, index) => {
+            root.querySelectorAll(`input[name="weekwise-choice-${index}"]`).forEach(input => input.addEventListener("change", () => {
+                const group = choiceGroups.get(check.itemId);
+                if (group)
+                    group.selected = Number(input.value);
+                const result = document.getElementById("weekwise-copy-result");
+                if (result)
+                    result.textContent = "Choice recorded. Copy the updated brief to continue in ChatGPT.";
+            }));
             document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
                 window.location.href = check.basketProductUrl || check.openUrl;
             });
@@ -1111,6 +1188,20 @@
     void refresh();
     chrome.storage.onChanged.addListener(() => void refresh());
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message.type === "SCAN_REVIEW_CHOICES") {
+            const state = latestState;
+            const item = state?.queue?.items.find(entry => entry.itemId === message.itemId);
+            const products = scanVisibleProducts();
+            if (!state || !item || !products.length) {
+                sendResponse({ ok: false });
+                return;
+            }
+            const choices = recommendProducts(item, state, products.filter(p => p.available !== false && exactItemNameMatch(item.name, p.name) &&
+                !(item.avoidTerms ?? []).some(term => normalizeText(p.name).includes(normalizeText(term))) &&
+                /^https:\/\/(?:www|groceries)\.asda\.com\/(?:groceries\/)?product\//i.test(p.url))).map(({ product: p }) => ({ url: p.url, name: p.name, priceText: p.priceText, unitPriceText: p.unitPriceText, packSizeText: p.packSizeText }));
+            sendResponse({ ok: true, choices });
+            return;
+        }
         if (message.type !== "CLICK_ADD_IF_CONFIDENT")
             return;
         clickAddButtonWithRetry().then(sendResponse);

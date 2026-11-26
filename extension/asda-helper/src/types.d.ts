@@ -1,4 +1,5 @@
 declare const chrome: any;
+declare function importScripts(...urls: string[]): void;
 
 type StoreShoppingStatus = "opened" | "added" | "unavailable";
 
@@ -141,6 +142,7 @@ interface AsdaHelperRuntimeMessage {
 }
 
 interface AsdaHelperRuntimeResponse {
+  choices?: AsdaProductCandidate[];
   ok: boolean;
   state?: AsdaHelperState;
   item?: AsdaHelperQueueItem;

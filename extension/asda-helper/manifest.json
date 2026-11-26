@@ -32,7 +32,7 @@
     },
     {
       "matches": ["https://groceries.asda.com/*", "https://www.asda.com/groceries/*"],
-      "js": ["build/asda-content.js"],
+      "js": ["build/product-policy.js", "build/asda-content.js"],
       "css": ["asda-overlay.css"],
       "run_at": "document_idle"
     }

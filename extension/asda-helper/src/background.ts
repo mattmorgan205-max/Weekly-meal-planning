@@ -1,3 +1,4 @@
+importScripts("product-policy.js");
 (() => {
   const appUrlPatterns = ["http://localhost/*", "http://127.0.0.1/*", "https://weekly-meal-planning-alpha.vercel.app/*", "https://*.vercel.app/*"];
   const asdaUrlPatterns = ["https://groceries.asda.com/*", "https://www.asda.com/groceries/*"];
@@ -46,7 +47,7 @@
 
   async function getState(fallbackState?: AsdaHelperState): Promise<AsdaHelperState> {
     return new Promise((resolve) => {
-      chrome.storage.local.get(defaultState, (result: Partial<AsdaHelperState>) => {
+      chrome.storage.local.get(null, (result: Partial<AsdaHelperState>) => {
         const storedState = normalizeState(result);
         const fallback = normalizeState(fallbackState);
         const bestState = hasQueue(storedState) ? storedState : hasQueue(runtimeState) ? runtimeState : hasQueue(fallback) ? fallback : storedState;
@@ -192,8 +193,9 @@
       chrome.scripting.executeScript(
         {
           target: { tabId },
-          args: [requiredName, avoidTerms],
-          func: (expectedName: string, blockedTerms: string[]) => {
+          args: [requiredName, avoidTerms, glutenFreeLabel.source, dietBadgeSelector],
+          func: (expectedName: string, blockedTerms: string[], glutenPattern: string, badgeSelector: string) => {
+            const glutenFree = new RegExp(glutenPattern, "iu");
             function normalize(value: string) {
               return value
                 .toLowerCase()
@@ -211,7 +213,7 @@
 
             function tokens(value: string) {
               const stopWords = new Set(["and", "the", "with", "for", "asda", "fresh", "chosen", "by"]);
-              return normalize(value)
+              return normalize(value.replace(glutenFree, "gluten free"))
                 .split(" ")
                 .filter((token) => token.length > 2 && !stopWords.has(token))
                 .map(comparableToken);
@@ -221,11 +223,20 @@
             const heading = headingSelectors
               .map((selector) => document.querySelector<HTMLElement>(selector))
               .find((element) => element && (element.innerText || element.textContent || "").trim());
-            const productName = (heading?.innerText || heading?.textContent || document.title || "").replace(/\s+/g, " ").trim();
+            let productName = (heading?.innerText || heading?.textContent || "").replace(/\s+/g, " ").trim();
+            const badges = heading?.parentElement?.querySelectorAll(badgeSelector) ?? [];
+            if (productName && !glutenFree.test(productName) && Array.from(badges).some(badge => {
+              const label = badge.getAttribute("aria-label") || badge.getAttribute("alt") || badge.textContent || "";
+              return label.length <= 80 && glutenFree.test(label);
+            })) productName += " (gluten-free)";
             const requiredTokens = tokens(expectedName);
             const productTokens = new Set(tokens(productName));
             const missingTokens = requiredTokens.filter((token) => !productTokens.has(token));
             const normalizedProductName = normalize(productName);
+            if (glutenFree.test(productName) !== glutenFree.test(expectedName) ||
+                (!glutenFree.test(expectedName) && /\bfree[\s-]+from\b/i.test(productName) && !/\bfree[\s-]+from\b/i.test(expectedName))) {
+              return { ok: false, productName, error: "The dietary variant does not match the shopping list." };
+            }
             const blockedMatch = blockedTerms.find((term) => {
               const normalizedTerm = normalize(term);
               return normalizedTerm && normalizedProductName.includes(normalizedTerm);
@@ -280,7 +291,7 @@
             function findAddButton() {
               const selectors = ["button", "[role='button']", "[data-testid*='add' i]", "[data-auto-id*='add' i]", "[aria-label*='add' i]"];
               const candidates = Array.from(document.querySelectorAll<HTMLButtonElement | HTMLElement>(selectors.join(",")))
-                .filter((element) => elementVisible(element) && !buttonDisabled(element))
+                .filter((element) => !element.closest("#weekwise-asda-helper") && elementVisible(element) && !buttonDisabled(element))
                 .map((element) => {
                   const text = `${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("data-auto-id") ?? ""}`
                     .replace(/\s+/g, " ")
@@ -299,7 +310,7 @@
                 .filter((candidate) => candidate.score >= 4)
                 .sort((a, b) => b.score - a.score);
 
-              return candidates[0]?.element ?? null;
+              return candidates.length === 1 ? candidates[0].element : null;
             }
 
             for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -834,6 +845,24 @@
     return { ok: true, state: nextState };
   }
 
+  async function findReviewChoices(message: AsdaHelperRuntimeMessage): Promise<AsdaHelperRuntimeResponse> {
+    const state = await getState(message.fallbackState);
+    const item = state.queue?.items.find(entry => entry.itemId === message.itemId);
+    if (!item || state.queue?.createdAt !== message.fallbackState?.queue?.createdAt) return {ok:false, error:"Shop changed. Verify the trolley again."};
+    // Read-only search in a separate tab so the checked trolley stays in place.
+    const tabId = await openShoppingTab("https://groceries.asda.com/search/" + encodeURIComponent(item.name), false);
+    try {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await wait(750);
+        const response = await new Promise<AsdaHelperRuntimeResponse | undefined>(resolve =>
+          chrome.tabs.sendMessage(tabId, {type:"SCAN_REVIEW_CHOICES", itemId:item.itemId}, (result: AsdaHelperRuntimeResponse) =>
+            resolve(chrome.runtime.lastError ? undefined : result)));
+        if (response?.ok) return response;
+      }
+      return {ok:false, error:"No readable ASDA search results."};
+    } finally { await closeTab(tabId); }
+  }
+
   async function handleMessage(message: AsdaHelperRuntimeMessage): Promise<AsdaHelperRuntimeResponse> {
     switch (message.type) {
       case "IMPORT_QUEUE":
@@ -854,6 +883,8 @@
         return setStatus(message.itemId, message.status, message.fallbackState, { advance: message.advance, openNext: message.openNext });
       case "AUTO_ADD_SAVED":
         return autoAddSavedProducts(message.fallbackState);
+      case "FIND_REVIEW_CHOICES":
+        return findReviewChoices(message);
       case "SAVE_RECOMMENDATION":
         return saveRecommendation(message.itemId, message.productUrl, message.candidate, message.fallbackState);
       case "REJECT_RECOMMENDATION":
