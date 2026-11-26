@@ -1,6 +1,8 @@
 importScripts("product-policy.js");
 (() => {
-  const appUrlPatterns = ["http://localhost/*", "http://127.0.0.1/*", "https://weekly-meal-planning-alpha.vercel.app/*", "https://*.vercel.app/*"];
+  const appUrlPatterns: string[] = chrome.runtime.getManifest().content_scripts.find(
+    (entry: {js: string[]}) => entry.js.includes("build/app-content.js")
+  ).matches;
   const asdaUrlPatterns = ["https://groceries.asda.com/*", "https://www.asda.com/groceries/*"];
   const asdaBasketUrl = "https://www.asda.com/groceries/trolley";
   const defaultState: AsdaHelperState = {
@@ -77,18 +79,13 @@ importScripts("product-policy.js");
   }
 
   function normalizeOpenUrl(value: string) {
-    const trimmed = value.trim();
-    if (!trimmed) return "";
-
     try {
-      const url = new URL(trimmed);
-      return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : "";
+      const url = new URL(value);
+      if (url.username || url.password) return "";
+      return url.origin === "https://groceries.asda.com" ||
+        (url.origin === "https://www.asda.com" && url.pathname.startsWith("/groceries/")) ? url.href : "";
     } catch {
-      try {
-        return new URL(`https://${trimmed}`).toString();
-      } catch {
-        return "";
-      }
+      return "";
     }
   }
 
@@ -130,22 +127,13 @@ importScripts("product-policy.js");
     });
   }
 
-  async function findReusableAsdaTab() {
+  async function findReusableAsdaTab(preferredId?: number) {
     const tabs = await queryTabs({ url: asdaUrlPatterns });
-    return tabs.find((tab) => typeof tab.id === "number")?.id ?? null;
+    return tabs.find(tab => tab.id === preferredId)?.id ?? tabs.find((tab) => typeof tab.id === "number")?.id ?? null;
   }
 
   async function openOrReuseShoppingTab(url: string, state: AsdaHelperState, active = true) {
-    if (typeof state.activeAsdaTabId === "number") {
-      try {
-        const tabId = await updateShoppingTab(state.activeAsdaTabId, url, active);
-        return { tabId, state: { ...state, activeAsdaTabId: tabId } };
-      } catch {
-        // The user may have closed the old Asda tab. Fall through and find or create another one.
-      }
-    }
-
-    const reusableTabId = await findReusableAsdaTab();
+    const reusableTabId = await findReusableAsdaTab(state.activeAsdaTabId);
     if (typeof reusableTabId === "number") {
       const tabId = await updateShoppingTab(reusableTabId, url, active);
       return { tabId, state: { ...state, activeAsdaTabId: tabId } };
@@ -746,7 +734,7 @@ importScripts("product-policy.js");
   }
 
   async function saveProductLink(itemId: string | undefined, productUrl: string | undefined, fallbackState?: AsdaHelperState): Promise<AsdaHelperRuntimeResponse> {
-    const cleanUrl = (productUrl ?? "").trim();
+    const cleanUrl = normalizeOpenUrl(productUrl ?? "");
     if (!cleanUrl) return { ok: false, error: "No Asda product URL was supplied." };
 
     const state = await getState(fallbackState);

@@ -3,6 +3,11 @@ const assert = require("node:assert/strict");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const vm = require("node:vm");
 const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync("extension/asda-helper/manifest.json","utf8"));
+const sites = ["https://weekly-meal-planning-alpha.vercel.app/*", "https://www.asda.com/groceries/*", "https://groceries.asda.com/*"].sort();
+assert.deepEqual([...manifest.host_permissions].sort(), sites);
+assert.deepEqual(manifest.content_scripts.flatMap(entry => entry.matches).sort(), sites);
+assert.deepEqual([...manifest.permissions].sort(), ["scripting","storage"]);
 
 async function testSavedProductPolicy() {
   const url = "https://groceries.asda.com/product/123";
@@ -13,7 +18,7 @@ async function testSavedProductPolicy() {
     URL, setTimeout: fn => setTimeout(fn, 0), clearTimeout,
     document:{querySelector: () => ({innerText:"ASDA Gluten-Free Pork Sausages"})},
     chrome:{
-      runtime:{onMessage:{addListener:fn => {listener=fn;}}},
+      runtime:{getManifest:() => manifest,onMessage:{addListener:fn => {listener=fn;}}},
       storage:{local:{get:(_, cb) => cb(stored), set:(state, cb) => {Object.assign(stored,state); cb();}}},
       tabs:{create:(_, cb) => cb({id:1}), onUpdated:{addListener() {}, removeListener() {}},
         remove:(_, cb) => {searchesClosed++; cb();}, query:(_, cb) => cb([]),
@@ -107,6 +112,21 @@ async function testSavedProductPolicy() {
     const fallback = await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).inputValue();
     assert.match(fallback, /Short by: 250 g/);
     assert.doesNotMatch(fallback, /Oats/);
+    // No change event: Copy must catch silent property edits before writing.
+    await page.evaluate(() => {
+      document.querySelector("article input").value = "2";
+      document.getElementById("weekwise-copy-remaining").click();
+    });
+    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
+    assert.equal(await copy.count(), 0);
+    await verify.click();
+    await copy.click();
+    assert.doesNotMatch(await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).inputValue(), /Yoghurt|My choice for this shop only/);
+    await page.locator("article input").first().fill("1");
+    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
+    await verify.click();
+    await page.evaluate(() => document.querySelector("article").remove());
+    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
     await page.evaluate(() => {
       window.fixture.queue = {createdAt:"shop-two", items:window.fixture.queue.items.filter(item => item.name === "Pasta")};
       return window.refreshHelper();
@@ -114,6 +134,9 @@ async function testSavedProductPolicy() {
     assert.equal(await copy.count(), 0);
     await verify.click();
     assert.equal(await copy.count(), 0);
+    await page.evaluate(() => document.querySelector("article").insertAdjacentHTML("afterend",
+      '<article><a href="/groceries/product/new">Milk 1 litre</a> Quantity <input aria-label="Quantity" value="1"> Remove</article>'));
+    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
     console.log("ASDA handoff passed: mixed basket, quantities, exclusions, manual copy, new shop and all-covered basket.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -8,6 +8,8 @@
   let basketLines: Array<AsdaBasketLine & { element?: HTMLElement }> = [];
   let basketMessage = "";
   let checkedQueueDate: string | undefined;
+  let checkedBasket: string | undefined;
+  let checkTimer: number | undefined;
   type ChoiceGroup = { products: AsdaProductCandidate[]; selected?: number; error?: string };
   let choiceGroups = new Map<string, ChoiceGroup>();
   let findingChoices = false;
@@ -524,9 +526,57 @@
       });
     });
 
-    basketLines = Array.from(lines.values()).map((line, index) => ({ ...line, index }));
-    return basketLines;
+    return Array.from(lines.values());
   }
+
+  function basketSignature(lines: AsdaBasketLine[]) {
+    return JSON.stringify(lines.map(line => JSON.stringify([line.url, line.name, line.lineQuantity,
+      line.packQuantity, line.packUnit, line.totalQuantity, line.totalUnit])).sort());
+  }
+
+  function stopBasketWatch() {
+    basketObserver.disconnect();
+    window.clearTimeout(checkTimer);
+    checkTimer = undefined;
+    checkedBasket = undefined;
+  }
+
+  function checkStillCurrent() {
+    if (checkedBasket === undefined) return false;
+    const lines = isBasketPage() ? scanBasketLines() : [];
+    if (isBasketPage() && basketSignature(lines) === checkedBasket) {
+      basketLines = lines;
+      return true;
+    }
+    stopBasketWatch();
+    choiceGroups = new Map();
+    findingChoices = false;
+    basketLines = [];
+    basketChecks = [];
+    basketMessage = "Basket changed. Verify basket again before continuing.";
+    render();
+    return false;
+  }
+
+  function scheduleBasketCheck() {
+    if (checkedBasket === undefined || checkTimer !== undefined) return;
+    checkTimer = window.setTimeout(() => {
+      checkTimer = undefined;
+      checkStillCurrent();
+    }, 250);
+  }
+
+  const basketObserver = new MutationObserver(records => {
+    if (records.some(record => {
+      const target = record.target instanceof Element ? record.target : record.target.parentElement;
+      return target && !insideWeekwiseHelper(target);
+    })) scheduleBasketCheck();
+  });
+  for (const event of ["input", "change"]) document.addEventListener(event, e => {
+    if (e.target instanceof Element && !insideWeekwiseHelper(e.target)) scheduleBasketCheck();
+  }, true);
+  window.addEventListener("focus", scheduleBasketCheck);
+  document.addEventListener("visibilitychange", scheduleBasketCheck);
 
   function lineMatchScore(item: AsdaHelperQueueItem, state: AsdaHelperState, line: AsdaBasketLine) {
     let score = 0;
@@ -664,6 +714,15 @@
     }
 
     const lines = scanBasketLines();
+    const signature = basketSignature(lines);
+    if (checkedBasket !== signature) {
+      choiceGroups = new Map();
+      findingChoices = false;
+    }
+    checkedBasket = signature;
+    basketLines = lines;
+    basketObserver.observe(document.body, { childList:true, subtree:true, characterData:true,
+      attributes:true, attributeFilter:["value","selected","aria-label","aria-valuenow","alt","href","title","hidden"] });
     basketChecks = state.queue.items.map((item) => basketCheckForItem(item, state, lines));
     const shortCount = basketChecks.filter((check) => check.status === "short").length;
     const missingCount = basketChecks.filter((check) => check.status === "missing").length;
@@ -674,7 +733,7 @@
   }
 
   async function addOneMoreForCheck(check: AsdaBasketCheck) {
-    const line = typeof check.basketLineIndex === "number" ? basketLines[check.basketLineIndex] : undefined;
+    const line = basketLines.find(entry => entry.url === check.basketProductUrl);
     if (!line?.element) {
       basketMessage = "Could not find a safe quantity increase button for that basket line.";
       render();
@@ -819,7 +878,7 @@
   }
 
   async function findChoices() {
-    if (findingChoices || !isBasketPage()) return;
+    if (findingChoices || !checkStillCurrent()) return;
     const groups = new Map<string, ChoiceGroup>();
     choiceGroups = groups;
     findingChoices = true;
@@ -1058,6 +1117,7 @@
     const existing = document.getElementById("weekwise-asda-helper");
     const state = latestState;
     if (checkedQueueDate !== undefined && (checkedQueueDate !== state?.queue?.createdAt || !isBasketPage())) {
+      stopBasketWatch();
       choiceGroups = new Map();
       findingChoices = false;
       basketChecks = [];
@@ -1185,6 +1245,7 @@
       render();
     });
     document.getElementById("weekwise-copy-remaining")?.addEventListener("click", async () => {
+      if (!checkStillCurrent()) return;
       const result = document.getElementById("weekwise-copy-result");
       const brief = state && remainingShopBrief(state);
       if (!result) return;
@@ -1206,18 +1267,22 @@
     document.getElementById("weekwise-find-choices")?.addEventListener("click", () => void findChoices());
     reviewableBasketChecks().forEach((check, index) => {
       root.querySelectorAll<HTMLInputElement>(`input[name="weekwise-choice-${index}"]`).forEach(input => input.addEventListener("change", () => {
+        if (!checkStillCurrent()) return;
         const group = choiceGroups.get(check.itemId);
         if (group) group.selected = Number(input.value);
         const result = document.getElementById("weekwise-copy-result");
         if (result) result.textContent = "Choice recorded. Copy the updated brief to continue in ChatGPT.";
       }));
       document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
+        if (!checkStillCurrent()) return;
         window.location.href = check.basketProductUrl || check.openUrl;
       });
       document.getElementById(`weekwise-basket-plus-${index}`)?.addEventListener("click", () => {
+        if (!checkStillCurrent()) return;
         void addOneMoreForCheck(check);
       });
       document.getElementById(`weekwise-basket-ok-${index}`)?.addEventListener("click", () => {
+        if (!checkStillCurrent()) return;
         basketChecks = basketChecks.map((candidate) => (candidate.itemId === check.itemId ? { ...candidate, status: "ok", message: "Marked as adequate after review." } : candidate));
         basketMessage = "Marked item as adequate.";
         render();

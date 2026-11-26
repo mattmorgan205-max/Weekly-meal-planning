@@ -20,11 +20,15 @@ npm run build:extension
 
 If your deployed Vercel URL changes, update the URL in `manifest.json`, then reload the extension.
 
+The normal build only connects to the named Weekwise deployment and ASDA shopping hosts. It does not request general tab access or run on localhost or unrelated Vercel previews. To test a local Weekwise server, run `npm run build:extension:local` and load `dist/asda-helper-local` instead. Disable the production helper while testing so only one helper runs on ASDA. The local build does not modify the production manifest.
+
 ## Finish a shop with ChatGPT
 
 Open the ASDA trolley and select **Verify basket** in the Weekwise overlay. If anything is short, missing or uncertain, select **Copy remaining shop for ChatGPT**. Select your ASDA Chrome tab in ChatGPT and paste the brief. No shopping data is sent to ChatGPT by the button itself. Items marked **Looks ok** are omitted. Verify again after changing the trolley; checkout stays manual.
 
 After updating an unpacked extension, click **Reload** in Chrome's extensions page and refresh the ASDA tab.
+
+If a visible trolley line or quantity changes after verification, the helper drops the old results and choices and prompts you to verify again. A previously copied brief cannot be recalled; copy a new one after verifying. Changes made on another device are detected once they appear in the open ASDA trolley.
 
 For unresolved items at the end of a shop, keep the trolley tab open. Choose **Verify basket**, then **Find product choices**. The helper reads ASDA search results in temporary tabs without adding products. Select one product per item, or **Skip this item**. Copy the updated brief back to ChatGPT to act on your choices. Choices are for this shop only, not saved favourites; refreshing product choices starts a new selection. Missing product information or no suitable results means manual review, not a guessed substitution.
 

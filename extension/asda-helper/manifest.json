@@ -1,16 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Weekwise Asda Helper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Guided Asda shopping helper for Weekwise Meal Planner shopping lists.",
-  "permissions": ["storage", "tabs", "scripting"],
+  "permissions": ["storage", "scripting"],
   "host_permissions": [
     "https://groceries.asda.com/*",
     "https://www.asda.com/groceries/*",
-    "https://weekly-meal-planning-alpha.vercel.app/*",
-    "https://*.vercel.app/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "https://weekly-meal-planning-alpha.vercel.app/*"
   ],
   "background": {
     "service_worker": "build/background.js"
@@ -22,10 +19,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://weekly-meal-planning-alpha.vercel.app/*",
-        "https://*.vercel.app/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "https://weekly-meal-planning-alpha.vercel.app/*"
       ],
       "js": ["build/app-content.js"],
       "run_at": "document_idle"
