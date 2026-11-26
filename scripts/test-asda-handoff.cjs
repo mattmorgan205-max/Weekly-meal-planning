@@ -72,9 +72,13 @@ async function testSavedProductPolicy() {
     await page.addScriptTag({path: "extension/asda-helper/build/product-policy.js"});
     await page.addScriptTag({path: "extension/asda-helper/build/asda-content.js"});
     const copy = page.getByRole("button", { name: "Copy remaining shop for ChatGPT" });
-    const verify = page.getByRole("button", { name: "Verify basket" });
+    const verify = async () => {
+      await page.getByRole("button", { name: "Verify basket" }).click();
+      await page.getByRole("button", { name: "All trolley items are visible" }).click();
+      await page.getByText("Trolley checked.", { exact: true }).waitFor();
+    };
     assert.equal(await copy.count(), 0);
-    await verify.click();
+    await verify();
     await copy.click();
     const brief = await page.evaluate(() => window.brief);
     assert.match(brief, /Yoghurt \| Total needed: 750 g \| In trolley: 500 g \| Short by: 250 g/);
@@ -119,12 +123,12 @@ async function testSavedProductPolicy() {
     });
     await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
     assert.equal(await copy.count(), 0);
-    await verify.click();
+    await verify();
     await copy.click();
     assert.doesNotMatch(await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).inputValue(), /Yoghurt|My choice for this shop only/);
     await page.locator("article input").first().fill("1");
     await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
-    await verify.click();
+    await verify();
     await page.evaluate(() => document.querySelector("article").remove());
     await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
     await page.evaluate(() => {
@@ -132,7 +136,7 @@ async function testSavedProductPolicy() {
       return window.refreshHelper();
     });
     assert.equal(await copy.count(), 0);
-    await verify.click();
+    await verify();
     assert.equal(await copy.count(), 0);
     await page.evaluate(() => document.querySelector("article").insertAdjacentHTML("afterend",
       '<article><a href="/groceries/product/new">Milk 1 litre</a> Quantity <input aria-label="Quantity" value="1"> Remove</article>'));
