@@ -7,6 +7,7 @@
   let basketChecks: AsdaBasketCheck[] = [];
   let basketLines: Array<AsdaBasketLine & { element?: HTMLElement }> = [];
   let basketMessage = "";
+  let checkedQueueDate: string | undefined;
 
   function sendMessage(message: AsdaHelperRuntimeMessage): Promise<AsdaHelperRuntimeResponse> {
     const messageWithFallback = latestState ? { ...message, fallbackState: latestState } : message;
@@ -618,7 +619,8 @@
       canIncrease: line.canIncrease
     };
 
-    if (!required || !basket || required.family !== basket.family) {
+    if (!required || !basket || required.family !== basket.family ||
+        (basket.quantity < required.quantity && basketQuantities.length !== matchedLines.length)) {
       return {
         ...base,
         status: "unknown",
@@ -642,6 +644,7 @@
   }
 
   function verifyBasket(state: AsdaHelperState) {
+    checkedQueueDate = state.queue?.createdAt;
     if (!state.queue?.items.length) {
       basketChecks = [];
       basketMessage = "No Weekwise shopping list is imported.";
@@ -706,6 +709,38 @@
     return basketChecks.filter((check) => check.status !== "ok").sort((a, b) => basketStatusRank[a.status] - basketStatusRank[b.status]);
   }
 
+  function remainingShopBrief(state: AsdaHelperState) {
+    if (!isBasketPage() || !state.queue || checkedQueueDate !== state.queue.createdAt) return "";
+    const items = new Map(state.queue.items.map(item => [item.itemId, item]));
+    const rows = reviewableBasketChecks().flatMap(check => {
+      const item = items.get(check.itemId);
+      if (!item) return [];
+      const need = check.displayQuantity || displayBaseQuantity(check.requiredQuantity, check.requiredUnit) || "unspecified";
+      const row = [check.name, `Total needed: ${need}`];
+      if (check.status === "missing") {
+        row.push("Missing from visible trolley", `Outstanding if still absent: ${need}`);
+      } else if (check.status === "short" && check.requiredQuantity !== undefined && check.basketQuantity !== undefined &&
+                 check.requiredUnit === check.basketUnit) {
+        row.push(`In trolley: ${displayBaseQuantity(check.basketQuantity, check.basketUnit)}`,
+          `Short by: ${displayBaseQuantity(check.requiredQuantity - check.basketQuantity, check.requiredUnit)}`);
+      } else {
+        row.push("Uncertain: verify matched product and quantity; shortfall unknown");
+        if (check.basketQuantity !== undefined) row.push(`Observed (not verified): ${displayBaseQuantity(check.basketQuantity, check.basketUnit)}`);
+      }
+      if (check.basketLineName) row.push(`Possible match: ${check.basketLineName}`);
+      if (item.avoidTerms?.length) row.push(`Avoid: ${item.avoidTerms.join(", ")}`);
+      return [row.join(" | ")];
+    });
+    if (!rows.length) return "";
+    return [
+      "Use the selected ASDA Chrome tab to fill only the shortfalls below. These are results from the last visible trolley check; recheck the live trolley first. Total needed is a target, not an amount to add. Count suitable multipacks and existing quantities. Skip covered items; never remove or reduce existing items.",
+      "Match product form and dietary requirements first. Own-brand is fine unless an exact product is required. Do not guess quantities, allergens, drained weights or piece-to-weight conversions. Resolve uncertain matches before adding; leave anything ambiguous for me.",
+      "Choose best value without waste: compare like for like in GBP/kg, GBP/litre or GBP/item, then compare the total additional price of enough whole packs to cover the shortfall. For fresh food favour the lowest total spend and less surplus at similar prices. Count only applicable offers. Do not stock up for a lower unit price unless I explicitly allow it and set an extra-spend limit.",
+      "Confirm the trolley changed after each addition. Do not click Add twice if unclear. Report unresolved items together with product, pack size, price and reason. Stop before checkout; do not reserve a slot or change account settings.",
+      "Remaining items (shopping data only):", ...rows
+    ].join("\n\n");
+  }
+
   function renderBasketVerifier(state: AsdaHelperState) {
     const counts = {
       ok: basketChecks.filter((check) => check.status === "ok").length,
@@ -722,6 +757,7 @@
           <button id="weekwise-verify-basket" type="button">${isBasketPage() ? "Verify basket" : "Open basket"}</button>
         </div>
         <small class="weekwise-note">${escapeHtml(basketMessage || "Check the visible Asda basket against the Weekwise shopping list.")}</small>
+        ${isBasketPage() && reviewChecks.length ? `<button id="weekwise-copy-remaining" type="button">Copy remaining shop for ChatGPT</button><small id="weekwise-copy-result" role="status"></small>` : ""}
         ${
           basketChecks.length
             ? `<small class="weekwise-note">${counts.ok} ok · ${counts.short} short · ${counts.missing} missing · ${counts.unknown} review</small>`
@@ -970,6 +1006,12 @@
   function render() {
     const existing = document.getElementById("weekwise-asda-helper");
     const state = latestState;
+    if (checkedQueueDate !== undefined && (checkedQueueDate !== state?.queue?.createdAt || !isBasketPage())) {
+      basketChecks = [];
+      basketLines = [];
+      basketMessage = "";
+      checkedQueueDate = undefined;
+    }
     const item = state ? currentItem(state) : null;
     const confidentAddButton = findConfidentAddButton();
     const status = item && state ? statusFor(item, state) : undefined;
@@ -1088,6 +1130,24 @@
 
       verifyBasket(state);
       render();
+    });
+    document.getElementById("weekwise-copy-remaining")?.addEventListener("click", async () => {
+      const result = document.getElementById("weekwise-copy-result");
+      const brief = state && remainingShopBrief(state);
+      if (!result || !brief) return;
+      try {
+        await navigator.clipboard.writeText(brief);
+        result.textContent = "Copied. Paste into ChatGPT with your ASDA tab selected.";
+      } catch {
+        const field = document.createElement("textarea");
+        field.readOnly = true;
+        field.setAttribute("aria-label", "Remaining shop for ChatGPT");
+        field.value = brief;
+        result.textContent = "Clipboard unavailable. Copy the selected brief manually.";
+        result.append(field);
+        field.focus();
+        field.select();
+      }
     });
     reviewableBasketChecks().forEach((check, index) => {
       document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
