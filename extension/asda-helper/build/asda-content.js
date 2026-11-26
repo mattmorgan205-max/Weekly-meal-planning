@@ -8,9 +8,14 @@
     let basketChecks = [];
     let basketLines = [];
     let basketMessage = "";
+    let scanProducts = [];
     let checkedQueueDate;
     let checkedBasket;
     let checkedWithCount = false;
+    let checkedLayout = "";
+    let increasing;
+    const approved = new Set();
+    const reviewEvidence = new Map();
     let checkTimer;
     let scanGeneration = 0;
     let confirmVisibleSignature;
@@ -47,7 +52,7 @@
         return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
     }
     function buttonDisabled(element) {
-        return element instanceof HTMLButtonElement ? element.disabled : element.getAttribute("aria-disabled") === "true";
+        return (element instanceof HTMLButtonElement && element.disabled) || element.getAttribute("aria-disabled") === "true";
     }
     function insideWeekwiseHelper(element) {
         return Boolean(element.closest("#weekwise-asda-helper"));
@@ -307,26 +312,6 @@
     function wait(ms) {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
-    async function activateElement(element) {
-        element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-        element.focus();
-        await wait(150);
-        const pointerOptions = { bubbles: true, cancelable: true, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1 };
-        const mouseOptions = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
-        try {
-            element.dispatchEvent(new PointerEvent("pointerdown", pointerOptions));
-        }
-        catch {
-        }
-        element.dispatchEvent(new MouseEvent("mousedown", mouseOptions));
-        element.dispatchEvent(new MouseEvent("mouseup", { ...mouseOptions, buttons: 0 }));
-        try {
-            element.dispatchEvent(new PointerEvent("pointerup", { ...pointerOptions, buttons: 0 }));
-        }
-        catch {
-        }
-        element.click();
-    }
     function quantityInput(container) {
         return Array.from(container.querySelectorAll("input")).find((element) => {
             const label = `${element.getAttribute("aria-label") ?? ""} ${element.name ?? ""} ${element.id ?? ""}`.toLowerCase();
@@ -352,7 +337,7 @@
     async function increaseQuantityControl(container) {
         const button = findIncreaseButton(container);
         if (button) {
-            await activateElement(button);
+            button.click();
             return true;
         }
         const input = quantityInput(container);
@@ -433,9 +418,9 @@
             return siblingButtons[siblingButtons.length - 1];
         return undefined;
     }
-    function findBasketContainer(anchor) {
+    function findBasketContainer(anchor, root) {
         let current = anchor;
-        for (let depth = 0; current && current !== document.body && depth < 12; depth += 1) {
+        for (let depth = 0; current && current !== root && depth < 12; depth += 1) {
             const text = visibleText(current);
             const urls = new Set(Array.from(current.querySelectorAll("a[href*='/product/']")).map(link => new URL(link.href).pathname));
             if (urls.size > 1)
@@ -451,11 +436,15 @@
         }
         return null;
     }
-    const nonBasketArea = "nav, header, footer, #weekwise-asda-helper, [aria-label*='recommend' i], [data-testid*='recommend' i], [data-auto-id*='recommend' i], [data-testid*='carousel' i]";
-    function basketAnchors() {
-        const root = document.querySelector("main") ?? document.body;
-        return Array.from(root.querySelectorAll("a[href*='/product/']"))
-            .filter(anchor => elementVisible(anchor) && !anchor.closest(nonBasketArea));
+    const nonBasketArea = "nav, body > header, [role=banner], footer, #weekwise-asda-helper, [aria-label*='recommend' i], [aria-label*='you may also like' i], [data-testid*='recommend' i], [data-auto-id*='recommend' i], [data-testid*='carousel' i], [data-auto-id*='carousel' i]";
+    const trolleyRow = "[data-testid='trolley-item' i],[data-auto-id='trolley-item' i],[data-testid='basket-item' i],[data-auto-id='basket-item' i]";
+    function trolleyRoot() {
+        const dialog = Array.from(document.querySelectorAll("dialog[open], [role=dialog]")).find(el => {
+            const heading = el.querySelector("h1,h2,[role=heading]");
+            const labelled = el.getAttribute("aria-labelledby")?.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(" ");
+            return elementVisible(el) && /\b(trolley|basket)\b/i.test(el.getAttribute("aria-label") || labelled || heading?.textContent || "");
+        });
+        return dialog ?? document.querySelector("main, [role=main]") ?? document.body;
     }
     function productKey(href) {
         try {
@@ -466,24 +455,21 @@
             return "";
         }
     }
-    function scanBasketLines(anchors = basketAnchors()) {
+    function scanTrolley() {
+        const root = trolleyRoot();
+        const visible = (selector) => Array.from(root.querySelectorAll(selector))
+            .filter(el => !root.contains(el.closest(nonBasketArea)) && elementVisible(el));
+        const anchors = visible("a[href*='/product/']");
         const lines = new Map();
-        anchors.forEach((anchor) => {
-            const url = productKey(anchor.href);
-            if (lines.has(url))
-                return;
-            const container = findBasketContainer(anchor);
-            if (!container)
-                return;
+        const record = (container, name, url) => {
             const rawText = visibleText(container);
-            const image = container.querySelector("img") ?? anchor.querySelector("img");
-            const name = withDietBadge(firstUsefulLine(image?.alt || anchor.getAttribute("aria-label") || visibleText(anchor) || rawText), container);
+            name = withDietBadge(firstUsefulLine(name), container);
             const lineQuantity = extractBasketLineQuantity(container);
             const packText = rawText.replace(/(?:\/|\bper)\s*(?:100\s*)?(?:kg|g|ml|l)\b/gi, "");
             const packQuantity = extractProductQuantity(name) ?? extractProductQuantity(packText);
             const totalQuantity = lineQuantity !== undefined && packQuantity ? packQuantity.quantity * lineQuantity : lineQuantity;
             const totalUnit = packQuantity?.unit ?? "item";
-            lines.set(url, {
+            lines.set(url || normalizeText(name), {
                 index: lines.size,
                 url,
                 name,
@@ -496,14 +482,50 @@
                 canIncrease: Boolean(findIncreaseButton(container) || quantityInput(container) || quantitySelect(container)),
                 element: container
             });
-        });
-        return Array.from(lines.values());
+        };
+        for (const anchor of anchors) {
+            const url = productKey(anchor.href);
+            if (lines.has(url))
+                continue;
+            const container = findBasketContainer(anchor, root);
+            if (container)
+                record(container, container.querySelector("img")?.alt ||
+                    anchor.getAttribute("aria-label") || visibleText(anchor) || visibleText(container), url);
+        }
+        let unreadRows = 0;
+        const names = new Set(Array.from(lines.values(), line => normalizeText(line.name)));
+        const rows = visible(trolleyRow);
+        for (const candidate of visible("article, li")) {
+            if (!candidate.closest(trolleyRow) && !candidate.querySelector("article, li, " + trolleyRow) &&
+                visibleEnabledControls(candidate).some(control => /\bremove\b.*\b(?:trolley|basket)\b/i.test(controlLabel(control))))
+                rows.push(candidate);
+        }
+        for (const row of rows) {
+            const links = Array.from(row.querySelectorAll("a[href*='/product/']"));
+            if (links.some(a => lines.has(productKey(a.href))))
+                continue;
+            const title = row.querySelector("[data-testid*='product-name' i], [data-auto-id*='product-name' i], [data-auto-id*='productname' i], [itemprop=name], h2, h3, h4, [role=heading]");
+            const name = visibleText(title) || row.querySelector("img[alt]")?.alt || "";
+            const key = normalizeText(withDietBadge(firstUsefulLine(name), row));
+            if (!key || names.has(key) || links.length) {
+                unreadRows++;
+                continue;
+            }
+            record(row, name);
+            names.add(key);
+        }
+        const unreadLinks = new Set(anchors.map(a => productKey(a.href)).filter(url => !lines.has(url))).size;
+        const products = Array.from(lines.values());
+        const layout = JSON.stringify([products.map(line => JSON.stringify([line.url, line.name, line.packQuantity, line.packUnit])).sort(),
+            Array.from(new Set(anchors.map(a => productKey(a.href)))).sort(), unreadRows]);
+        return { lines: products, layout, readiness: basketReadiness(root, visible, products, unreadRows, unreadLinks) };
     }
     function basketSignature(lines) {
         return JSON.stringify(lines.map(line => JSON.stringify([line.url, line.name, line.lineQuantity,
             line.packQuantity, line.packUnit, line.totalQuantity, line.totalUnit])).sort());
     }
     function stopBasketWatch() {
+        scanProducts = [];
         scanGeneration++;
         confirmVisibleSignature = undefined;
         basketObserver.disconnect();
@@ -514,19 +536,16 @@
     function checkStillCurrent() {
         if (checkedBasket === undefined)
             return false;
-        const lines = isBasketPage() ? scanBasketLines() : [];
-        const readiness = basketReadiness(lines);
-        if (isBasketPage() && !readiness.blocked && (!checkedWithCount || readiness.countKnown) && basketSignature(lines) === checkedBasket) {
+        const { lines, readiness, layout } = scanTrolley();
+        if (isBasketPage() && !readiness.blocked && (readiness.countKnown || (!checkedWithCount && layout === checkedLayout)) &&
+            basketSignature(lines) === checkedBasket) {
             basketLines = lines;
             return true;
         }
-        stopBasketWatch();
-        choiceGroups = new Map();
-        findingChoices = false;
-        basketLines = [];
-        basketChecks = [];
-        basketMessage = "Basket changed. Verify basket again before continuing.";
-        render();
+        if (latestState && isBasketPage())
+            void verifyBasket(latestState, undefined, true);
+        else
+            render();
         return false;
     }
     function scheduleBasketCheck() {
@@ -650,152 +669,190 @@
                 sourceMeals: item.sourceMeals, requiredQuantity: required?.quantity, requiredUnit: required?.unit,
                 basketQuantity: required && line && status !== "unknown" ? used : undefined, basketUnit: required?.unit,
                 basketLineName: (assigned.length ? assigned : candidates).map(x => x.name).join(", "),
-                basketProductUrl: line?.url, basketLineIndex: line?.index, canIncrease: status === "short" && line?.canIncrease,
+                basketProductUrl: line?.url, basketLineIndex: line?.index, canIncrease: status === "short" && Boolean(line?.url) && line?.canIncrease,
                 openUrl: state.productLinks[item.shoppingKey] || item.savedProductUrl || item.searchUrl, status, message };
         });
     }
-    function basketReadiness(lines, anchors = basketAnchors()) {
-        const root = document.querySelector("main") ?? document.body;
-        const visible = (selector) => Array.from(root.querySelectorAll(selector))
-            .filter(el => !el.closest(nonBasketArea) && elementVisible(el));
+    function basketReadiness(root, visible, lines, unreadRows, unreadLinks) {
         const busy = root.getAttribute("aria-busy") === "true" ||
-            visible("[aria-busy=true], [role=progressbar], [data-testid*='skeleton' i], [data-auto-id*='skeleton' i]").length > 0;
-        const more = visible("button, a, [role=button]").find(el => !buttonDisabled(el) &&
-            (el.getAttribute("rel") === "next" || /^(?:(?:load|show|view) more(?: (?:trolley |basket )?(?:items|products))?|next page)$/i.test((el.getAttribute("aria-label") || visibleText(el)).trim())));
+            visible("[aria-busy=true], [role=progressbar]:not([aria-valuenow]), [data-testid*='skeleton' i], [data-auto-id*='skeleton' i]").some(el => !el.closest("[aria-label*='delivery' i], [data-testid*='delivery' i], [aria-label*='saving' i], [data-testid*='saving' i]"));
+        const more = visible("button, a, [role=button]").find(el => {
+            if (buttonDisabled(el))
+                return false;
+            const label = (el.getAttribute("aria-label") || visibleText(el)).trim();
+            if (/^(?:load|show|view) more (?:trolley |basket )?(?:items|products)$/i.test(label))
+                return true;
+            if (el.getAttribute("rel") !== "next" && !/^(?:(?:show|load|view) more|next page)$/i.test(label))
+                return false;
+            const context = el.closest("section, [role=region], main, [role=main], [role=dialog]") ?? el.parentElement;
+            return context?.querySelector("a[href*='/product/'], " + trolleyRow);
+        });
         const group = visible("button[aria-expanded=false][aria-controls]").find(button => {
             if (buttonDisabled(button))
                 return false;
             const section = document.getElementById(button.getAttribute("aria-controls") ?? "");
             return section && root.contains(section) && !section.closest(nonBasketArea) &&
-                section.querySelector("a[href*='/product/']") && !elementVisible(section);
+                section.querySelector("a[href*='/product/'], " + trolleyRow) && !elementVisible(section);
         });
-        const found = new Set(lines.map(line => line.url));
-        const unread = anchors.some(anchor => !found.has(productKey(anchor.href))) ||
-            visible("[data-testid='trolley-item' i],[data-auto-id='trolley-item' i],[data-testid='basket-item' i]").some(row => !Array.from(row.querySelectorAll("a[href*='/product/']")).some(a => found.has(productKey(a.href))));
-        let countKnown = false, mismatch = false;
+        const packs = lines.every(line => line.lineQuantity !== undefined) ?
+            lines.reduce((sum, line) => sum + line.lineQuantity, 0) : undefined;
+        let countKnown = false, mismatch = "";
         for (const el of visible("h1,h2,h3,[role=heading],[data-testid*='count' i],[data-auto-id*='count' i],[data-testid*='empty' i],[data-auto-id*='empty' i],[aria-label*='trolley' i],[aria-label*='basket' i],p,[role=status]")) {
             const label = (el.getAttribute("aria-label") || visibleText(el)).trim();
             if (label.length > 120)
                 continue;
             const empty = /^(?:your |the )?(?:basket|trolley) is (?:currently )?empty[.!]?$/i.test(label);
-            const count = /(?:trolley|basket)\s*[:(,\-]?\s*(\d+)\s*(items?|products?)\b|^(\d+)\s*(items?|products?)(?:\s+in (?:your |the )?(?:basket|trolley)\b|$)/i.exec(label);
-            if (!empty && !count)
+            const count = /(?:trolley|basket)(?:\s+contains)?\s*[:(,\-]?\s*(\d+)\s*(items?|products?)\b|^(\d+)\s*(items?|products?)\s+in (?:your |the )?(?:basket|trolley)\b/i.exec(label);
+            const bare = /(?:basket|trolley)/i.test([el.getAttribute("data-testid"), el.getAttribute("data-auto-id")].join(" ")) ?
+                /^(\d+)\s*(items?|products?)$/i.exec(label) : null;
+            if (!empty && !count && !bare)
                 continue;
-            const n = empty ? 0 : Number(count[1] ?? count[3]);
-            if (empty || /product/i.test(count?.[2] ?? count?.[4] ?? "")) {
+            const n = empty ? 0 : Number(count?.[1] ?? count?.[3] ?? bare?.[1]);
+            const unit = count?.[2] ?? count?.[4] ?? bare?.[2] ?? "products";
+            if (n === lines.length || (!empty && /^items?/i.test(unit) && packs === n))
                 countKnown = true;
-                mismatch ||= n !== lines.length;
-            }
-            else {
-                const min = lines.reduce((sum, line) => sum + (line.lineQuantity ?? 1), 0);
-                const allKnown = lines.every(line => line.lineQuantity !== undefined);
-                mismatch ||= n < min || (allKnown && n !== min);
-                countKnown ||= allKnown && n === min;
-            }
+            else if (empty || /^product/i.test(unit) || packs !== undefined || n < lines.length)
+                mismatch = "ASDA shows " + n + " " + unit + ".";
         }
-        return { blocked: busy || Boolean(more || group) || unread || mismatch || (!lines.length && !countKnown), countKnown, group, more, busy, mismatch };
+        const unresolved = unreadRows + unreadLinks;
+        const ambiguousLinks = unreadLinks > 0 && countKnown && lines.length > 0 && !unreadRows;
+        const reason = busy ? "The trolley is still loading. Wait for it to finish, then verify again." :
+            more || group ? "Open the remaining trolley items or sections, then verify again." :
+                mismatch ? mismatch + " Show the full product list, then verify again." :
+                    unresolved && !ambiguousLinks ? "Some product rows could not be identified. Expand the product list and verify again." :
+                        !lines.length && !countKnown ? "Open the full trolley. No product rows or empty-trolley notice were found." : "";
+        return { blocked: Boolean(reason), reason, countKnown: countKnown && !ambiguousLinks, group, more, busy, mismatch };
     }
-    async function verifyBasket(state, confirmed) {
+    function applyBasketCheck(state, lines) {
+        basketChecks = allocateBasket(state, lines).map((check, index) => {
+            const item = state.queue.items[index];
+            const matches = lines.filter(line => exactItemNameMatch(item.name, line.name) ||
+                (line.url && line.url === check.basketProductUrl) || lineMatchScore(item, state, line) >= 20);
+            const evidence = JSON.stringify([check.status, check.basketQuantity, check.requiredQuantity, check.requiredUnit,
+                basketSignature(matches)]);
+            if (reviewEvidence.get(check.itemId) !== evidence) {
+                approved.delete(check.itemId);
+                choiceGroups.delete(check.itemId);
+            }
+            reviewEvidence.set(check.itemId, evidence);
+            return approved.has(check.itemId) ? { ...check, status: "ok", message: "Marked as adequate after review." } : check;
+        });
+    }
+    async function verifyBasket(state, confirmed, live = false) {
+        const trustedLayout = live && !checkedWithCount ? checkedLayout : undefined;
         stopBasketWatch();
         const generation = scanGeneration;
         checkedQueueDate = state.queue?.createdAt;
-        basketLines = [];
-        basketChecks = [];
-        choiceGroups = new Map();
+        choiceGroups = new Map(choiceGroups);
         findingChoices = false;
         if (!state.queue?.items.length || !isBasketPage()) {
             basketMessage = "Open the Asda trolley and import a shopping list first.";
             render();
             return false;
         }
-        basketMessage = "Reading your trolley...";
+        basketMessage = live ? "Updating trolley quantities..." : "Reading your trolley...";
         render();
         let previous;
         const expanded = new Set();
         const openedGroups = new Set();
-        for (let attempt = 0; attempt < 12; attempt++) {
+        let progress = "", idleSince = performance.now();
+        const deadline = idleSince + 25000;
+        while (true) {
             if (generation !== scanGeneration || latestState?.queue?.createdAt !== checkedQueueDate || !isBasketPage())
                 return false;
-            const anchors = basketAnchors();
-            const lines = scanBasketLines(anchors), readiness = basketReadiness(lines, anchors);
+            const { lines, readiness, layout } = scanTrolley();
             const sig = basketSignature(lines);
+            const observed = sig + readiness.reason;
+            if (observed !== progress) {
+                progress = observed;
+                idleSince = performance.now();
+            }
             const more = readiness.more;
             const group = readiness.group;
-            if (!readiness.busy && group instanceof HTMLButtonElement && (!group.form || group.type === "button")) {
+            if (!live && !readiness.busy && group instanceof HTMLButtonElement && (!group.form || group.type === "button")) {
                 const id = group.getAttribute("aria-controls");
                 if (!openedGroups.has(id)) {
                     openedGroups.add(id);
                     group.click();
                 }
             }
-            else if (!readiness.busy && more instanceof HTMLButtonElement && (!more.form || more.type === "button") && !expanded.has(sig) &&
+            else if (!live && !readiness.busy && more instanceof HTMLButtonElement && (!more.form || more.type === "button") && !expanded.has(sig) &&
                 /^(?:load|show|view) more (?:trolley |basket )?(?:items|products)$/i.test((more.getAttribute("aria-label") || visibleText(more)).trim())) {
                 expanded.add(sig);
                 more.click();
             }
-            if (readiness.mismatch && !readiness.busy && !more && !group && !expanded.has(sig) && lines.length) {
+            if (!live && readiness.mismatch && !readiness.busy && !more && !group && !expanded.has(sig) && lines.length) {
                 expanded.add(sig);
                 lines[lines.length - 1].element?.scrollIntoView({ block: "nearest", behavior: "instant" });
             }
             if (!readiness.blocked && sig === previous) {
-                if (!readiness.countKnown && confirmed !== sig) {
+                if (!readiness.countKnown && confirmed !== sig && trustedLayout !== layout) {
+                    basketLines = [];
+                    basketChecks = [];
                     confirmVisibleSignature = sig;
-                    basketMessage = "ASDA hasn't shown a trolley count. Check that all items are visible.";
+                    scanProducts = lines.map(line => line.name);
+                    basketMessage = "Read " + lines.length + " distinct trolley products. Confirm only if the products below match your full trolley.";
                     render();
                     return false;
                 }
                 checkedBasket = sig;
                 checkedWithCount = readiness.countKnown;
+                checkedLayout = layout;
                 basketLines = lines;
                 basketObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
-                basketChecks = allocateBasket(state, lines);
+                applyBasketCheck(state, lines);
                 basketMessage = "Trolley checked.";
                 render();
                 return true;
             }
             previous = readiness.blocked ? undefined : sig;
+            if (performance.now() - idleSince >= 4500 || performance.now() >= deadline) {
+                basketLines = [];
+                basketChecks = [];
+                scanProducts = lines.map(line => line.name);
+                const covered = lines.length ? allocateBasket(state, lines).filter(check => check.status === "ok").length : 0;
+                basketMessage = "Partial scan: read " + lines.length + " distinct product" + (lines.length === 1 ? ". " : "s. ") +
+                    (readiness.reason || "The trolley kept changing. Verify again when it settles.") +
+                    (lines.length ? " These products cover " + covered + " of " + state.queue.items.length + " shopping-list entries." : "") +
+                    " Nothing marked missing or short.";
+                render();
+                return false;
+            }
             await wait(350);
         }
-        if (generation === scanGeneration) {
-            basketMessage = "The full trolley could not be read. Let it finish loading or show the remaining items, then verify again.";
-            render();
-        }
-        return false;
     }
     async function addOneMoreForCheck(check) {
-        const line = basketLines.find(entry => entry.url === check.basketProductUrl);
+        const line = check.basketProductUrl ? basketLines.find(entry => entry.url === check.basketProductUrl) : undefined;
         if (!line?.element) {
             basketMessage = "Could not find a safe quantity increase button for that basket line.";
             render();
             return;
         }
-        const beforeQuantity = check.basketQuantity;
-        const attempted = await increaseQuantityControl(line.element);
-        if (!attempted) {
-            basketMessage = "Could not find a safe quantity increase control for that basket line.";
-            render();
+        if (increasing !== undefined)
             return;
-        }
-        basketMessage = "Trying to increase the basket quantity. Rechecking...";
+        const shop = checkedQueueDate;
+        increasing = check.itemId;
+        basketMessage = "Updating " + check.name + "...";
         render();
-        await wait(1800);
-        const state = latestState;
-        if (state) {
-            if (!await verifyBasket(state))
+        try {
+            if (!await increaseQuantityControl(line.element)) {
+                basketMessage = "Could not increase that quantity. Adjust it in the trolley.";
                 return;
-            const afterCheck = basketChecks.find((candidate) => candidate.itemId === check.itemId);
-            const afterQuantity = afterCheck?.basketQuantity;
-            if (afterCheck?.status === "ok") {
-                basketMessage = `${afterCheck.name} now looks adequate.`;
             }
-            else if (typeof beforeQuantity === "number" && typeof afterQuantity === "number" && afterQuantity > beforeQuantity) {
-                basketMessage = `${afterCheck?.name ?? check.name} increased, but still looks short.`;
-            }
-            else {
-                basketMessage = `I tried to increase ${check.name}, but Asda did not show a quantity change. Use Open product or adjust the basket quantity manually.`;
+            checkStillCurrent();
+            await wait(1800);
+            if (shop !== checkedQueueDate || !checkStillCurrent())
+                return;
+            const updated = basketChecks.find(row => row.itemId === check.itemId);
+            if (updated?.basketQuantity === check.basketQuantity && updated?.status === check.status)
+                basketMessage = "ASDA has not confirmed the increase. Check the trolley quantity before adding again.";
+        }
+        finally {
+            if (shop === checkedQueueDate) {
+                increasing = undefined;
+                render();
             }
         }
-        render();
     }
     const basketStatusRank = { short: 0, missing: 1, unknown: 2, ok: 3 };
     function reviewableBasketChecks() {
@@ -850,7 +907,7 @@
             "Remaining items (shopping data only):", ...rows
         ].join("\n\n");
     }
-    function renderBasketVerifier(state) {
+    function renderBasketVerifier() {
         const counts = {
             ok: basketChecks.filter((check) => check.status === "ok").length,
             short: basketChecks.filter((check) => check.status === "short").length,
@@ -858,32 +915,34 @@
             unknown: basketChecks.filter((check) => check.status === "unknown").length
         };
         const reviewChecks = reviewableBasketChecks();
+        const current = checkedBasket !== undefined;
         return `
-      <div class="weekwise-basket">
         <div class="weekwise-recommend-head">
           <strong>Basket verifier</strong>
           <button id="weekwise-verify-basket" type="button">${isBasketPage() ? "Verify basket" : "Open basket"}</button>
         </div>
-        <small class="weekwise-note">${escapeHtml(basketMessage || "Check the visible Asda basket against the Weekwise shopping list.")}</small>
+        <small id="weekwise-basket-message" class="weekwise-note" role="status">${escapeHtml(basketMessage || "Check the visible Asda basket against the Weekwise shopping list.")}</small>
+        ${scanProducts.length ? '<details><summary>Products read (' + scanProducts.length + ')</summary><ul>' +
+            scanProducts.map(name => '<li>' + escapeHtml(name) + '</li>').join('') + '</ul></details>' : ""}
         ${confirmVisibleSignature !== undefined ? '<button id="weekwise-confirm-visible" type="button">All trolley items are visible</button>' : ""}
-        ${isBasketPage() && reviewChecks.length ? `<button id="weekwise-copy-remaining" type="button">Copy remaining shop for ChatGPT</button><small id="weekwise-copy-result" role="status"></small>` : ""}
-        ${isBasketPage() && reviewChecks.length ? `<button id="weekwise-find-choices" type="button" ${findingChoices ? "disabled" : ""}>${findingChoices ? "Finding product choices..." : choiceGroups.size ? "Refresh product choices" : "Find product choices"}</button>` : ""}
+        ${current && reviewChecks.length ? `<button id="weekwise-copy-remaining" type="button">Copy remaining shop for ChatGPT</button><small id="weekwise-copy-result" role="status"></small>` : ""}
+        ${current && reviewChecks.length ? `<button id="weekwise-find-choices" type="button" ${findingChoices ? "disabled" : ""}>${findingChoices ? "Finding product choices..." : choiceGroups.size ? "Refresh product choices" : "Find product choices"}</button>` : ""}
         ${basketChecks.length
-            ? `<small class="weekwise-note">${counts.ok} ok · ${counts.short} short · ${counts.missing} missing · ${counts.unknown} review</small>`
+            ? `<small id="weekwise-basket-counts" class="weekwise-note">${counts.ok} ok · ${counts.short} short · ${counts.missing} missing · ${counts.unknown} review</small>`
             : ""}
         ${reviewChecks.length
-            ? `<div class="weekwise-basket-list">
+            ? `<div class="weekwise-basket-list" aria-busy="${!current}">
                 ${reviewChecks
-                .map((check, index) => `
-                      <article class="weekwise-basket-card weekwise-basket-${check.status}">
+                .map((check) => `
+                      <article data-item-id="${escapeHtml(check.itemId)}" class="weekwise-basket-card weekwise-basket-${check.status}">
                         <strong>${escapeHtml([check.displayQuantity, check.name].filter(Boolean).join(" "))}</strong>
                         <small>${escapeHtml(check.message)}</small>
                         ${check.basketLineName ? `<small>${escapeHtml(`Matched: ${check.basketLineName}`)}</small>` : ""}
-                        ${renderChoiceGroup(check, index)}
+                        ${renderChoiceGroup(check)}
                         <div class="weekwise-recommend-actions">
-                          <button id="weekwise-basket-open-${index}" type="button">Open product</button>
-                          <button id="weekwise-basket-plus-${index}" class="weekwise-primary" type="button" ${check.canIncrease ? "" : "disabled"}>Add one more</button>
-                          <button id="weekwise-basket-ok-${index}" type="button">Looks ok</button>
+                          <button data-action="open" type="button">Open product</button>
+                          <button data-action="plus" class="weekwise-primary" type="button" ${check.canIncrease && increasing !== check.itemId ? "" : "disabled"}>Add one more</button>
+                          <button data-action="ok" type="button">Looks ok</button>
                         </div>
                       </article>
                     `)
@@ -892,10 +951,9 @@
             : basketChecks.length
                 ? `<div class="weekwise-basket-card weekwise-basket-ok"><strong>All checked items look adequate</strong><small>Still review substitutions and freshness before checkout.</small></div>`
                 : ""}
-      </div>
     `;
     }
-    function renderChoiceGroup(check, index) {
+    function renderChoiceGroup(check) {
         const group = choiceGroups.get(check.itemId);
         if (!group)
             return "";
@@ -904,13 +962,13 @@
       ${labels.length ? "" : `<small>${escapeHtml(group.error || "No suitable products found. Review manually or skip.")}</small>`}
       ${[...labels, "Skip this item"].map((label, i) => {
             const value = i === labels.length ? -1 : i;
-            return `<label><input type="radio" name="weekwise-choice-${index}" value="${value}" ${group.selected === value ? "checked" : ""}> ${escapeHtml(label)}</label>`;
+            return `<label><input type="radio" name="weekwise-choice-${escapeHtml(check.itemId)}" value="${value}" ${group.selected === value ? "checked" : ""}> ${escapeHtml(label)}</label>`;
         }).join("")}</fieldset>`;
     }
     async function findChoices() {
         if (findingChoices || !checkStillCurrent())
             return;
-        const groups = new Map();
+        const groups = new Map(choiceGroups);
         choiceGroups = groups;
         findingChoices = true;
         render();
@@ -921,7 +979,14 @@
                 const response = await sendMessage({ type: "FIND_REVIEW_CHOICES", itemId: check.itemId });
                 if (groups !== choiceGroups)
                     break;
-                groups.set(check.itemId, { products: response.choices ?? [], error: response.error });
+                if (!basketChecks.some(row => row.itemId === check.itemId && row.status !== "ok"))
+                    continue;
+                const previous = groups.get(check.itemId);
+                const url = previous?.selected !== undefined ? previous.products[previous.selected]?.url : undefined;
+                const products = response.choices ?? [];
+                const index = products.findIndex(product => product.url === url);
+                groups.set(check.itemId, { products, error: response.error, selected: previous?.selected === -1 ? -1 : index >= 0 ? index : undefined });
+                document.getElementById("weekwise-copy-result")?.replaceChildren();
                 render();
             }
         }
@@ -1122,6 +1187,163 @@
         }
         return { ok: false, error: "No single safe Asda add button was found." };
     }
+    async function copyRemaining(state) {
+        if (!checkStillCurrent())
+            return;
+        const result = document.getElementById("weekwise-copy-result");
+        const brief = remainingShopBrief(state);
+        const signature = checkedBasket;
+        if (!result)
+            return;
+        if (!brief) {
+            result.textContent = "Nothing to copy. All remaining items were skipped or covered.";
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(brief);
+            result.textContent = "Copied. Paste into ChatGPT with your ASDA tab selected.";
+        }
+        catch {
+            if (!result.isConnected || checkedBasket !== signature || remainingShopBrief(state) !== brief)
+                return;
+            const field = document.createElement("textarea");
+            field.readOnly = true;
+            field.setAttribute("aria-label", "Remaining shop for ChatGPT");
+            field.value = brief;
+            result.textContent = "Clipboard unavailable. Copy the selected brief manually.";
+            result.append(field);
+            field.focus();
+            field.select();
+        }
+    }
+    function bindBasket(panel) {
+        panel.addEventListener("change", event => {
+            const input = event.target;
+            if (!(input instanceof HTMLInputElement) || input.type !== "radio" || !checkStillCurrent())
+                return;
+            const group = choiceGroups.get(input.closest("[data-item-id]")?.dataset.itemId ?? "");
+            if (!group)
+                return;
+            group.selected = Number(input.value);
+            const result = panel.querySelector("#weekwise-copy-result");
+            if (result)
+                result.textContent = "Choice recorded. Copy the updated brief to continue in ChatGPT.";
+        });
+        panel.addEventListener("click", async (event) => {
+            const button = event.target instanceof Element ? event.target.closest("button") : null;
+            const state = latestState;
+            if (!button || !state || button.disabled)
+                return;
+            switch (button.id) {
+                case "weekwise-verify-basket":
+                    if (isBasketPage())
+                        await verifyBasket(state);
+                    else {
+                        basketMessage = "Opening Asda basket...";
+                        render();
+                        await sendMessage({ type: "OPEN_BASKET" });
+                    }
+                    return;
+                case "weekwise-confirm-visible":
+                    if (confirmVisibleSignature !== undefined)
+                        await verifyBasket(state, confirmVisibleSignature);
+                    return;
+                case "weekwise-copy-remaining":
+                    await copyRemaining(state);
+                    return;
+                case "weekwise-find-choices":
+                    await findChoices();
+                    return;
+            }
+            const id = button.closest("[data-item-id]")?.dataset.itemId;
+            if (!id || !checkStillCurrent())
+                return;
+            const check = basketChecks.find(row => row.itemId === id);
+            if (!check || check.status === "ok")
+                return;
+            switch (button.dataset.action) {
+                case "open":
+                    window.location.href = check.basketProductUrl || check.openUrl;
+                    break;
+                case "plus":
+                    await addOneMoreForCheck(check);
+                    break;
+                case "ok":
+                    approved.add(id);
+                    check.status = "ok";
+                    check.message = "Marked as adequate after review.";
+                    basketMessage = "Marked item as adequate.";
+                    panel.querySelector("#weekwise-copy-result")?.replaceChildren();
+                    render();
+                    break;
+            }
+        });
+    }
+    const renderedMarkup = new WeakMap();
+    function syncBasketChildren(parent, next) {
+        const key = (el) => el.hasAttribute("data-item-id") ? "item:" + el.getAttribute("data-item-id") : el.id || el.className || el.tagName;
+        const existing = new Map(Array.from(parent.children, el => [key(el), el]));
+        const desired = Array.from(next.children);
+        const wanted = new Set(desired.map(key));
+        for (const [id, el] of existing)
+            if (!wanted.has(id))
+                el.remove();
+        desired.forEach((fresh, index) => {
+            let el = existing.get(key(fresh));
+            if (fresh.matches(".weekwise-basket-list")) {
+                el ??= fresh.cloneNode(false);
+                el.setAttribute("aria-busy", fresh.getAttribute("aria-busy"));
+                syncBasketChildren(el, fresh);
+            }
+            else {
+                const markup = fresh.outerHTML;
+                if (!el || renderedMarkup.get(el) !== markup) {
+                    const previous = el && renderedMarkup.get(el);
+                    if (el && previous && el.hasAttribute("data-item-id") &&
+                        previous.replaceAll(' checked=""', '') === markup.replaceAll(' checked=""', '')) {
+                        const radios = fresh.querySelectorAll("input[type=radio]");
+                        el.querySelectorAll("input[type=radio]").forEach((input, i) => { input.checked = radios[i].checked; });
+                    }
+                    else {
+                        if (el)
+                            el.replaceWith(fresh);
+                        el = fresh;
+                    }
+                    renderedMarkup.set(el, markup);
+                }
+            }
+            if (parent.children[index] !== el) {
+                const before = parent.children[index] ?? null;
+                if (el.parentNode === parent && typeof parent.moveBefore === "function")
+                    parent.moveBefore(el, before);
+                else
+                    parent.insertBefore(el, before);
+            }
+        });
+    }
+    function updateBasket(panel) {
+        const template = document.createElement("template");
+        template.innerHTML = renderBasketVerifier();
+        const list = panel.querySelector(".weekwise-basket-list");
+        const top = list?.scrollTop;
+        const body = panel.parentElement;
+        const bodyTop = body.scrollTop;
+        const focus = document.activeElement instanceof HTMLElement && panel.contains(document.activeElement) ? document.activeElement : null;
+        const card = focus?.closest("[data-item-id]");
+        const oldIndex = card && list ? Array.from(list.children).indexOf(card) : -1;
+        syncBasketChildren(panel, template.content);
+        if (focus && !focus.isConnected) {
+            const rows = Array.from(panel.querySelectorAll("[data-item-id]"));
+            const row = rows.find(el => el.dataset.itemId === card?.dataset.itemId) ?? rows[Math.min(oldIndex, rows.length - 1)];
+            const replacement = row && Array.from(row.querySelectorAll("button:not(:disabled), input")).find(el => focus instanceof HTMLInputElement ? el instanceof HTMLInputElement && el.value === focus.value : el.dataset.action === focus.dataset.action);
+            (replacement || (focus.id && document.getElementById(focus.id)) || panel.querySelector("#weekwise-verify-basket"))?.focus({ preventScroll: true });
+        }
+        if (list?.isConnected && top !== undefined && list.scrollTop !== top)
+            list.scrollTop = top;
+        if (body.scrollTop !== bodyTop)
+            body.scrollTop = bodyTop;
+    }
+    let lastShell = "";
     async function refresh() {
         const response = await sendMessage({ type: "GET_STATE" });
         latestState = response.state;
@@ -1132,6 +1354,10 @@
         const state = latestState;
         if (checkedQueueDate !== undefined && (checkedQueueDate !== state?.queue?.createdAt || !isBasketPage())) {
             stopBasketWatch();
+            approved.clear();
+            reviewEvidence.clear();
+            checkedLayout = "";
+            increasing = undefined;
             choiceGroups = new Map();
             findingChoices = false;
             basketChecks = [];
@@ -1172,7 +1398,6 @@
                 ? "Add + next clicks the visible Asda add button, marks this item added, then opens the next item."
                 : "No single safe Add button was detected. Add manually, then mark added."}</small>
               ${state ? renderRecommendations(item, state) : ""}
-              ${state ? renderBasketVerifier(state) : ""}
             `
             : `
               <div class="weekwise-item">
@@ -1187,9 +1412,39 @@
         const root = existing ?? document.createElement("section");
         root.id = "weekwise-asda-helper";
         root.className = collapsed ? "weekwise-collapsed" : "";
-        root.innerHTML = html;
-        if (!existing)
+        let panel = root.querySelector(".weekwise-basket");
+        const shellKey = JSON.stringify([html, state?.queue?.createdAt, item?.itemId, state?.productLinks, state?.rejectedRecommendations]);
+        if (existing && lastShell === shellKey) {
+            if (panel)
+                updateBasket(panel);
+            return;
+        }
+        lastShell = shellKey;
+        if (!existing) {
+            root.innerHTML = html;
             document.body.append(root);
+        }
+        else {
+            const shell = document.createElement("template");
+            shell.innerHTML = html;
+            root.querySelector(".weekwise-head").replaceWith(shell.content.querySelector(".weekwise-head"));
+            const body = root.querySelector(".weekwise-body");
+            for (const child of Array.from(body.children))
+                if (child !== panel)
+                    child.remove();
+            body.prepend(...Array.from(shell.content.querySelector(".weekwise-body").children));
+        }
+        if (item) {
+            if (!panel) {
+                panel = document.createElement("div");
+                panel.className = "weekwise-basket";
+                root.querySelector(".weekwise-body").append(panel);
+                bindBasket(panel);
+            }
+            updateBasket(panel);
+        }
+        else
+            panel?.remove();
         document.getElementById("weekwise-toggle")?.addEventListener("click", () => {
             collapsed = !collapsed;
             render();
@@ -1244,77 +1499,6 @@
                 return;
             await sendMessage({ type: "SET_STATUS", itemId: item.itemId, status: "added", advance: true, openNext: true });
             await refresh();
-        });
-        document.getElementById("weekwise-verify-basket")?.addEventListener("click", async () => {
-            if (!state)
-                return;
-            if (!isBasketPage()) {
-                basketMessage = "Opening Asda basket...";
-                render();
-                await sendMessage({ type: "OPEN_BASKET" });
-                return;
-            }
-            await verifyBasket(state);
-        });
-        document.getElementById("weekwise-confirm-visible")?.addEventListener("click", () => {
-            if (state && confirmVisibleSignature !== undefined)
-                void verifyBasket(state, confirmVisibleSignature);
-        });
-        document.getElementById("weekwise-copy-remaining")?.addEventListener("click", async () => {
-            if (!checkStillCurrent())
-                return;
-            const result = document.getElementById("weekwise-copy-result");
-            const brief = state && remainingShopBrief(state);
-            if (!result)
-                return;
-            if (!brief) {
-                result.textContent = "Nothing to copy. All remaining items were skipped or covered.";
-                return;
-            }
-            try {
-                await navigator.clipboard.writeText(brief);
-                result.textContent = "Copied. Paste into ChatGPT with your ASDA tab selected.";
-            }
-            catch {
-                const field = document.createElement("textarea");
-                field.readOnly = true;
-                field.setAttribute("aria-label", "Remaining shop for ChatGPT");
-                field.value = brief;
-                result.textContent = "Clipboard unavailable. Copy the selected brief manually.";
-                result.append(field);
-                field.focus();
-                field.select();
-            }
-        });
-        document.getElementById("weekwise-find-choices")?.addEventListener("click", () => void findChoices());
-        reviewableBasketChecks().forEach((check, index) => {
-            root.querySelectorAll(`input[name="weekwise-choice-${index}"]`).forEach(input => input.addEventListener("change", () => {
-                if (!checkStillCurrent())
-                    return;
-                const group = choiceGroups.get(check.itemId);
-                if (group)
-                    group.selected = Number(input.value);
-                const result = document.getElementById("weekwise-copy-result");
-                if (result)
-                    result.textContent = "Choice recorded. Copy the updated brief to continue in ChatGPT.";
-            }));
-            document.getElementById(`weekwise-basket-open-${index}`)?.addEventListener("click", () => {
-                if (!checkStillCurrent())
-                    return;
-                window.location.href = check.basketProductUrl || check.openUrl;
-            });
-            document.getElementById(`weekwise-basket-plus-${index}`)?.addEventListener("click", () => {
-                if (!checkStillCurrent())
-                    return;
-                void addOneMoreForCheck(check);
-            });
-            document.getElementById(`weekwise-basket-ok-${index}`)?.addEventListener("click", () => {
-                if (!checkStillCurrent())
-                    return;
-                basketChecks = basketChecks.map((candidate) => (candidate.itemId === check.itemId ? { ...candidate, status: "ok", message: "Marked as adequate after review." } : candidate));
-                basketMessage = "Marked item as adequate.";
-                render();
-            });
         });
         document.getElementById("weekwise-scan-products")?.addEventListener("click", () => {
             if (!item || !state)

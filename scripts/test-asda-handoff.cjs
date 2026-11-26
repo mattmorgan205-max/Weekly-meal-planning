@@ -110,7 +110,13 @@ async function testSavedProductPolicy() {
     assert.match(selected,/My choice for this shop only: Pork sausages/);
     assert.doesNotMatch(selected,/Thick pork sausages/);
     assert.doesNotMatch(selected,/Loose spinach/);
+    await page.evaluate(() => {
+      window.choiceNode = document.querySelector('input[name="weekwise-choice-Sausages"]:checked');
+      window.listNode = document.querySelector(".weekwise-basket-list");
+      window.bodyNode = document.querySelector(".weekwise-body");
+    });
     await page.locator(".weekwise-basket-card").filter({hasText:"Oats"}).getByText("Looks ok").click();
+    assert.equal(await page.evaluate(() => window.choiceNode.isConnected && window.listNode.isConnected && window.bodyNode.isConnected), true);
     await page.evaluate(() => { navigator.clipboard.writeText = () => Promise.reject(Error("denied")); });
     await copy.click();
     const fallback = await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).inputValue();
@@ -121,16 +127,17 @@ async function testSavedProductPolicy() {
       document.querySelector("article input").value = "2";
       document.getElementById("weekwise-copy-remaining").click();
     });
-    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
-    assert.equal(await copy.count(), 0);
-    await verify();
+    assert.equal(await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).count(), 0);
+    await page.getByText("Trolley checked.", {exact:true}).waitFor();
     await copy.click();
-    assert.doesNotMatch(await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).inputValue(), /Yoghurt|My choice for this shop only/);
+    const updated = await page.getByRole("textbox", {name:"Remaining shop for ChatGPT"}).inputValue();
+    assert.doesNotMatch(updated, /Yoghurt|Loose spinach|Oats/);
+    assert.match(updated, /My choice for this shop only: Pork sausages/);
+    assert.equal(await page.evaluate(() => window.choiceNode.isConnected && window.choiceNode.checked), true);
     await page.locator("article input").first().fill("1");
-    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
-    await verify();
+    await page.locator(".weekwise-basket-short").filter({hasText:"Yoghurt"}).waitFor();
     await page.evaluate(() => document.querySelector("article").remove());
-    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
+    await page.locator("#weekwise-confirm-visible").waitFor();
     await page.evaluate(() => {
       window.fixture.queue = {createdAt:"shop-two", items:window.fixture.queue.items.filter(item => item.name === "Pasta")};
       return window.refreshHelper();
@@ -140,7 +147,7 @@ async function testSavedProductPolicy() {
     assert.equal(await copy.count(), 0);
     await page.evaluate(() => document.querySelector("article").insertAdjacentHTML("afterend",
       '<article><a href="/groceries/product/new">Milk 1 litre</a> Quantity <input aria-label="Quantity" value="1"> Remove</article>'));
-    await page.getByText("Basket changed. Verify basket again before continuing.").waitFor();
+    await page.locator("#weekwise-confirm-visible").waitFor();
     console.log("ASDA handoff passed: mixed basket, quantities, exclusions, manual copy, new shop and all-covered basket.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
